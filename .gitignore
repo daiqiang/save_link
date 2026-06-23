@@ -1,0 +1,14 @@
+node_modules/
+target/
+dist/
+
+*.log
+.savelink-demo-server.*.log
+
+.env
+.env.*
+
+.claude/settings.local.json
+
+Thumbs.db
+.DS_Store

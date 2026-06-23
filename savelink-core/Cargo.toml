@@ -1,0 +1,10 @@
+[package]
+name = "savelink-core"
+version = "0.1.0"
+edition = "2021"
+description = "SaveLink 本地存档核心：测试先行骨架（实现为 todo!，测试为红灯）"
+
+[dev-dependencies]
+
+[dependencies]
+rusqlite = { version = "0.32", features = ["bundled"] }

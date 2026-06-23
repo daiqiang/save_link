@@ -1,0 +1,974 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>SaveLink — 本地游戏存档时间线</title>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --panel: #ffffff;
+    --sidebar: #f0f2f5;
+    --border: #e3e6ea;
+    --border-strong: #d3d8df;
+    --text: #1f2329;
+    --text-2: #5a6472;
+    --text-3: #8a94a3;
+    --accent: #2563eb;
+    --accent-weak: #eff5ff;
+    --accent-border: #c6dbff;
+    --success: #18794e;
+    --success-weak: #ecfdf3;
+    --warn: #b45309;
+    --warn-weak: #fff7ed;
+    --danger: #c4373a;
+    --danger-weak: #fef2f2;
+    --radius: 7px;
+    --radius-sm: 5px;
+    --shadow-card: 0 1px 2px rgba(20, 28, 40, 0.05);
+    --shadow-pop: 0 12px 32px rgba(20, 28, 40, 0.16);
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    font-size: 14px;
+    line-height: 1.5;
+    color: var(--text);
+    background: var(--bg);
+    -webkit-font-smoothing: antialiased;
+  }
+  button { font-family: inherit; cursor: pointer; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #d3d8df; border-radius: 6px; border: 2px solid transparent; background-clip: content-box; }
+  ::-webkit-scrollbar-thumb:hover { background: #b9c0c9; background-clip: content-box; }
+
+  /* ---------- App shell ---------- */
+  .app { display: flex; flex-direction: column; height: 100vh; }
+  .topbar {
+    height: 52px; flex: 0 0 52px;
+    display: flex; align-items: center; gap: 10px;
+    padding: 0 16px;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+  }
+  .brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 15px; }
+  .brand .logo {
+    width: 24px; height: 24px; border-radius: 6px;
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    display: grid; place-items: center; color: #fff;
+  }
+  .brand .logo svg { width: 15px; height: 15px; }
+  .brand .sub { color: var(--text-3); font-weight: 400; font-size: 12px; margin-left: 2px; }
+  .topbar .spacer { flex: 1; }
+
+  .body { flex: 1; display: flex; min-height: 0; }
+
+  /* ---------- Sidebar ---------- */
+  .sidebar {
+    width: 280px; flex: 0 0 280px;
+    background: var(--sidebar);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .sidebar-head {
+    padding: 14px 14px 10px;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sidebar-head .title { font-size: 12px; font-weight: 600; color: var(--text-3); letter-spacing: .04em; text-transform: uppercase; }
+  .game-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; }
+  .game-item {
+    display: flex; gap: 10px; align-items: center;
+    padding: 9px 10px; margin-bottom: 4px;
+    border-radius: var(--radius); cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .game-item:hover { background: #e7eaef; }
+  .game-item.active { background: var(--panel); border-color: var(--border); box-shadow: var(--shadow-card); }
+  .game-cover {
+    width: 34px; height: 34px; flex: 0 0 34px; border-radius: 7px;
+    background: #dde3ea; color: var(--text-2);
+    display: grid; place-items: center; font-weight: 600; font-size: 14px;
+    overflow: hidden;
+  }
+  .game-meta { min-width: 0; flex: 1; }
+  .game-name { font-size: 13.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: flex; align-items: center; gap: 6px; }
+  .game-sub { font-size: 11.5px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 7px; }
+  .status-dot.ok { background: #3ba776; }
+  .status-dot.warn { background: #e0a52b; }
+  .status-dot.err { background: #d65a5d; }
+
+  /* ---------- Detail area ---------- */
+  .detail { flex: 1; overflow-y: auto; min-width: 0; }
+  .detail-inner { max-width: 920px; padding: 22px 28px 60px; }
+
+  /* empty state */
+  .empty {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center;
+    color: var(--text-2); padding: 40px;
+  }
+  .empty .ic { width: 46px; height: 46px; color: var(--text-3); margin-bottom: 16px; }
+  .empty h2 { margin: 0 0 6px; font-size: 17px; color: var(--text); font-weight: 600; }
+  .empty p { margin: 0 0 20px; font-size: 13.5px; max-width: 320px; }
+
+  /* game header */
+  .ghead { display: flex; gap: 16px; align-items: flex-start; }
+  .ghead .cover {
+    width: 56px; height: 56px; flex: 0 0 56px; border-radius: 10px;
+    background: #dde3ea; color: var(--text-2);
+    display: grid; place-items: center; font-weight: 600; font-size: 22px;
+  }
+  .ghead h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
+  .ghead .paths { font-size: 12.5px; color: var(--text-2); display: flex; flex-direction: column; gap: 2px; }
+  .ghead .paths .row { display: flex; align-items: center; gap: 6px; }
+  .ghead .paths svg { width: 13px; height: 13px; color: var(--text-3); flex: 0 0 13px; }
+  .ghead .path-mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 11.5px; }
+  .gstats { display: flex; gap: 22px; margin: 16px 0 4px; }
+  .gstat .k { font-size: 11.5px; color: var(--text-3); }
+  .gstat .v { font-size: 15px; font-weight: 600; }
+
+  .toolbar { display: flex; gap: 10px; align-items: center; margin: 18px 0 6px; }
+
+  .section-label {
+    display: flex; align-items: center; gap: 10px;
+    margin: 22px 0 12px; color: var(--text-3);
+    font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .section-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+  /* ---------- Buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 7px;
+    border-radius: var(--radius-sm); border: 1px solid var(--border-strong);
+    background: var(--panel); color: var(--text);
+    padding: 7px 13px; font-size: 13px; font-weight: 500;
+    transition: background .12s, border-color .12s;
+  }
+  .btn svg { width: 15px; height: 15px; }
+  .btn:hover { background: #f3f5f7; }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn.primary:hover { background: #1d4ed8; }
+  .btn.danger { color: var(--danger); border-color: #e7c4c4; background: var(--panel); }
+  .btn.danger:hover { background: var(--danger-weak); }
+  .btn.ghost { border-color: transparent; background: transparent; }
+  .btn.ghost:hover { background: #eef0f3; }
+  .btn.sm { padding: 5px 10px; font-size: 12.5px; }
+  .btn:disabled { opacity: .5; cursor: not-allowed; }
+  .iconbtn {
+    width: 30px; height: 30px; border-radius: var(--radius-sm);
+    border: 1px solid transparent; background: transparent;
+    display: grid; place-items: center; color: var(--text-2);
+    position: relative;
+  }
+  .iconbtn svg { width: 16px; height: 16px; }
+  .iconbtn:hover { background: #eef0f3; color: var(--text); }
+  /* tooltip */
+  .tip { position: relative; }
+  .tip::after {
+    content: attr(data-tip); position: absolute; bottom: calc(100% + 6px); left: 50%;
+    transform: translateX(-50%); white-space: nowrap;
+    background: #1f2329; color: #fff; font-size: 11.5px; padding: 4px 8px; border-radius: 5px;
+    opacity: 0; pointer-events: none; transition: opacity .12s; z-index: 50;
+  }
+  .tip:hover::after { opacity: 1; }
+
+  /* ---------- Timeline ---------- */
+  .timeline { display: flex; flex-direction: column; gap: 10px; }
+  .snap {
+    position: relative;
+    border: 1px solid var(--border); background: var(--panel);
+    border-radius: var(--radius); padding: 12px 14px;
+    box-shadow: var(--shadow-card); cursor: pointer;
+    transition: border-color .12s, box-shadow .12s;
+  }
+  .snap:hover { border-color: var(--border-strong); box-shadow: 0 2px 6px rgba(20,28,40,.08); }
+  .snap.is-backup { background: #fcfcfd; border-left: 3px solid #cdd5df; }
+  .snap-top { display: flex; align-items: flex-start; gap: 12px; }
+  .snap-main { flex: 1; min-width: 0; }
+  .snap-time { font-size: 12px; color: var(--text-3); font-variant-numeric: tabular-nums; }
+  .snap-note { font-size: 14.5px; font-weight: 600; margin: 1px 0 5px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .snap-info { font-size: 12px; color: var(--text-2); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .snap-info .sep { color: var(--border-strong); }
+  .snap-actions { display: flex; align-items: center; gap: 4px; flex: 0 0 auto; }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 11px; font-weight: 600; padding: 1.5px 7px; border-radius: 100px;
+    border: 1px solid transparent;
+  }
+  .badge svg { width: 11px; height: 11px; }
+  .badge.lock { background: #f1f3f6; color: var(--text-2); border-color: var(--border); }
+  .badge.backup { background: var(--warn-weak); color: var(--warn); border-color: #f3dcb5; }
+  .badge.manual { background: var(--accent-weak); color: var(--accent); border-color: var(--accent-border); }
+  .badge.auto { background: #f3f0fb; color: #6d4bb5; border-color: #ddd2f1; }
+
+  /* ---------- Overlay / Modal / Drawer ---------- */
+  .overlay {
+    position: fixed; inset: 0; background: rgba(24,30,40,.34);
+    display: none; align-items: center; justify-content: center; z-index: 100;
+    padding: 24px;
+  }
+  .overlay.show { display: flex; }
+  .modal {
+    background: var(--panel); border-radius: 11px; box-shadow: var(--shadow-pop);
+    width: 600px; max-width: 100%; max-height: 90vh; display: flex; flex-direction: column;
+    animation: pop .14s ease-out;
+  }
+  .modal.wide { width: 640px; }
+  .modal.narrow { width: 540px; }
+  @keyframes pop { from { transform: translateY(8px) scale(.99); opacity: 0; } to { transform: none; opacity: 1; } }
+  .modal-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+  .modal-head h3 { margin: 0; font-size: 16px; font-weight: 650; }
+  .modal-body { padding: 18px 20px; overflow-y: auto; }
+  .modal-foot { display: flex; justify-content: flex-end; gap: 10px; padding: 14px 20px; border-top: 1px solid var(--border); background: #fbfcfd; border-radius: 0 0 11px 11px; }
+
+  .field { margin-bottom: 16px; }
+  .field:last-child { margin-bottom: 0; }
+  .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--text-2); margin-bottom: 6px; }
+  .input {
+    width: 100%; padding: 9px 11px; font-size: 13.5px; font-family: inherit;
+    border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+    background: var(--panel); color: var(--text);
+  }
+  .input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+  .input.mono { font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace; font-size: 12.5px; }
+  textarea.input { resize: vertical; min-height: 64px; }
+  .row-actions { display: flex; gap: 8px; margin-top: 8px; }
+  .hint { font-size: 12px; margin-top: 7px; display: flex; align-items: center; gap: 6px; }
+  .hint svg { width: 14px; height: 14px; flex: 0 0 14px; }
+  .hint.ok { color: var(--success); }
+  .hint.warn { color: var(--warn); }
+  .hint.err { color: var(--danger); }
+  .hint.muted { color: var(--text-3); }
+  .repo-box {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 9px 11px; border: 1px dashed var(--border-strong); border-radius: var(--radius-sm);
+    background: #fafbfc; font-size: 12.5px; color: var(--text-2);
+  }
+  .repo-box .mono { font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px; color: var(--text); }
+
+  /* drawer */
+  .drawer-wrap { position: fixed; inset: 0; z-index: 110; display: none; }
+  .drawer-wrap.show { display: block; }
+  .drawer-mask { position: absolute; inset: 0; background: rgba(24,30,40,.22); }
+  .drawer {
+    position: absolute; top: 0; right: 0; height: 100%; width: 420px; max-width: 92vw;
+    background: var(--panel); box-shadow: -10px 0 30px rgba(20,28,40,.14);
+    display: flex; flex-direction: column;
+    transform: translateX(100%); transition: transform .2s ease-out;
+  }
+  .drawer-wrap.show .drawer { transform: none; }
+  .drawer-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 18px; border-bottom: 1px solid var(--border); }
+  .drawer-head h3 { margin: 0; font-size: 15px; font-weight: 650; }
+  .drawer-body { flex: 1; overflow-y: auto; padding: 18px; }
+  .drawer-foot { border-top: 1px solid var(--border); padding: 14px 18px; display: flex; flex-direction: column; gap: 10px; }
+
+  .meta-list { display: flex; flex-direction: column; gap: 0; margin-top: 4px; }
+  .meta-list .mrow { display: flex; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+  .meta-list .mrow:last-child { border-bottom: none; }
+  .meta-list .mk { color: var(--text-3); }
+  .meta-list .mv { font-weight: 500; text-align: right; }
+  .drawer-title { font-size: 17px; font-weight: 650; }
+  .drawer-time { font-size: 12.5px; color: var(--text-3); margin-bottom: 14px; font-variant-numeric: tabular-nums; }
+
+  /* restore steps */
+  .steps { display: flex; flex-direction: column; gap: 12px; margin: 4px 0; }
+  .step { display: flex; align-items: center; gap: 11px; font-size: 13.5px; color: var(--text-2); }
+  .step .si { width: 22px; height: 22px; flex: 0 0 22px; border-radius: 50%; display: grid; place-items: center; border: 1.5px solid var(--border-strong); }
+  .step .si svg { width: 13px; height: 13px; }
+  .step.done { color: var(--text); }
+  .step.done .si { background: var(--success-weak); border-color: #b7e3c9; color: var(--success); }
+  .step.active { color: var(--text); font-weight: 600; }
+  .step.active .si { border-color: var(--accent); color: var(--accent); }
+  .step.pending .si { color: var(--text-3); }
+  .spin { animation: spin 1s linear infinite; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .callout { display: flex; gap: 10px; padding: 12px 14px; border-radius: var(--radius); font-size: 13px; line-height: 1.55; }
+  .callout svg { width: 17px; height: 17px; flex: 0 0 17px; margin-top: 1px; }
+  .callout.warn { background: var(--warn-weak); color: #7c4a09; border: 1px solid #f3dcb5; }
+  .callout.ok { background: var(--success-weak); color: #155e3a; border: 1px solid #b7e3c9; }
+  .callout.info { background: var(--accent-weak); color: #1e3a8a; border: 1px solid var(--accent-border); }
+  .ol { margin: 8px 0 0; padding-left: 20px; }
+  .ol li { margin-bottom: 4px; }
+
+  .kv { font-size: 13.5px; margin-bottom: 10px; display: flex; gap: 8px; }
+  .kv .k { color: var(--text-3); flex: 0 0 76px; }
+  .kv .v { font-weight: 600; }
+  .target-box { background: #fafbfc; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px 14px; margin: 14px 0; }
+
+  /* toast */
+  .toast-wrap { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); z-index: 200; display: flex; flex-direction: column; gap: 8px; align-items: center; }
+  .toast {
+    background: #1f2329; color: #fff; padding: 10px 16px; border-radius: 8px;
+    font-size: 13px; box-shadow: var(--shadow-pop); display: flex; align-items: center; gap: 9px;
+    animation: pop .14s ease-out;
+  }
+  .toast svg { width: 16px; height: 16px; }
+  .toast.ok svg { color: #57d196; }
+  .toast.warn svg { color: #f1c15b; }
+  .toast.err svg { color: #f48a8d; }
+
+  /* context menu */
+  .menu {
+    position: fixed; z-index: 130; min-width: 168px;
+    background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: var(--shadow-pop); padding: 5px; display: none;
+  }
+  .menu.show { display: block; }
+  .menu button {
+    width: 100%; text-align: left; border: none; background: transparent;
+    padding: 8px 10px; border-radius: 5px; font-size: 13px; color: var(--text);
+    display: flex; align-items: center; gap: 9px;
+  }
+  .menu button svg { width: 15px; height: 15px; color: var(--text-2); }
+  .menu button:hover { background: #f1f3f6; }
+  .menu button.danger { color: var(--danger); }
+  .menu button.danger svg { color: var(--danger); }
+  .menu .divider { height: 1px; background: var(--border); margin: 4px 2px; }
+
+  .empty-tl { text-align: center; color: var(--text-3); padding: 30px 0; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="app">
+  <!-- Topbar -->
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" id="i-logo"></span>
+      <span>SaveLink</span>
+      <span class="sub">本地存档时间线</span>
+    </div>
+    <div class="spacer"></div>
+    <button class="iconbtn tip" data-tip="设置" id="btn-settings"></button>
+    <button class="iconbtn tip" data-tip="帮助" id="btn-help"></button>
+  </header>
+
+  <div class="body">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <span class="title">游戏列表</span>
+        <button class="iconbtn tip" data-tip="添加游戏" id="btn-add-side"></button>
+      </div>
+      <div class="game-list" id="game-list"></div>
+    </aside>
+
+    <!-- Detail -->
+    <main class="detail" id="detail"></main>
+  </div>
+</div>
+
+<!-- Add-game modal -->
+<div class="overlay" id="ov-add">
+  <div class="modal wide">
+    <div class="modal-head">
+      <h3>添加游戏</h3>
+      <button class="iconbtn" data-close="ov-add" id="i-close-add"></button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>游戏名称</label>
+        <input class="input" id="add-name" placeholder="例如：艾尔登法环" />
+      </div>
+      <div class="field">
+        <label>存档目录</label>
+        <input class="input mono" id="add-path" value="C:\Users\daiq\AppData\Roaming\EldenRing\76561198..." />
+        <div class="row-actions">
+          <button class="btn sm" id="btn-pick-dir"><span class="ic-folder"></span>选择目录</button>
+          <button class="btn sm" id="btn-test-read"><span class="ic-search"></span>测试读取</button>
+        </div>
+        <div class="hint muted" id="add-readout">点击「测试读取」检测该目录中的存档文件。</div>
+      </div>
+      <div class="field">
+        <label>快照仓库</label>
+        <div class="repo-box">
+          <span>使用默认位置：<span class="mono">D:\SaveLink\Repository</span></span>
+          <button class="btn sm ghost" id="btn-change-repo">更改位置</button>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ov-add">取消</button>
+      <button class="btn primary" id="btn-save-game">保存并创建</button>
+    </div>
+  </div>
+</div>
+
+<!-- Restore confirm / progress / done modal -->
+<div class="overlay" id="ov-restore">
+  <div class="modal narrow" id="restore-modal"></div>
+</div>
+
+<!-- Delete confirm modal -->
+<div class="overlay" id="ov-delete">
+  <div class="modal narrow">
+    <div class="modal-head">
+      <h3>删除这个快照？</h3>
+      <button class="iconbtn" data-close="ov-delete" id="i-close-del"></button>
+    </div>
+    <div class="modal-body">
+      <div class="callout warn">
+        <span class="ic-alert"></span>
+        <div id="del-text">删除后该快照将无法恢复。</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ov-delete">取消</button>
+      <button class="btn danger" id="btn-confirm-del">删除快照</button>
+    </div>
+  </div>
+</div>
+
+<!-- Snapshot detail drawer -->
+<div class="drawer-wrap" id="drawer">
+  <div class="drawer-mask" data-close-drawer></div>
+  <div class="drawer" id="drawer-panel"></div>
+</div>
+
+<!-- Context menu -->
+<div class="menu" id="ctx-menu"></div>
+
+<!-- Toasts -->
+<div class="toast-wrap" id="toasts"></div>
+
+<script>
+/* =========================================================================
+   SaveLink — 纯前端 demo（零依赖 / mock 数据）
+   所有快照、恢复、锁定、删除均在内存中模拟。刷新页面即回到初始状态。
+   ========================================================================= */
+
+/* ---------- 内联 lucide 风格图标（避免外部依赖） ---------- */
+const ICONS = {
+  history: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l3 2"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>',
+  settings: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+  help: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>',
+  folder: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>',
+  search: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/></svg>',
+  camera: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>',
+  edit: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4Z"/></svg>',
+  rotate: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/></svg>',
+  lock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>',
+  unlock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="11" x="3" y="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>',
+  alert: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4M12 17h.01"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>',
+  checkCircle: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="m9 11 3 3L22 4"/></svg>',
+  close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  loader: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>',
+  archive: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="20" height="5" x="2" y="3" rx="1"/><path d="M4 8v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>',
+  shield: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 13c0 5-3.5 7.5-7.66 8.95a1 1 0 0 1-.67-.01C7.5 20.5 4 18 4 13V6a1 1 0 0 1 1-1c2 0 4.5-1.2 6.24-2.72a1.17 1.17 0 0 1 1.52 0C14.51 3.81 17 5 19 5a1 1 0 0 1 1 1Z"/><path d="m9 12 2 2 4-4"/></svg>',
+  clock: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg>',
+};
+
+/* ---------- mock 数据 ---------- */
+let UID = 100;
+const uid = (p) => `${p}_${++UID}`;
+
+function makeSnap(o) {
+  return Object.assign({
+    id: uid('s'), createdAt: '', note: '', reason: 'manual',
+    locked: false, fileCount: 3, totalSize: 12.4,
+  }, o);
+}
+
+const STATE = {
+  games: [
+    {
+      id: 'g_elden', name: '艾尔登法环', cover: '艾', status: 'ok',
+      paths: ['C:\\Users\\daiq\\AppData\\Roaming\\EldenRing\\76561198...'],
+      repo: 'D:\\SaveLink\\Repository',
+      snapshots: [
+        makeSnap({ id: 's_1', createdAt: '2026-06-18 21:30', note: 'Boss 前', reason: 'manual', locked: true, fileCount: 3, totalSize: 23.4 }),
+        makeSnap({ id: 's_2', createdAt: '2026-06-18 20:10', note: '打完支线', reason: 'manual', fileCount: 3, totalSize: 23.4 }),
+        makeSnap({ id: 's_3', createdAt: '2026-06-17 23:40', note: '恢复前自动备份', reason: 'before_restore', fileCount: 3, totalSize: 23.5 }),
+        makeSnap({ id: 's_4', createdAt: '2026-06-17 22:05', note: '进入王城前', reason: 'manual', fileCount: 3, totalSize: 23.1 }),
+        makeSnap({ id: 's_5', createdAt: '2026-06-16 19:22', note: '第一个快照', reason: 'manual', fileCount: 3, totalSize: 22.8 }),
+      ],
+    },
+    {
+      id: 'g_zelda', name: '塞尔达模拟器', cover: '塞', status: 'warn',
+      paths: ['D:\\Emulator\\Ryujinx\\bis\\user\\save\\0000...'],
+      repo: 'D:\\SaveLink\\Repository',
+      snapshots: [
+        makeSnap({ id: 's_6', createdAt: '2026-06-15 14:02', note: '神庙挑战前', reason: 'manual', fileCount: 5, totalSize: 4.2 }),
+        makeSnap({ id: 's_7', createdAt: '2026-06-14 21:48', note: '开荒存档', reason: 'manual', locked: true, fileCount: 5, totalSize: 3.9 }),
+      ],
+    },
+  ],
+  selectedGameId: 'g_elden',
+  activeSnapId: null, // for drawer / menu / delete / restore
+};
+
+const REASON_LABEL = { manual: '手动创建', before_restore: '恢复前自动备份', auto: '自动快照' };
+
+/* ---------- 工具函数 ---------- */
+const $ = (sel, root = document) => root.querySelector(sel);
+const $$ = (sel, root = document) => Array.from(root.querySelectorAll(sel));
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+
+function nowStamp() {
+  const d = new Date();
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function currentGame() { return STATE.games.find((g) => g.id === STATE.selectedGameId) || null; }
+function findSnap(gameId, snapId) {
+  const g = STATE.games.find((x) => x.id === gameId);
+  return g ? g.snapshots.find((s) => s.id === snapId) : null;
+}
+
+function toast(msg, kind = 'ok') {
+  const icon = kind === 'err' ? ICONS.alert : kind === 'warn' ? ICONS.alert : ICONS.checkCircle;
+  const el = document.createElement('div');
+  el.className = `toast ${kind}`;
+  el.innerHTML = icon + `<span>${esc(msg)}</span>`;
+  $('#toasts').appendChild(el);
+  setTimeout(() => { el.style.transition = 'opacity .25s'; el.style.opacity = '0'; setTimeout(() => el.remove(), 250); }, 2600);
+}
+
+function reasonBadge(reason) {
+  if (reason === 'before_restore') return `<span class="badge backup">${ICONS.shield}恢复前自动备份</span>`;
+  if (reason === 'auto') return `<span class="badge auto">${ICONS.clock}自动</span>`;
+  return `<span class="badge manual">手动</span>`;
+}
+
+/* ---------- 渲染：侧栏游戏列表 ---------- */
+function renderSidebar() {
+  const list = $('#game-list');
+  list.innerHTML = STATE.games.map((g) => {
+    const last = g.snapshots[0];
+    const active = g.id === STATE.selectedGameId ? ' active' : '';
+    return `
+      <div class="game-item${active}" data-game="${g.id}">
+        <div class="game-cover">${esc(g.cover)}</div>
+        <div class="game-meta">
+          <div class="game-name"><span class="status-dot ${g.status}"></span>${esc(g.name)}</div>
+          <div class="game-sub">${g.snapshots.length} 个快照 · 最近 ${last ? esc(last.createdAt.slice(11)) : '—'}</div>
+        </div>
+      </div>`;
+  }).join('');
+  $$('.game-item', list).forEach((el) => el.addEventListener('click', () => {
+    STATE.selectedGameId = el.dataset.game;
+    render();
+  }));
+}
+
+/* ---------- 渲染：详情区 ---------- */
+function renderDetail() {
+  const host = $('#detail');
+  const g = currentGame();
+  if (!g) {
+    host.innerHTML = `
+      <div class="empty">
+        <span class="ic">${ICONS.archive}</span>
+        <h2>还没有添加游戏</h2>
+        <p>添加一个游戏后，就可以为它创建存档快照和时间线。</p>
+        <button class="btn primary" id="btn-add-empty">${ICONS.plus}添加游戏</button>
+      </div>`;
+    $('#btn-add-empty').addEventListener('click', openAddGame);
+    return;
+  }
+
+  const last = g.snapshots[0];
+  const totalSize = g.snapshots.reduce((a, s) => a + s.totalSize, 0).toFixed(1);
+  const pathsHtml = g.paths.map((p) => `<div class="row">${ICONS.folder}<span class="path-mono">${esc(p)}</span></div>`).join('');
+
+  const tl = g.snapshots.length
+    ? g.snapshots.map((s) => snapCard(g, s)).join('')
+    : `<div class="empty-tl">还没有快照。点击「创建快照」保存当前存档状态。</div>`;
+
+  host.innerHTML = `
+    <div class="detail-inner">
+      <div class="ghead">
+        <div class="cover">${esc(g.cover)}</div>
+        <div style="flex:1;min-width:0">
+          <h1>${esc(g.name)}</h1>
+          <div class="paths">${pathsHtml}</div>
+        </div>
+      </div>
+
+      <div class="gstats">
+        <div class="gstat"><div class="k">快照数量</div><div class="v">${g.snapshots.length} 个</div></div>
+        <div class="gstat"><div class="k">最近快照</div><div class="v">${last ? esc(last.createdAt) : '—'}</div></div>
+        <div class="gstat"><div class="k">仓库占用</div><div class="v">${totalSize} MB</div></div>
+      </div>
+
+      <div class="toolbar">
+        <button class="btn primary" id="btn-snap">${ICONS.camera}创建快照</button>
+        <button class="btn" id="btn-edit-game">${ICONS.edit}编辑游戏</button>
+      </div>
+
+      <div class="section-label">时间线</div>
+      <div class="timeline" id="timeline">${tl}</div>
+    </div>`;
+
+  $('#btn-snap').addEventListener('click', () => createSnapshot(g));
+  $('#btn-edit-game').addEventListener('click', () => toast('编辑游戏：demo 中暂未实现表单', 'warn'));
+  bindSnapCards(g);
+}
+
+function snapCard(g, s) {
+  const badges = [];
+  if (s.reason === 'before_restore') badges.push(`<span class="badge backup">${ICONS.shield}恢复前自动备份</span>`);
+  if (s.locked) badges.push(`<span class="badge lock">${ICONS.lock}已锁定</span>`);
+  const info = `${s.fileCount} 个文件 <span class="sep">·</span> ${s.totalSize.toFixed(1)} MB <span class="sep">·</span> ${REASON_LABEL[s.reason]}`;
+  return `
+    <div class="snap${s.reason === 'before_restore' ? ' is-backup' : ''}" data-snap="${s.id}">
+      <div class="snap-top">
+        <div class="snap-main">
+          <div class="snap-time">${esc(s.createdAt)}</div>
+          <div class="snap-note">${esc(s.note || '未命名快照')} ${badges.join(' ')}</div>
+          <div class="snap-info">${info}</div>
+        </div>
+        <div class="snap-actions">
+          <button class="btn sm" data-act="restore" data-snap="${s.id}">${ICONS.rotate}恢复</button>
+          <button class="iconbtn tip" data-tip="${s.locked ? '取消锁定' : '锁定'}" data-act="lock" data-snap="${s.id}">${s.locked ? ICONS.unlock : ICONS.lock}</button>
+          <button class="iconbtn tip" data-tip="更多" data-act="more" data-snap="${s.id}">${ICONS.more}</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+function bindSnapCards(g) {
+  $$('#timeline .snap').forEach((card) => {
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('[data-act]')) return; // 点按钮不开抽屉
+      openDrawer(g.id, card.dataset.snap);
+    });
+  });
+  $$('#timeline [data-act]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const id = btn.dataset.snap;
+      const act = btn.dataset.act;
+      if (act === 'restore') openRestore(g.id, id);
+      else if (act === 'lock') toggleLock(g.id, id);
+      else if (act === 'more') openMenu(e, g.id, id);
+    });
+  });
+}
+
+function render() {
+  renderSidebar();
+  renderDetail();
+}
+
+/* ---------- 创建快照 ---------- */
+function createSnapshot(g) {
+  const btn = $('#btn-snap');
+  if (btn) { btn.disabled = true; btn.innerHTML = `<span class="spin" style="display:inline-flex">${ICONS.loader}</span>正在扫描存档…`; }
+  setTimeout(() => {
+    // demo：30% 概率“存档未变化”
+    const unchanged = Math.random() < 0.3 && g.snapshots.length > 0;
+    if (unchanged) {
+      toast('存档未变化，未创建新快照', 'warn');
+      renderDetail();
+      return;
+    }
+    const base = g.snapshots[0];
+    const snap = makeSnap({
+      createdAt: nowStamp(), note: '手动快照', reason: 'manual',
+      fileCount: base ? base.fileCount : 3,
+      totalSize: +( (base ? base.totalSize : 12) + (Math.random() * 0.6 - 0.2) ).toFixed(1),
+    });
+    g.snapshots.unshift(snap);
+    render();
+    toast('快照已创建', 'ok');
+  }, 650);
+}
+
+/* ---------- 锁定 / 取消锁定 ---------- */
+function toggleLock(gameId, snapId) {
+  const s = findSnap(gameId, snapId);
+  if (!s) return;
+  s.locked = !s.locked;
+  render();
+  if (drawerOpenFor === snapId) renderDrawer();
+  toast(s.locked ? '快照已锁定，不会被自动清理' : '已取消锁定', 'ok');
+}
+
+/* ---------- 更多菜单 ---------- */
+function openMenu(e, gameId, snapId) {
+  const s = findSnap(gameId, snapId);
+  const menu = $('#ctx-menu');
+  STATE.activeSnapId = snapId;
+  STATE.activeGameId = gameId;
+  menu.innerHTML = `
+    <button data-m="rename">${ICONS.edit}修改备注</button>
+    <button data-m="lock">${s.locked ? ICONS.unlock + '取消锁定' : ICONS.lock + '锁定快照'}</button>
+    <div class="divider"></div>
+    <button class="danger" data-m="delete" ${s.locked ? 'disabled style="opacity:.45;cursor:not-allowed"' : ''}>${ICONS.trash}${s.locked ? '锁定快照不能删除' : '删除快照'}</button>`;
+  const r = e.currentTarget.getBoundingClientRect();
+  menu.style.left = Math.min(r.left, window.innerWidth - 190) + 'px';
+  menu.style.top = (r.bottom + 6) + 'px';
+  menu.classList.add('show');
+  $$('#ctx-menu button').forEach((b) => b.addEventListener('click', () => {
+    closeMenu();
+    const m = b.dataset.m;
+    if (m === 'rename') openDrawer(gameId, snapId);
+    else if (m === 'lock') toggleLock(gameId, snapId);
+    else if (m === 'delete' && !s.locked) openDelete(gameId, snapId);
+  }));
+}
+function closeMenu() { $('#ctx-menu').classList.remove('show'); }
+
+/* ---------- 快照详情抽屉 ---------- */
+let drawerOpenFor = null;
+function openDrawer(gameId, snapId) {
+  STATE.activeGameId = gameId; drawerOpenFor = snapId;
+  renderDrawer();
+  $('#drawer').classList.add('show');
+}
+function renderDrawer() {
+  const g = STATE.games.find((x) => x.id === STATE.activeGameId);
+  const s = findSnap(STATE.activeGameId, drawerOpenFor);
+  if (!g || !s) return;
+  const panel = $('#drawer-panel');
+  panel.innerHTML = `
+    <div class="drawer-head">
+      <h3>快照详情</h3>
+      <button class="iconbtn" data-close-drawer>${ICONS.close}</button>
+    </div>
+    <div class="drawer-body">
+      <div class="drawer-title">${esc(g.name)}</div>
+      <div class="drawer-time">${esc(s.createdAt)}</div>
+
+      <div class="field">
+        <label>备注</label>
+        <textarea class="input" id="drawer-note">${esc(s.note)}</textarea>
+        <div class="row-actions"><button class="btn sm" id="btn-save-note">保存备注</button></div>
+      </div>
+
+      <div class="meta-list">
+        <div class="mrow"><span class="mk">文件数量</span><span class="mv">${s.fileCount}</span></div>
+        <div class="mrow"><span class="mk">总大小</span><span class="mv">${s.totalSize.toFixed(1)} MB</span></div>
+        <div class="mrow"><span class="mk">创建原因</span><span class="mv">${REASON_LABEL[s.reason]}</span></div>
+        <div class="mrow"><span class="mk">状态</span><span class="mv">${s.locked ? '已锁定' : '正常'}</span></div>
+      </div>
+
+      <div style="margin-top:16px">
+        <label style="display:block;font-size:12.5px;font-weight:600;color:var(--text-2);margin-bottom:6px">存档目录</label>
+        <div class="repo-box"><span class="mono">${esc(g.paths[0])}</span></div>
+      </div>
+    </div>
+    <div class="drawer-foot">
+      <button class="btn primary" id="btn-drawer-restore">${ICONS.rotate}恢复这个版本</button>
+      <div style="display:flex;gap:10px">
+        <button class="btn" id="btn-drawer-lock" style="flex:1">${s.locked ? ICONS.unlock + '取消锁定' : ICONS.lock + '锁定'}</button>
+        <button class="btn danger" id="btn-drawer-del" style="flex:1" ${s.locked ? 'disabled' : ''}>${ICONS.trash}删除</button>
+      </div>
+    </div>`;
+  $('[data-close-drawer]', panel).addEventListener('click', closeDrawer);
+  $('#btn-save-note').addEventListener('click', () => {
+    s.note = $('#drawer-note').value.trim();
+    render(); renderDrawer(); toast('备注已保存', 'ok');
+  });
+  $('#btn-drawer-restore').addEventListener('click', () => { closeDrawer(); openRestore(g.id, s.id); });
+  $('#btn-drawer-lock').addEventListener('click', () => toggleLock(g.id, s.id));
+  $('#btn-drawer-del').addEventListener('click', () => {
+    if (s.locked) return toast('锁定快照不能删除，请先取消锁定', 'warn');
+    closeDrawer(); openDelete(g.id, s.id);
+  });
+}
+function closeDrawer() { $('#drawer').classList.remove('show'); drawerOpenFor = null; }
+
+/* ---------- 删除确认 ---------- */
+function openDelete(gameId, snapId) {
+  const s = findSnap(gameId, snapId);
+  if (!s) return;
+  if (s.locked) return toast('锁定快照不能删除，请先取消锁定', 'warn');
+  STATE.activeGameId = gameId; STATE.activeSnapId = snapId;
+  $('#del-text').innerHTML = `将删除快照「${esc(s.note || '未命名快照')}」（${esc(s.createdAt)}）。<br/>删除后该版本将无法恢复。`;
+  openOverlay('ov-delete');
+}
+$('#btn-confirm-del').addEventListener('click', () => {
+  const g = STATE.games.find((x) => x.id === STATE.activeGameId);
+  if (g) {
+    g.snapshots = g.snapshots.filter((s) => s.id !== STATE.activeSnapId);
+    render();
+  }
+  closeOverlay('ov-delete');
+  toast('快照已删除', 'ok');
+});
+
+/* ---------- 恢复流程（安全主线） ---------- */
+function openRestore(gameId, snapId) {
+  STATE.activeGameId = gameId; STATE.activeSnapId = snapId;
+  renderRestoreConfirm();
+  openOverlay('ov-restore');
+}
+
+function renderRestoreConfirm() {
+  const g = STATE.games.find((x) => x.id === STATE.activeGameId);
+  const s = findSnap(STATE.activeGameId, STATE.activeSnapId);
+  $('#restore-modal').innerHTML = `
+    <div class="modal-head">
+      <h3>恢复到这个存档版本？</h3>
+      <button class="iconbtn" data-close="ov-restore">${ICONS.close}</button>
+    </div>
+    <div class="modal-body">
+      <div class="kv"><span class="k">游戏</span><span class="v">${esc(g.name)}</span></div>
+      <div class="kv"><span class="k">目标版本</span><span class="v">${esc(s.createdAt)} ${esc(s.note || '未命名快照')}</span></div>
+
+      <div class="callout warn">
+        ${ICONS.shield}
+        <div>
+          <div style="font-weight:600;margin-bottom:2px">SaveLink 将执行以下操作</div>
+          <ol class="ol">
+            <li>先自动备份当前真实存档。</li>
+            <li>再把目标版本恢复到游戏存档目录（会覆盖当前文件）。</li>
+            <li>恢复完成后，你仍然可以恢复「恢复前自动备份」。</li>
+          </ol>
+        </div>
+      </div>
+
+      <div class="target-box">
+        <div style="font-size:12px;color:var(--text-3);margin-bottom:4px">当前存档目录</div>
+        <div class="mono" style="font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px">${esc(g.paths[0])}</div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn" data-close="ov-restore">取消</button>
+      <button class="btn primary" id="btn-do-restore">${ICONS.shield}备份当前存档并恢复</button>
+    </div>`;
+  bindCloseButtons($('#restore-modal'));
+  $('#btn-do-restore').addEventListener('click', () => runRestore(g, s));
+}
+
+function runRestore(g, target) {
+  const steps = [
+    { key: 'backup', label: '备份当前存档' },
+    { key: 'restore', label: '恢复目标版本' },
+    { key: 'verify', label: '校验恢复结果' },
+  ];
+  let current = 0;
+  const draw = () => {
+    $('#restore-modal').innerHTML = `
+      <div class="modal-head"><h3>正在恢复</h3></div>
+      <div class="modal-body">
+        <div class="steps">
+          ${steps.map((st, i) => {
+            const cls = i < current ? 'done' : i === current ? 'active' : 'pending';
+            const ic = i < current ? ICONS.check : i === current ? `<span class="spin" style="display:inline-flex">${ICONS.loader}</span>` : '';
+            return `<div class="step ${cls}"><span class="si">${ic}</span><span>${i < current ? '已' + st.label : i === current ? '正在' + st.label : st.label}</span></div>`;
+          }).join('')}
+        </div>
+        <div class="callout info" style="margin-top:16px">${ICONS.alert}<div>请不要在恢复过程中启动游戏。</div></div>
+      </div>`;
+  };
+  draw();
+  const tick = () => {
+    current++;
+    if (current <= steps.length) { draw(); setTimeout(tick, 750); }
+    else finishRestore(g, target);
+  };
+  setTimeout(tick, 750);
+}
+
+function finishRestore(g, target) {
+  // 安全规则：恢复前自动生成 before_restore 快照
+  const backup = makeSnap({
+    createdAt: nowStamp(), note: '恢复前自动备份', reason: 'before_restore',
+    fileCount: g.snapshots[0] ? g.snapshots[0].fileCount : target.fileCount,
+    totalSize: g.snapshots[0] ? g.snapshots[0].totalSize : target.totalSize,
+  });
+  g.snapshots.unshift(backup);
+  render();
+  $('#restore-modal').innerHTML = `
+    <div class="modal-head"><h3>恢复完成</h3></div>
+    <div class="modal-body">
+      <div class="callout ok">${ICONS.checkCircle}
+        <div>已恢复到：<strong>${esc(target.createdAt)} ${esc(target.note || '未命名快照')}</strong></div>
+      </div>
+      <div style="margin-top:14px;font-size:13px;color:var(--text-2)">
+        恢复前的当前存档已自动保存为：
+        <div style="margin-top:6px;padding:10px 12px;background:#fafbfc;border:1px solid var(--border);border-radius:var(--radius);font-weight:600;color:var(--text)">
+          ${ICONS.shield} ${esc(backup.createdAt)} 恢复前自动备份
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn primary" data-close="ov-restore">回到时间线</button>
+    </div>`;
+  bindCloseButtons($('#restore-modal'));
+  toast('恢复完成，已生成恢复前自动备份', 'ok');
+}
+
+/* ---------- 添加游戏 ---------- */
+function openAddGame() {
+  $('#add-name').value = '';
+  $('#add-path').value = 'C:\\Users\\daiq\\AppData\\Roaming\\EldenRing\\76561198...';
+  $('#add-readout').className = 'hint muted';
+  $('#add-readout').textContent = '点击「测试读取」检测该目录中的存档文件。';
+  openOverlay('ov-add');
+}
+$('#btn-test-read').addEventListener('click', () => {
+  const ro = $('#add-readout');
+  ro.className = 'hint muted';
+  ro.innerHTML = `<span class="spin" style="display:inline-flex">${ICONS.loader}</span>正在读取目录…`;
+  setTimeout(() => {
+    ro.className = 'hint ok';
+    ro.innerHTML = `${ICONS.checkCircle}已检测到：3 个文件，12.4 MB`;
+  }, 600);
+});
+$('#btn-pick-dir').addEventListener('click', () => toast('选择目录：桌面版会调用系统目录选择器', 'warn'));
+$('#btn-change-repo').addEventListener('click', () => toast('更改仓库位置：demo 中使用默认位置', 'warn'));
+$('#btn-save-game').addEventListener('click', () => {
+  const name = $('#add-name').value.trim();
+  const path = $('#add-path').value.trim();
+  if (!name) return toast('请填写游戏名称', 'err');
+  if (!path) return toast('请至少选择一个存档目录', 'err');
+  const g = {
+    id: uid('g'), name, cover: name[0] || '游', status: 'ok',
+    paths: [path], repo: 'D:\\SaveLink\\Repository', snapshots: [],
+  };
+  STATE.games.push(g);
+  STATE.selectedGameId = g.id;
+  closeOverlay('ov-add');
+  render();
+  toast('游戏已添加，去创建第一个快照吧', 'ok');
+});
+
+/* ---------- overlay 通用控制 ---------- */
+function openOverlay(id) { $('#' + id).classList.add('show'); }
+function closeOverlay(id) { $('#' + id).classList.remove('show'); }
+function bindCloseButtons(root) {
+  $$('[data-close]', root).forEach((b) => b.addEventListener('click', () => closeOverlay(b.dataset.close)));
+}
+bindCloseButtons(document);
+$$('.overlay').forEach((ov) => ov.addEventListener('click', (e) => { if (e.target === ov) ov.classList.remove('show'); }));
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { $$('.overlay').forEach((o) => o.classList.remove('show')); closeDrawer(); closeMenu(); }
+});
+document.addEventListener('click', (e) => { if (!e.target.closest('#ctx-menu') && !e.target.closest('[data-act="more"]')) closeMenu(); });
+$('[data-close-drawer]', $('#drawer')).addEventListener('click', closeDrawer);
+
+/* ---------- 顶栏 / 侧栏静态图标与按钮 ---------- */
+$('#i-logo').innerHTML = ICONS.history;
+$('#btn-settings').innerHTML = ICONS.settings;
+$('#btn-help').innerHTML = ICONS.help;
+$('#btn-add-side').innerHTML = ICONS.plus;
+$('#i-close-add').innerHTML = ICONS.close;
+$('#i-close-del').innerHTML = ICONS.close;
+$('.ic-folder', $('#btn-pick-dir')).innerHTML = ICONS.folder;
+$('.ic-search', $('#btn-test-read')).innerHTML = ICONS.search;
+$('.ic-alert', $('#ov-delete')).innerHTML = ICONS.alert;
+$('#btn-add-side').addEventListener('click', openAddGame);
+$('#btn-settings').addEventListener('click', () => toast('设置：MVP 中为占位入口', 'warn'));
+$('#btn-help').addEventListener('click', () => toast('帮助文档：后续补充', 'warn'));
+
+/* ---------- 启动 ---------- */
+render();
+</script>
+</body>
+</html>
+
+
