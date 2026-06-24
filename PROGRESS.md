@@ -1,5 +1,11 @@
 # SaveLink 开发进度
 
+## 版本历史
+
+| 版本 | 修改人 | 时间 | 备注 |
+| --- | --- | --- | --- |
+| 1.0 | 代强 | 2026-06-24 | 补齐版本历史，清理过期路线状态，统一为 MVP 已完成并打包 |
+
 > 持久化的路线图与当前位置。上下文压缩不影响此文件——以它为准。
 > 最后更新：2026-06-24（第 6 步完成，全流程跑通）
 
@@ -43,7 +49,7 @@ savelink-app/src-tauri/target/release/
 - 阶段4云端：百度网盘/WebDAV/NAS（只同步快照仓库，绝不碰真实存档）
 - 应用图标换成自定义（当前是 Tauri 默认图标）
 
-## 用户验证清单（第 5 步，在本机跑）
+## 用户验证清单（MVP 真机试用 / 回归验证）
 
 ```
 cd savelink-app
@@ -62,7 +68,7 @@ npm run tauri dev        # 弹出真 SaveLink 窗口
 > 注：原"第4步 前后端接通"已拆成 **第4步 写 React 前端** + **第5步 接线**，
 > 让"写前端"成为独立显眼的一步。打包顺延为第6步。
 
-## 五步路线图
+## 六步路线图（已完成）
 
 ### 第 1 步：补完核心逻辑（B 组恢复 + E 组自检）✅ 已完成
 - 实现了 `RestoreService::restore_snapshot`（备份→同盘原子 rename 替换→校验）、
@@ -90,38 +96,37 @@ npm run tauri dev        # 弹出真 SaveLink 窗口
 - 命令清单：list_games / list_snapshots / scan_path / add_game / create_snapshot /
   update_snapshot_meta / delete_snapshot / restore_snapshot。
 - Rust 编译通过；前端依赖已装、`npm run build` 通过。
-- 待用户本机验证：`npm run tauri dev` 弹真窗口（需 GUI 桌面，当前环境无法跑）。
+- 真 Tauri 窗口已完成接线验证；后续改动仍需用 `npm run tauri dev` 做回归。
 
 ### 第 4 步：用 React 实现前端 ✅ 已完成
 - 照 `demo-front-1` 原型图，在 `savelink-app/src/` 用 React 实现全部页面与交互。
-- 文件结构：`lib/types.ts`（与 Rust DTO 对齐）、`lib/api.ts`（**数据访问抽象层，当前 mock**，
-  第 5 步的替换点）、`lib/format.ts`、`lib/icons.tsx`（内联 SVG）、`App.css`（设计令牌）、
+- 文件结构：`lib/types.ts`（与 Rust DTO 对齐）、`lib/api.ts`（**数据访问抽象层，已接 Tauri invoke**）、
+  `lib/format.ts`、`lib/icons.tsx`（内联 SVG）、`App.css`（设计令牌）、
   `App.tsx`（主壳）、`components/`（Toast / AddGameDialog / RestoreDialog / SnapshotDrawer）。
-- **关键设计**：组件只调用 `api.ts`，不直接碰 invoke。第 5 步只改 api.ts 每个函数体
-  （mock 数组 → await invoke），组件一行不用动。
-- 浏览器验证（Vite dev + Preview 工具）：5 页面渲染正确、创建快照真新增时间线、
-  恢复确认弹窗+三步进度+自动生成 before_restore 全部跑通，零控制台错误。
+- **关键设计**：组件只调用 `api.ts`，不直接碰 invoke。后续换后端/加命令也先从 `api.ts` 收口。
+- 浏览器验证（Vite dev + Preview 工具）：5 页面渲染正确；真接线后由 Tauri 窗口验证核心流程。
 - `npm run build`（tsc + vite）通过。
 
-### 第 5 步：前后端接线 ⬅ 下一步
-- 把 `lib/api.ts` 里每个函数从操作 mock 数组，改成 `await invoke("命令名", {参数})`。
-- 竖切逐条打通：添加游戏→看列表 → 创建快照 → 恢复。每通一条在真窗口验一次。
-- 目录选择器（原型里"选择目录"假按钮）在此接系统对话框（tauri-plugin-dialog）。
-- 处理真实边界：目录权限、大文件、游戏运行时文件锁。
-- 注意：此步必须在 `npm run tauri dev`（真 Tauri 窗口）下验证，纯 Vite 没有 invoke。
+### 第 5 步：前后端接线 ✅ 已完成
+- `lib/api.ts` 已从 mock 数组改成 `await invoke("命令名", {参数})`，组件层无需直接感知 Tauri。
+- 已竖切打通：添加游戏 → 游戏列表 → 创建快照 → 时间线刷新 → 快照抽屉 → 恢复。
+- 目录选择器已接系统对话框（`tauri-plugin-dialog`）。
+- 真窗口验证已覆盖：加游戏、测试读取、创建快照、查看抽屉、恢复并生成 before_restore。
+- 后续仍需继续加强真实边界：目录权限、大文件、游戏运行时文件锁、恢复进度事件、缺失目录用户选择。
 
-### 第 6 步：打包 + 真机测试
-- 打包 Windows .exe；用真实游戏存档走完整流程。
-- 验收：能发给别人安装使用。
+### 第 6 步：打包 + 真机测试 ✅ 已完成
+- 已打包 Windows 独立 exe、MSI、NSIS 安装包。
+- 验收状态：可安装试用；建议先用测试目录或非关键游戏存档验证，不要一上来指向唯一真实存档。
 
 ## 关键事实（防遗忘）
 
 - 工作目录：`D:\door\codex_workspace\save_link`
-- 核心 crate：`savelink-core/`（零依赖、可离线 `cargo test`）
+- 核心 crate：`savelink-core/`（纯 Rust 逻辑，不依赖 Tauri；使用 `rusqlite 0.32 bundled` 持久化）
 - 原型图：`demo-front-1/index.html`（单文件、纯 mock，当高保真原型用，不是真前端）
 - 五份文档：mvp-product-prototype / low-fidelity-wireframe / visual-interaction-guidelines
   / tech-architecture / restore-test-spec
-- 已实现(真)：model / error / scan / service / store::FsStore
-- 仍是替身(假)：repo::InMemoryRepo（内存）、store::FsStore（复制目录而非 zip）、testkit（仅测试）
-- Codex 暂不参与开发，按本路线图由 Claude 推进。
+- 已实现(真)：model / error / scan / service / store::FsStore / repo::SqliteRepo / Tauri commands / React invoke 接线
+- 测试/辅助：repo::InMemoryRepo 仅保留作测试替身；testkit 仅测试使用
+- MVP 技术债：store::FsStore 是目录复制而非 zip，后续可替换为 ZipStore/ResticStore
+- 交接：详见 `HANDOFF-codex.md`。Claude 负责方向/验收，Codex 可按交接文档执行开发任务。
 - 进度的客观判据：`cargo test` 红绿灯 + 文件是否存在，不依赖记忆。

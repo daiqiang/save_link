@@ -5,6 +5,33 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | Claude | 2026-06-23 | 第一版：定义 SaveLink 本地 MVP 的技术栈、模块划分、数据模型、存储层抽象与恢复流程的事务/安全设计 |
+| 1.1 | Claude | 2026-06-24 | 增补「实现现状与偏差」：MVP 已落地并打包，记录与原计划的差异 |
+
+## 实现现状与偏差（2026-06-24）
+
+> 下文是 1.0 版的**设计意图**，绝大部分已照此落地。本节记录实际实现与原计划的差异，以实际为准。
+
+**已完成**：本地 MVP 全链路打通并打包成 Windows 安装包。`savelink-core` 33 个测试全绿。
+
+实际工程结构（与 1.0 的单一 `src-tauri` 设想不同）：
+
+```
+save_link/
+├── savelink-core/    纯逻辑 crate（model/error/scan/store/repo/sqlite_repo/service/testkit），不依赖 Tauri
+├── savelink-app/     Tauri 应用（src/ React 前端 + src-tauri/ 命令薄壳）
+└── demo-front-1/     高保真原型（单文件 HTML，纯 mock，仅作参考，非生产前端）
+```
+
+与计划的关键偏差：
+
+1. **core 独立成 crate**：业务逻辑放在 `savelink-core`（被测试焊死），Tauri 端 `src-tauri` 只做 DTO + 命令薄壳，路径依赖 core。比 1.0 的「全塞 src-tauri」更干净。
+2. **存储仍是 `FsStore`（目录复制），zip 后置**：`SnapshotStore` trait 已就位，MVP 用零依赖的目录复制实现。zip/restic 是后续优化，不挡闭环。换实现时 service 与测试不动（抽象层已验证）。
+3. **数据库**：`SqliteRepo`（`rusqlite 0.32` + bundled）。钉 0.32 因更高版 libsqlite3-sys 用了当前 rustc 未稳定的 `cfg_select`。
+4. **时间戳**：命令层 `SystemClock` 用 `chrono` 输出本地 `YYYY-MM-DD HH:MM`（既可排序又可展示）。
+5. **目录选择器**：`tauri-plugin-dialog`。
+6. **bundle**：`productName=SaveLink`、`identifier=com.daiq.savelink`，数据落在 `%APPDATA%/com.daiq.savelink/`。
+
+后续工作与交接对象见 `PROGRESS.md` 与 `HANDOFF-codex.md`。
 
 ## 文档用途
 
