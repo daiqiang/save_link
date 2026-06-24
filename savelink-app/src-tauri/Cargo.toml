@@ -26,4 +26,5 @@ serde_json = "1"
 # 纯逻辑核心：被 33 个测试焊死，不依赖 Tauri。这里只做薄壳包装。
 savelink-core = { path = "../../savelink-core" }
 tauri-plugin-dialog = "2.7.1"
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 

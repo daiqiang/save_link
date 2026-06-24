@@ -14,14 +14,12 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// 真实时钟：输出 "YYYY-MM-DD HH:MM" 形式（与前端展示一致）。
+/// 真实时钟：输出本地时间 "YYYY-MM-DD HH:MM"。
+/// 该格式既能按字符串正确排序（时间线倒序依赖此），又便于前端直接展示。
 struct SystemClock;
 impl Clock for SystemClock {
     fn now_stamp(&self) -> String {
-        // 简单本地时间戳；正式版可换 chrono。这里用 UTC 秒数粗略格式化占位。
-        let secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
-        // 仅用于排序/显示的单调字符串；第 4 步接前端时再细化为本地时区格式。
-        format!("ts_{secs}")
+        chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
     }
 }
 

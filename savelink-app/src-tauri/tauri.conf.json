@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "savelink-app",
+  "productName": "SaveLink",
   "version": "0.1.0",
-  "identifier": "com.daiq.savelink-app",
+  "identifier": "com.daiq.savelink",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",
@@ -12,9 +12,11 @@
   "app": {
     "windows": [
       {
-        "title": "savelink-app",
-        "width": 800,
-        "height": 600
+        "title": "SaveLink",
+        "width": 1100,
+        "height": 720,
+        "minWidth": 880,
+        "minHeight": 560
       }
     ],
     "security": {
