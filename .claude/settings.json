@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(xxd *)",
+      "Bash(npm view *)",
+      "Bash(npm show *)",
+      "Bash(rustup show*)",
+      "Bash(rustup toolchain list*)",
+      "Bash(cargo --version)",
+      "Bash(rustc --version)"
+    ]
+  }
+}

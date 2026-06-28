@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { Icon } from "../lib/icons";
 import { formatSize } from "../lib/format";
@@ -20,6 +20,21 @@ export function AddGameDialog({ onClose, onCreated }: Props) {
     text: "点击「测试读取」检测该目录中的存档文件。",
   });
   const [saving, setSaving] = useState(false);
+  const [repositoryPath, setRepositoryPath] = useState("");
+
+  useEffect(() => {
+    let alive = true;
+    api.getRepositoryPath()
+      .then((p) => {
+        if (alive) setRepositoryPath(p);
+      })
+      .catch(() => {
+        if (alive) setRepositoryPath("应用默认仓库位置");
+      });
+    return () => {
+      alive = false;
+    };
+  }, []);
 
   async function pickDir() {
     const picked = await open({ directory: true, multiple: false, title: "选择存档目录" });
@@ -82,7 +97,11 @@ export function AddGameDialog({ onClose, onCreated }: Props) {
           </div>
           <div className="field">
             <label>快照仓库</label>
-            <div className="target-box"><span className="path-mono">使用默认位置：D:\SaveLink\Repository</span></div>
+            <div className="target-box">
+              <span className="path-mono">
+                使用默认位置：{repositoryPath || "正在获取默认位置…"}
+              </span>
+            </div>
           </div>
         </div>
         <div className="modal-foot">

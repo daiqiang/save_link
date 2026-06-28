@@ -17,6 +17,9 @@ interface Props {
 export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, onDelete }: Props) {
   const toast = useToast();
   const [note, setNote] = useState(snapshot.note ?? "");
+  // 用本地 locked 状态：toggle 后立刻同步抽屉内的按钮/状态/删除禁用，
+  // 否则抽屉读的是打开时的 snapshot prop（refresh 不会更新它），按钮文案会和时间线不一致。
+  const [locked, setLocked] = useState(snapshot.locked);
 
   async function saveNote() {
     await api.updateSnapshotMeta(snapshot.id, note.trim(), null);
@@ -24,9 +27,11 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
     toast("备注已保存", "ok");
   }
   async function toggleLock() {
-    await api.updateSnapshotMeta(snapshot.id, null, !snapshot.locked);
+    const next = !locked;
+    await api.updateSnapshotMeta(snapshot.id, null, next);
+    setLocked(next);
     onChanged();
-    toast(snapshot.locked ? "已取消锁定" : "快照已锁定，不会被自动清理", "ok");
+    toast(next ? "快照已锁定，不会被自动清理" : "已取消锁定", "ok");
   }
 
   return (
@@ -53,7 +58,7 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
             <div className="mrow"><span className="mk">文件数量</span><span>{snapshot.file_count}</span></div>
             <div className="mrow"><span className="mk">总大小</span><span>{formatSize(snapshot.total_size)}</span></div>
             <div className="mrow"><span className="mk">创建原因</span><span>{REASON_LABEL[snapshot.reason]}</span></div>
-            <div className="mrow"><span className="mk">状态</span><span>{snapshot.locked ? "已锁定" : "正常"}</span></div>
+            <div className="mrow"><span className="mk">状态</span><span>{locked ? "已锁定" : "正常"}</span></div>
           </div>
 
           <div style={{ marginTop: 16 }}>
@@ -67,10 +72,10 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
           </button>
           <div style={{ display: "flex", gap: 10 }}>
             <button className="btn" style={{ flex: 1 }} onClick={toggleLock}>
-              {snapshot.locked ? <><Icon.Unlock /> 取消锁定</> : <><Icon.Lock /> 锁定</>}
+              {locked ? <><Icon.Unlock /> 取消锁定</> : <><Icon.Lock /> 锁定</>}
             </button>
-            <button className="btn danger" style={{ flex: 1 }} disabled={snapshot.locked}
-              onClick={() => snapshot.locked ? toast("锁定快照不能删除，请先取消锁定", "warn") : onDelete(snapshot)}>
+            <button className="btn danger" style={{ flex: 1 }} disabled={locked}
+              onClick={() => locked ? toast("锁定快照不能删除，请先取消锁定", "warn") : onDelete(snapshot)}>
               <Icon.Trash /> 删除
             </button>
           </div>

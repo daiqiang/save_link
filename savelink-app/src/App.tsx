@@ -24,6 +24,8 @@ function SaveLink() {
   const [menu, setMenu] = useState<{ snap: Snapshot; x: number; y: number } | null>(null);
 
   const selected = games.find((g) => g.id === selectedId) ?? null;
+  // 只渲染/操作属于当前所选游戏的快照，杜绝“看到或误操作到别的游戏快照”的串档风险。
+  const shown = selected ? snapshots.filter((s) => s.game_id === selected.id) : [];
 
   const loadGames = useCallback(async () => {
     const gs = await api.listGames();
@@ -36,7 +38,15 @@ function SaveLink() {
   }, []);
 
   useEffect(() => { loadGames(); }, [loadGames]);
-  useEffect(() => { if (selectedId) loadSnapshots(selectedId); }, [selectedId, loadSnapshots]);
+  // 切换游戏：先立即清空上一个游戏的残留，再按 selectedId 加载；
+  // cancelled 守卫避免“切得快时旧请求后到、把别的游戏快照回填进来”。
+  useEffect(() => {
+    if (!selectedId) { setSnapshots([]); return; }
+    let cancelled = false;
+    setSnapshots([]);
+    api.listSnapshots(selectedId).then((s) => { if (!cancelled) setSnapshots(s); });
+    return () => { cancelled = true; };
+  }, [selectedId]);
 
   // 刷新当前游戏的时间线 + 列表元数据
   const refresh = useCallback(async () => {
@@ -52,6 +62,9 @@ function SaveLink() {
       if (s === null) toast("存档未变化，未创建新快照", "warn");
       else toast("快照已创建", "ok");
       await refresh();
+    } catch (e) {
+      // 后端会返回中文错误（如“存档目录不存在”），之前没 catch 会被吞掉、用户毫无反馈。
+      toast(String(e), "err");
     } finally {
       setCreating(false);
     }
@@ -116,10 +129,10 @@ function SaveLink() {
             </div>
 
             <div className="gstats">
-              <div className="gstat"><div className="k">快照数量</div><div className="v">{snapshots.length} 个</div></div>
-              <div className="gstat"><div className="k">最近快照</div><div className="v">{snapshots[0]?.created_at ?? "—"}</div></div>
+              <div className="gstat"><div className="k">快照数量</div><div className="v">{shown.length} 个</div></div>
+              <div className="gstat"><div className="k">最近快照</div><div className="v">{shown[0]?.created_at ?? "—"}</div></div>
               <div className="gstat"><div className="k">仓库占用</div>
-                <div className="v">{formatSize(snapshots.reduce((a, s) => a + s.total_size, 0))}</div></div>
+                <div className="v">{formatSize(shown.reduce((a, s) => a + s.total_size, 0))}</div></div>
             </div>
 
             <div className="toolbar">
@@ -131,8 +144,8 @@ function SaveLink() {
 
             <div className="section-label">时间线</div>
             <div className="timeline">
-              {snapshots.length === 0 && <div className="empty-tl">还没有快照。点击「创建快照」保存当前存档状态。</div>}
-              {snapshots.map((s) => (
+              {shown.length === 0 && <div className="empty-tl">还没有快照。点击「创建快照」保存当前存档状态。</div>}
+              {shown.map((s) => (
                 <div key={s.id} className={`snap ${s.reason === "before_restore" ? "is-backup" : ""}`}
                   onClick={() => setDrawerSnap(s)}>
                   <div className="snap-main">
@@ -179,7 +192,7 @@ function SaveLink() {
       )}
 
       {showAdd && <AddGameDialog onClose={() => setShowAdd(false)}
-        onCreated={(g) => { setShowAdd(false); setSelectedId(g.id); refresh(); }} />}
+        onCreated={(g) => { setShowAdd(false); setSelectedId(g.id); loadGames(); }} />}
 
       {drawerSnap && selected && (
         <SnapshotDrawer game={selected} snapshot={drawerSnap}

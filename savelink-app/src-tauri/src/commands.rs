@@ -5,12 +5,13 @@
 //!
 //! 对照 Java BS：这一层相当于 Spring Controller，core 相当于 Service 层。
 
-use savelink_core::model::{CreateOutcome, Game, Reason, Snapshot};
+use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapshot};
 use savelink_core::repo::{Clock, IdGen, Repository};
 use savelink_core::service::{RestoreService, SnapshotService};
 use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::store::{FsStore, SnapshotStore};
 use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,6 +41,7 @@ impl IdGen for TimeIdGen {
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
     pub store: Arc<dyn SnapshotStore>,
+    pub repository_dir: PathBuf,
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdGen>,
 }
@@ -49,10 +51,12 @@ impl AppState {
     pub fn init(data_dir: &std::path::Path) -> Result<Self, String> {
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let repo = SqliteRepo::open(data_dir.join("savelink.db")).map_err(|e| e.to_string())?;
-        let store = FsStore::new(data_dir.join("repository"));
+        let repository_dir = data_dir.join("repository");
+        let store = FsStore::new(repository_dir.clone());
         Ok(Self {
             repo: Arc::new(repo),
             store: Arc::new(store),
+            repository_dir,
             clock: Arc::new(SystemClock),
             ids: Arc::new(TimeIdGen { counter: std::sync::atomic::AtomicU64::new(0) }),
         })
@@ -133,6 +137,11 @@ use tauri::State;
 pub fn list_games(state: State<'_, AppState>) -> Result<Vec<GameDto>, String> {
     let games = state.repo.list_games().map_err(|e| e.to_string())?;
     Ok(games.iter().map(|g| game_to_dto(&state.repo, g)).collect())
+}
+
+#[tauri::command]
+pub fn get_repository_path(state: State<'_, AppState>) -> Result<String, String> {
+    Ok(state.repository_dir.to_string_lossy().to_string())
 }
 
 #[tauri::command]
@@ -231,6 +240,27 @@ pub fn restore_snapshot(
     let out = state
         .restorer()
         .restore_snapshot(&game_id, &snapshot_id, &|_step| {})
+        .map_err(|e| e.to_string())?;
+    Ok(RestoreResultDto { target_id: out.target_id, backup_id: out.backup_id })
+}
+
+/// 真实存档目录不存在时、用户已做出决策后的续走命令（安全规则 5）。
+/// choice: "create"=创建目录并恢复；"reselect"=重新选择（暂未在 UI 接通）；其它=取消。
+#[tauri::command]
+pub fn restore_snapshot_with_choice(
+    state: State<'_, AppState>,
+    game_id: String,
+    snapshot_id: String,
+    choice: String,
+) -> Result<RestoreResultDto, String> {
+    let c = match choice.as_str() {
+        "create" => MissingDirChoice::CreateAndRestore,
+        "reselect" => MissingDirChoice::Reselect,
+        _ => MissingDirChoice::Cancel,
+    };
+    let out = state
+        .restorer()
+        .restore_with_choice(&game_id, &snapshot_id, c, &|_step| {})
         .map_err(|e| e.to_string())?;
     Ok(RestoreResultDto { target_id: out.target_id, backup_id: out.backup_id })
 }

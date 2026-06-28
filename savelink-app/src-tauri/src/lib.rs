@@ -21,6 +21,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
+            commands::get_repository_path,
             commands::list_snapshots,
             commands::scan_path,
             commands::add_game,
@@ -28,6 +29,7 @@ pub fn run() {
             commands::update_snapshot_meta,
             commands::delete_snapshot,
             commands::restore_snapshot,
+            commands::restore_snapshot_with_choice,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

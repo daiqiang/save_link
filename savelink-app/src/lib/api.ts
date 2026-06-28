@@ -11,6 +11,10 @@ export async function listGames(): Promise<Game[]> {
   return invoke<Game[]>("list_games");
 }
 
+export async function getRepositoryPath(): Promise<string> {
+  return invoke<string>("get_repository_path");
+}
+
 export async function listSnapshots(gameId: string): Promise<Snapshot[]> {
   return invoke<Snapshot[]>("list_snapshots", { gameId });
 }
@@ -42,4 +46,13 @@ export async function deleteSnapshot(snapshotId: string): Promise<void> {
 
 export async function restoreSnapshot(gameId: string, snapshotId: string): Promise<RestoreResult> {
   return invoke<RestoreResult>("restore_snapshot", { gameId, snapshotId });
+}
+
+// 存档目录缺失时的“用户已决策”续走：choice = "create" | "reselect" | "cancel"。
+export async function restoreSnapshotWithChoice(
+  gameId: string,
+  snapshotId: string,
+  choice: "create" | "reselect" | "cancel",
+): Promise<RestoreResult> {
+  return invoke<RestoreResult>("restore_snapshot_with_choice", { gameId, snapshotId, choice });
 }
