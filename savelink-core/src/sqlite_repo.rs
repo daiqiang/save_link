@@ -206,6 +206,25 @@ impl Repository for SqliteRepo {
         Ok(out)
     }
 
+    fn update_game(&self, game: Game) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE games SET name=?2, icon=?3, repo_path=?4, save_paths=?5, created_at=?6, updated_at=?7
+             WHERE id=?1",
+            params![
+                game.id,
+                game.name,
+                game.icon,
+                game.repo_path.to_string_lossy(),
+                paths_to_str(&game.save_paths),
+                game.created_at,
+                game.updated_at,
+            ],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
     fn insert_snapshot(&self, s: Snapshot) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(

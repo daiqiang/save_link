@@ -25,6 +25,7 @@ pub fn run() {
             commands::list_snapshots,
             commands::scan_path,
             commands::add_game,
+            commands::update_game,
             commands::create_snapshot,
             commands::update_snapshot_meta,
             commands::delete_snapshot,

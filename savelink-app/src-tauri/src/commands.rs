@@ -194,6 +194,40 @@ pub fn add_game(
 }
 
 #[tauri::command]
+pub fn update_game(
+    state: State<'_, AppState>,
+    game_id: String,
+    name: String,
+    save_paths: Vec<String>,
+) -> Result<GameDto, String> {
+    if name.trim().is_empty() {
+        return Err("游戏名称不能为空".into());
+    }
+    if save_paths.is_empty() {
+        return Err("请至少选择一个存档目录".into());
+    }
+    let trimmed_paths: Vec<String> = save_paths
+        .into_iter()
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    if trimmed_paths.is_empty() {
+        return Err("请至少选择一个存档目录".into());
+    }
+
+    let mut game = state
+        .repo
+        .get_game(&game_id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "游戏不存在".to_string())?;
+    game.name = name.trim().to_string();
+    game.save_paths = trimmed_paths.into_iter().map(std::path::PathBuf::from).collect();
+    game.updated_at = state.clock.now_stamp();
+    state.repo.update_game(game.clone()).map_err(|e| e.to_string())?;
+    Ok(game_to_dto(&state.repo, &game))
+}
+
+#[tauri::command]
 pub fn create_snapshot(
     state: State<'_, AppState>,
     game_id: String,

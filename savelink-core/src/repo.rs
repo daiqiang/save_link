@@ -13,6 +13,7 @@ pub trait Repository: Send + Sync {
     fn insert_game(&self, game: Game) -> Result<()>;
     fn get_game(&self, game_id: &str) -> Result<Option<Game>>;
     fn list_games(&self) -> Result<Vec<Game>>;
+    fn update_game(&self, game: Game) -> Result<()>;
 
     fn insert_snapshot(&self, snap: Snapshot) -> Result<()>;
     fn get_snapshot(&self, snapshot_id: &str) -> Result<Option<Snapshot>>;
@@ -109,6 +110,13 @@ impl Repository for InMemoryRepo {
     }
     fn list_games(&self) -> Result<Vec<Game>> {
         Ok(self.games.lock().unwrap().clone())
+    }
+    fn update_game(&self, game: Game) -> Result<()> {
+        let mut games = self.games.lock().unwrap();
+        if let Some(slot) = games.iter_mut().find(|g| g.id == game.id) {
+            *slot = game;
+        }
+        Ok(())
     }
     fn insert_snapshot(&self, snap: Snapshot) -> Result<()> {
         self.snaps.lock().unwrap().push(snap);

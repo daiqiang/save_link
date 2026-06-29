@@ -6,6 +6,7 @@ import * as api from "./lib/api";
 import type { Game, Snapshot } from "./lib/types";
 import { ToastProvider, useToast } from "./components/Toast";
 import { AddGameDialog } from "./components/AddGameDialog";
+import { EditGameDialog } from "./components/EditGameDialog";
 import { RestoreDialog } from "./components/RestoreDialog";
 import { SnapshotDrawer } from "./components/SnapshotDrawer";
 
@@ -18,6 +19,7 @@ function SaveLink() {
 
   // 弹窗 / 抽屉 / 菜单状态
   const [showAdd, setShowAdd] = useState(false);
+  const [editingGame, setEditingGame] = useState<Game | null>(null);
   const [drawerSnap, setDrawerSnap] = useState<Snapshot | null>(null);
   const [restoreSnap, setRestoreSnap] = useState<Snapshot | null>(null);
   const [deleteSnap, setDeleteSnap] = useState<Snapshot | null>(null);
@@ -139,7 +141,7 @@ function SaveLink() {
               <button className="btn primary" onClick={createSnapshot} disabled={creating}>
                 {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
               </button>
-              <button className="btn" onClick={() => toast("编辑游戏：demo 暂未实现", "warn")}><Icon.Edit /> 编辑游戏</button>
+              <button className="btn" onClick={() => setEditingGame(selected)}><Icon.Edit /> 编辑游戏</button>
             </div>
 
             <div className="section-label">时间线</div>
@@ -193,6 +195,14 @@ function SaveLink() {
 
       {showAdd && <AddGameDialog onClose={() => setShowAdd(false)}
         onCreated={(g) => { setShowAdd(false); setSelectedId(g.id); loadGames(); }} />}
+
+      {editingGame && <EditGameDialog game={editingGame}
+        onClose={() => setEditingGame(null)}
+        onSaved={(g) => {
+          setEditingGame(null);
+          setSelectedId(g.id);
+          loadGames();
+        }} />}
 
       {drawerSnap && selected && (
         <SnapshotDrawer game={selected} snapshot={drawerSnap}

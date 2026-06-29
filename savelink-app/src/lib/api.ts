@@ -29,6 +29,10 @@ export async function addGame(name: string, savePaths: string[]): Promise<Game> 
   return invoke<Game>("add_game", { name, savePaths });
 }
 
+export async function updateGame(gameId: string, name: string, savePaths: string[]): Promise<Game> {
+  return invoke<Game>("update_game", { gameId, name, savePaths });
+}
+
 // 返回 null 表示"存档未变化"（Rust 端 NoChange 映射为 None → JS null）。
 export async function createSnapshot(gameId: string, note: string | null): Promise<Snapshot | null> {
   return invoke<Snapshot | null>("create_snapshot", { gameId, note });

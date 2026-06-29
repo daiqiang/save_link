@@ -6,10 +6,12 @@
 mod common;
 
 use common::*;
+use savelink_core::model::Game;
 use savelink_core::model::{CreateOutcome, Reason};
 use savelink_core::repo::Repository;
 use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::testkit::TempDir;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 #[test]
@@ -64,4 +66,39 @@ fn f2_enum_roundtrip_through_sql() {
     let got = h.repo.get_snapshot(&s.id).unwrap().unwrap();
     assert_eq!(got.reason, Reason::BeforeRestore, "F2: before_restore 经 SQL 往返应不变");
     assert!(got.locked, "F2: locked 经 SQL 往返应不变");
+}
+
+#[test]
+fn f3_game_update_survives_reopen() {
+    let tmp = TempDir::new();
+    let db_path = tmp.path().join("db3.db");
+    let new_save = tmp.child("new-save");
+
+    {
+        let repo = SqliteRepo::open(&db_path).unwrap();
+        let game = Game {
+            id: "g_edit".into(),
+            name: "旧名称".into(),
+            icon: None,
+            repo_path: tmp.path().join("repo"),
+            save_paths: vec![tmp.child("old-save")],
+            created_at: "2026-06-23 00:00".into(),
+            updated_at: "2026-06-23 00:00".into(),
+        };
+        repo.insert_game(game.clone()).unwrap();
+
+        let mut edited = game;
+        edited.name = "新名称".into();
+        edited.save_paths = vec![new_save.clone()];
+        edited.updated_at = "2026-06-23 00:01".into();
+        repo.update_game(edited).unwrap();
+    }
+
+    {
+        let repo = SqliteRepo::open(&db_path).unwrap();
+        let got = repo.get_game("g_edit").unwrap().unwrap();
+        assert_eq!(got.name, "新名称", "F3: 游戏名称修改应持久化");
+        assert_eq!(got.save_paths, vec![PathBuf::from(new_save)], "F3: 存档目录修改应持久化");
+        assert_eq!(got.updated_at, "2026-06-23 00:01", "F3: 更新时间应持久化");
+    }
 }
