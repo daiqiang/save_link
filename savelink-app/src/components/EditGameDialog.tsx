@@ -10,9 +10,10 @@ interface Props {
   game: Game;
   onClose: () => void;
   onSaved: (game: Game) => void;
+  onDeleted: (game: Game) => void;
 }
 
-export function EditGameDialog({ game, onClose, onSaved }: Props) {
+export function EditGameDialog({ game, onClose, onSaved, onDeleted }: Props) {
   const toast = useToast();
   const [name, setName] = useState(game.name);
   const [path, setPath] = useState(game.save_paths[0] ?? "");
@@ -21,6 +22,8 @@ export function EditGameDialog({ game, onClose, onSaved }: Props) {
     text: "目录未检测。",
   });
   const [saving, setSaving] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   async function pickDir() {
     const picked = await open({ directory: true, multiple: false, title: "选择新的存档目录" });
@@ -59,6 +62,19 @@ export function EditGameDialog({ game, onClose, onSaved }: Props) {
     }
   }
 
+  async function deleteGame() {
+    setDeleting(true);
+    try {
+      await api.deleteGame(game.id);
+      toast("游戏已移除", "ok");
+      onDeleted(game);
+    } catch (e) {
+      toast(String(e), "err");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   return (
     <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <div className="modal">
@@ -91,12 +107,44 @@ export function EditGameDialog({ game, onClose, onSaved }: Props) {
           </div>
         </div>
         <div className="modal-foot">
+          <button className="btn danger" onClick={() => setConfirmingDelete(true)} disabled={saving}>
+            <Icon.Trash /> 移除游戏
+          </button>
+          <div className="spacer" />
           <button className="btn" onClick={onClose}>取消</button>
           <button className="btn primary" onClick={save} disabled={saving}>
             {saving ? "保存中…" : "保存修改"}
           </button>
         </div>
       </div>
+      {confirmingDelete && (
+        <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && setConfirmingDelete(false)}>
+          <div className="modal narrow">
+            <div className="modal-head">
+              <h3>移除游戏？</h3>
+              <button className="iconbtn" onClick={() => setConfirmingDelete(false)}><Icon.Close /></button>
+            </div>
+            <div className="modal-body">
+              <div className="callout warn">
+                <span className="ic"><Icon.Alert /></span>
+                <div>
+                  将从 SaveLink 中移除「{game.name}」及其全部快照记录和备份文件。<br />
+                  不会删除真实存档目录。
+                </div>
+              </div>
+              <div className="target-box">
+                <span className="path-mono">{game.save_paths[0] || "未设置存档目录"}</span>
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={() => setConfirmingDelete(false)} disabled={deleting}>取消</button>
+              <button className="btn danger" onClick={deleteGame} disabled={deleting}>
+                {deleting ? "移除中…" : <><Icon.Trash /> 确认移除</>}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

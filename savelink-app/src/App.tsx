@@ -8,6 +8,7 @@ import { ToastProvider, useToast } from "./components/Toast";
 import { AddGameDialog } from "./components/AddGameDialog";
 import { EditGameDialog } from "./components/EditGameDialog";
 import { RestoreDialog } from "./components/RestoreDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 import { SnapshotDrawer } from "./components/SnapshotDrawer";
 
 function SaveLink() {
@@ -19,6 +20,7 @@ function SaveLink() {
 
   // 弹窗 / 抽屉 / 菜单状态
   const [showAdd, setShowAdd] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [editingGame, setEditingGame] = useState<Game | null>(null);
   const [drawerSnap, setDrawerSnap] = useState<Snapshot | null>(null);
   const [restoreSnap, setRestoreSnap] = useState<Snapshot | null>(null);
@@ -32,7 +34,7 @@ function SaveLink() {
   const loadGames = useCallback(async () => {
     const gs = await api.listGames();
     setGames(gs);
-    setSelectedId((cur) => cur ?? gs[0]?.id ?? null);
+    setSelectedId((cur) => cur && gs.some((g) => g.id === cur) ? cur : gs[0]?.id ?? null);
   }, []);
 
   const loadSnapshots = useCallback(async (gameId: string) => {
@@ -94,7 +96,7 @@ function SaveLink() {
           SaveLink <span className="sub">本地存档时间线</span>
         </div>
         <div className="spacer" />
-        <button className="iconbtn" title="设置" onClick={() => toast("设置：MVP 占位入口", "warn")}><Icon.Settings /></button>
+        <button className="iconbtn" title="设置" onClick={() => setShowSettings(true)}><Icon.Settings /></button>
         <button className="iconbtn" title="帮助" onClick={() => toast("帮助文档：后续补充", "warn")}><Icon.Help /></button>
       </div>
 
@@ -196,11 +198,25 @@ function SaveLink() {
       {showAdd && <AddGameDialog onClose={() => setShowAdd(false)}
         onCreated={(g) => { setShowAdd(false); setSelectedId(g.id); loadGames(); }} />}
 
+      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
+
       {editingGame && <EditGameDialog game={editingGame}
         onClose={() => setEditingGame(null)}
         onSaved={(g) => {
           setEditingGame(null);
           setSelectedId(g.id);
+          loadGames();
+        }}
+        onDeleted={(g) => {
+          setEditingGame(null);
+          setDrawerSnap(null);
+          setRestoreSnap(null);
+          setDeleteSnap(null);
+          setMenu(null);
+          const remaining = games.filter((item) => item.id !== g.id);
+          setGames(remaining);
+          setSelectedId(remaining[0]?.id ?? null);
+          setSnapshots([]);
           loadGames();
         }} />}
 

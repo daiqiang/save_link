@@ -33,5 +33,12 @@ export interface RestoreResult {
   backup_id: string;
 }
 
+export interface AppInfo {
+  version: string;
+  data_dir: string;
+  repository_dir: string;
+  database_path: string;
+}
+
 // 恢复进度步骤（对应核心 RestoreStep）。
 export type RestoreStep = "backup_current" | "restore_target" | "verify";

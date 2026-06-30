@@ -5,7 +5,7 @@
 // 这就是当初让组件只依赖本层、不直接碰 invoke 的回报。
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Game, Snapshot, ScanResult, RestoreResult } from "./types";
+import type { Game, Snapshot, ScanResult, RestoreResult, AppInfo } from "./types";
 
 export async function listGames(): Promise<Game[]> {
   return invoke<Game[]>("list_games");
@@ -13,6 +13,10 @@ export async function listGames(): Promise<Game[]> {
 
 export async function getRepositoryPath(): Promise<string> {
   return invoke<string>("get_repository_path");
+}
+
+export async function getAppInfo(): Promise<AppInfo> {
+  return invoke<AppInfo>("get_app_info");
 }
 
 export async function listSnapshots(gameId: string): Promise<Snapshot[]> {
@@ -46,6 +50,10 @@ export async function updateSnapshotMeta(
 
 export async function deleteSnapshot(snapshotId: string): Promise<void> {
   return invoke("delete_snapshot", { snapshotId });
+}
+
+export async function deleteGame(gameId: string): Promise<void> {
+  return invoke("delete_game", { gameId });
 }
 
 export async function restoreSnapshot(gameId: string, snapshotId: string): Promise<RestoreResult> {

@@ -187,6 +187,23 @@ impl SnapshotService {
         self.repo.delete_snapshot(snapshot_id)?;
         Ok(())
     }
+
+    /// 删除游戏及其在 SaveLink 仓库中的全部快照。
+    ///
+    /// 不删除真实存档目录。每个快照都先删物理文件，再删对应记录；
+    /// 任一物理删除失败则中止，避免数据库指向已不存在的快照文件。
+    pub fn delete_game(&self, game_id: &str) -> Result<()> {
+        self.repo
+            .get_game(game_id)?
+            .ok_or_else(|| SaveLinkError::Io(format!("game not found: {game_id}")))?;
+        let snaps = self.repo.list_snapshots(game_id)?;
+        for snap in &snaps {
+            self.store.delete(&snap.storage_key)?;
+            self.repo.delete_snapshot(&snap.id)?;
+        }
+        self.repo.delete_game(game_id)?;
+        Ok(())
+    }
 }
 
 pub struct RestoreService {

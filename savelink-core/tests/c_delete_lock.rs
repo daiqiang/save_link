@@ -80,3 +80,36 @@ fn c4_metadata_mutable_content_immutable() {
     assert_eq!(after.file_count, snap.file_count, "C4: file_count 不可变");
     assert_eq!(after.total_size, snap.total_size, "C4: total_size 不可变");
 }
+
+#[test]
+fn c5_delete_game_removes_metadata_and_keeps_real_save() {
+    let h = Harness::new(&[("s", b"x")]);
+    let snap = create_one(&h, "待随游戏移除");
+
+    h.snapshots().delete_game(&h.game_id).expect("C5: 游戏应可移除");
+
+    assert!(h.repo.get_game(&h.game_id).unwrap().is_none(), "C5: 游戏记录应被删除");
+    assert!(h.repo.get_snapshot(&snap.id).unwrap().is_none(), "C5: 快照记录应被删除");
+    assert!(h.save_dir.join("s").exists(), "C5: 真实存档目录和文件不得被删除");
+}
+
+#[test]
+fn c6_delete_game_stops_if_snapshot_file_delete_fails() {
+    let h = Harness::with_store(&[("s", b"x")], |repo_root| {
+        let inner = Arc::new(FsStore::new(repo_root));
+        Arc::new(FailingStore::new(inner).fail(FailOp::Delete, FailKind::Error))
+    });
+    let snap = match SnapshotService::new(h.repo.clone(), h.store.clone(), h.clock.clone(), h.ids.clone())
+        .create_snapshot(&h.game_id, Some("待删".into()), Reason::Manual)
+        .unwrap()
+    {
+        CreateOutcome::Created(s) => s,
+        _ => panic!(),
+    };
+
+    let res = h.snapshots().delete_game(&h.game_id);
+
+    assert!(res.is_err(), "C6: 快照文件删除失败时应报错");
+    assert!(h.repo.get_game(&h.game_id).unwrap().is_some(), "C6: 游戏记录应保留");
+    assert!(h.repo.get_snapshot(&snap.id).unwrap().is_some(), "C6: 快照记录应保留");
+}

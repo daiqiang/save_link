@@ -41,6 +41,7 @@ impl IdGen for TimeIdGen {
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
     pub store: Arc<dyn SnapshotStore>,
+    pub data_dir: PathBuf,
     pub repository_dir: PathBuf,
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdGen>,
@@ -56,6 +57,7 @@ impl AppState {
         Ok(Self {
             repo: Arc::new(repo),
             store: Arc::new(store),
+            data_dir: data_dir.to_path_buf(),
             repository_dir,
             clock: Arc::new(SystemClock),
             ids: Arc::new(TimeIdGen { counter: std::sync::atomic::AtomicU64::new(0) }),
@@ -93,6 +95,14 @@ pub struct SnapshotDto {
     pub locked: bool,
     pub file_count: u64,
     pub total_size: u64,
+}
+
+#[derive(Serialize)]
+pub struct AppInfoDto {
+    pub version: String,
+    pub data_dir: String,
+    pub repository_dir: String,
+    pub database_path: String,
 }
 
 fn reason_str(r: Reason) -> String {
@@ -142,6 +152,16 @@ pub fn list_games(state: State<'_, AppState>) -> Result<Vec<GameDto>, String> {
 #[tauri::command]
 pub fn get_repository_path(state: State<'_, AppState>) -> Result<String, String> {
     Ok(state.repository_dir.to_string_lossy().to_string())
+}
+
+#[tauri::command]
+pub fn get_app_info(state: State<'_, AppState>) -> Result<AppInfoDto, String> {
+    Ok(AppInfoDto {
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        data_dir: state.data_dir.to_string_lossy().to_string(),
+        repository_dir: state.repository_dir.to_string_lossy().to_string(),
+        database_path: state.data_dir.join("savelink.db").to_string_lossy().to_string(),
+    })
 }
 
 #[tauri::command]
@@ -256,6 +276,11 @@ pub fn update_snapshot_meta(
 #[tauri::command]
 pub fn delete_snapshot(state: State<'_, AppState>, snapshot_id: String) -> Result<(), String> {
     state.snapshots().delete_snapshot(&snapshot_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_game(state: State<'_, AppState>, game_id: String) -> Result<(), String> {
+    state.snapshots().delete_game(&game_id).map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]

@@ -22,6 +22,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::get_repository_path,
+            commands::get_app_info,
             commands::list_snapshots,
             commands::scan_path,
             commands::add_game,
@@ -29,6 +30,7 @@ pub fn run() {
             commands::create_snapshot,
             commands::update_snapshot_meta,
             commands::delete_snapshot,
+            commands::delete_game,
             commands::restore_snapshot,
             commands::restore_snapshot_with_choice,
         ])

@@ -225,6 +225,17 @@ impl Repository for SqliteRepo {
         Ok(())
     }
 
+    fn delete_game(&self, game_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(map_err)?;
+        tx.execute("DELETE FROM snapshots WHERE game_id = ?1", params![game_id])
+            .map_err(map_err)?;
+        tx.execute("DELETE FROM games WHERE id = ?1", params![game_id])
+            .map_err(map_err)?;
+        tx.commit().map_err(map_err)?;
+        Ok(())
+    }
+
     fn insert_snapshot(&self, s: Snapshot) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
