@@ -1,4 +1,4 @@
-//! 业务服务层。**这是实现者要填的核心**，当前全部 `todo!()`（红灯）。
+//! 已实现的业务服务层。
 //!
 //! 服务不感知 Tauri。依赖通过构造注入：Repository + SnapshotStore + Clock + IdGen。
 //! 每个方法的契约注释直接对应 `savelink-restore-test-spec.md` 的用例编号。

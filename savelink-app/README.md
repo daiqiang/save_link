@@ -1,47 +1,121 @@
 # savelink-app — SaveLink 桌面应用（Tauri + React）
 
-SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，
-核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
+SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
+
+## 当前能力
+
+- 添加游戏，选择/测试读取存档目录。
+- 创建快照，未变化时不重复创建。
+- 时间线展示快照，支持备注、锁定、删除。
+- 恢复指定快照，恢复前自动备份当前真实存档。
+- 存档目录缺失时支持“创建目录并恢复”或取消。
+- 编辑游戏名称和存档路径。
+- 移除游戏（删除 SaveLink 内部记录与仓库快照，不删除真实存档目录）。
+- 设置页显示版本、数据目录、快照仓库、数据库文件，并支持打开/复制路径。
+- 可通过 `build-installer.bat` 生成绿色版 exe、NSIS、MSI。
 
 ## 结构
 
-```
+```text
 savelink-app/
-├── src/                     React 前端（TS）
-│   ├── App.tsx              主壳：顶栏 + 左栏游戏列表 + 右栏时间线
-│   ├── App.css              设计令牌 + 全部样式（工具气质，参照视觉规范）
+├── src/                         React 前端（TS）
+│   ├── App.tsx                  主壳：顶栏 + 左栏游戏列表 + 右栏时间线
+│   ├── App.css                  设计令牌 + 全部样式
 │   ├── lib/
-│   │   ├── types.ts         与 Rust DTO 对齐的类型
-│   │   ├── api.ts           ★ 数据访问层：现已调真 invoke。换后端只改这一处
-│   │   ├── format.ts        大小/标签格式化
-│   │   └── icons.tsx        内联 SVG 图标（零依赖）
-│   └── components/          Toast / AddGameDialog / RestoreDialog / SnapshotDrawer
+│   │   ├── types.ts             与 Rust DTO 对齐的类型
+│   │   ├── api.ts               数据访问层：前端唯一 invoke 收口
+│   │   ├── format.ts            大小/标签格式化
+│   │   └── icons.tsx            内联 SVG 图标
+│   └── components/
+│       ├── AddGameDialog.tsx
+│       ├── EditGameDialog.tsx
+│       ├── RestoreDialog.tsx
+│       ├── SettingsDialog.tsx
+│       ├── SnapshotDrawer.tsx
+│       └── Toast.tsx
 └── src-tauri/
     ├── src/
-    │   ├── lib.rs           Tauri 入口：注册插件、初始化 AppState、注册命令
-    │   └── commands.rs      ★ 命令层（薄壳）：DTO + AppState + 8 个 #[tauri::command]
-    ├── Cargo.toml           依赖 savelink-core、tauri-plugin-dialog、chrono、rusqlite
-    ├── tauri.conf.json      productName=SaveLink，identifier=com.daiq.savelink
-    └── capabilities/        权限（含 dialog:default 用于目录选择器）
+    │   ├── lib.rs               Tauri 入口：注册插件、初始化 AppState、注册命令
+    │   └── commands.rs          命令层（薄壳）：DTO + AppState + #[tauri::command]
+    ├── Cargo.toml               依赖 savelink-core、tauri-plugin-dialog/opener、chrono、rusqlite
+    ├── tauri.conf.json          productName=SaveLink，identifier=com.daiq.savelink
+    └── capabilities/
+        └── default.json         权限：dialog + opener scoped 到 AppData
+```
+
+## Tauri 命令清单
+
+当前前端通过 `src/lib/api.ts` 调用这些命令：
+
+```text
+list_games
+get_repository_path
+get_app_info
+list_snapshots
+scan_path
+add_game
+update_game
+create_snapshot
+update_snapshot_meta
+delete_snapshot
+delete_game
+restore_snapshot
+restore_snapshot_with_choice
 ```
 
 ## 开发 / 构建
 
 ```bash
 npm install
-npm run tauri dev      # 真桌面窗口（开发）。⚠️ 纯 npm run dev 没有 invoke，命令会报错
-npm run build          # 仅前端 tsc+vite 构建（验证前端编译）
-npm run tauri build    # 打包安装包（MSI + NSIS + 独立 exe）
+npm run tauri dev      # 真桌面窗口（开发）。纯 npm run dev 没有 Tauri invoke
+npm run build          # 前端 tsc + vite 构建
+npm run tauri build    # Tauri 打包
 ```
 
-产物：`src-tauri/target/release/`（独立 exe）与 `.../bundle/`（msi、nsis 安装包）。
-运行时数据：`%APPDATA%/com.daiq.savelink/`（savelink.db + repository/）。
+推荐打包入口：
+
+```bat
+build-installer.bat
+```
+
+它会自动定位 MSVC 环境、关闭正在运行的 SaveLink、防止 exe 占用，并生成：
+
+```text
+src-tauri/target/release/savelink-app.exe
+src-tauri/target/release/bundle/nsis/SaveLink_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
+```
+
+运行时数据：
+
+```text
+%APPDATA%\com.daiq.savelink\
+├── savelink.db
+└── repository\
+```
+
+绿色版和安装版共用同一个 Tauri identifier，所以共用同一个用户数据目录。
+
+## 权限注意
+
+设置页的“打开”按钮使用 `@tauri-apps/plugin-opener` 的 `openPath()`。
+
+Tauri 2 需要同时满足：
+
+- 命令权限：`opener:allow-open-path`
+- 路径 scope：当前只允许 `$APPDATA` 和 `$APPDATA/**`
+
+不要为了省事开放整个磁盘。当前设置页只需要打开 SaveLink 自己的数据目录和仓库目录。
 
 ## 给后续开发者 / Codex 的要点
 
-- **前端只通过 `lib/api.ts` 访问后端，不在组件里直接 `invoke`。** 加新功能时，
-  先在 api.ts 加函数（对应一个 Rust 命令），组件调它。这是当初让「假数据→真命令」一次替换的设计。
-- **新增命令的三件套**：① `savelink-core` 加/改逻辑并补测试 → ② `commands.rs` 包一层 DTO 命令
-  → ③ `lib.rs` 的 `generate_handler!` 注册 → ④ 前端 `api.ts` 加调用。
-- **DTO 必须与前端 `types.ts` 对齐**。Tauri v2 参数名用 snake_case 传递（如 `{ gameId }` 对应 `game_id`）。
-- 详细交接见 `../HANDOFF-codex.md`。
+- **前端只通过 `lib/api.ts` 访问后端，不在组件里直接 `invoke`。**
+- **新增端到端功能的链路**：
+  1. `savelink-core` 加/改逻辑并补测试。
+  2. `src-tauri/src/commands.rs` 包一层 DTO 命令。
+  3. `src-tauri/src/lib.rs` 的 `generate_handler!` 注册。
+  4. `src/lib/api.ts` 加调用。
+  5. 组件调用 `api.ts`。
+- DTO 必须与前端 `types.ts` 对齐。
+- 涉及真实存档写入/覆盖/删除时，先看 `../savelink-restore-test-spec.md`，再动代码。
+- 详细交接见 `../HANDOFF-codex.md` 与 `../PROGRESS.md`。

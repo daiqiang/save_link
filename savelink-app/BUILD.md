@@ -3,6 +3,30 @@
 > 目标读者：熟悉 Java/Maven，但不熟悉 Rust / 前端 / Tauri 这套技术栈的人。
 > 下面用 Java 世界的概念来类比，帮你快速建立心智模型。
 
+## 当前状态（2026-07-02）
+
+当前推荐打包方式是直接运行本目录下的：
+
+```bat
+build-installer.bat
+```
+
+它已经验证可以生成三类产物：
+
+```text
+src-tauri/target/release/savelink-app.exe
+src-tauri/target/release/bundle/nsis/SaveLink_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
+```
+
+绿色版 `savelink-app.exe` 和安装版使用同一个 Tauri identifier：`com.daiq.savelink`，所以共用同一个用户数据目录：
+
+```text
+%APPDATA%\com.daiq.savelink\
+├── savelink.db
+└── repository\
+```
+
 ## 一句话：这是什么
 
 SaveLink 是一个 **Tauri** 桌面应用。可以把 Tauri 理解成"轻量版 Electron"：
@@ -18,7 +42,7 @@ SaveLink 是一个 **Tauri** 桌面应用。可以把 Tauri 理解成"轻量版 
 |---|---|---|
 | `src/` | 前端界面（React + TypeScript） | 相当于"展示层" |
 | `src-tauri/` | Rust 写的桌面外壳，调用业务逻辑 | 相当于 `main()` + 胶水层 |
-| `../savelink-core/` | 纯业务逻辑（Rust，被 33 个测试焊死） | 相当于一个独立的 `core` 模块/jar |
+| `../savelink-core/` | 纯业务逻辑（Rust，被 34 个测试保护） | 相当于一个独立的 `core` 模块/jar |
 
 ## 工具链对照表（重点）
 
@@ -61,14 +85,15 @@ Rust 编译成 **本地机器码**（直接是 Windows 的 `.exe`），所以最
    - 用 **NSIS** 工具生成向导式 `setup.exe`
    - 这两个工具是 Tauri 第一次构建时从 GitHub 自动下载的（所以首次打包网络要通）
 
-## 产物：两个安装包的区别
-
-都在 `src-tauri/target/release/bundle/` 下：
+## 产物：绿色版与两个安装包的区别
 
 | 文件 | 在哪 | 特点 | 什么时候用 |
 |---|---|---|---|
+| `savelink-app.exe` | `src-tauri/target/release/` | 绿色版，免安装，直接双击运行 | 本机快速验收、临时试用 |
 | `SaveLink_x.y.z_x64-setup.exe` | `bundle/nsis/` | 向导式安装，可免管理员按用户安装，体积小 | **给普通用户分发，首选** |
 | `SaveLink_x.y.z_x64_en-US.msi` | `bundle/msi/` | 标准 MSI，可 `msiexec` 静默安装、组策略批量部署 | 企业/批量部署 |
+
+注意：绿色版不是“独立数据沙箱”。它和安装版读写同一份 `%APPDATA%\com.daiq.savelink\`。
 
 ## 本机环境要求（已经装好了）
 
@@ -86,11 +111,19 @@ Rust 编译成 **本地机器码**（直接是 Windows 的 `.exe`），所以最
    - Windows 11 的智能应用控制会拦截 Rust 编译过程中临时生成的、无签名的小程序（`build-script-build.exe`），报"应用程序控制策略已阻止此文件 (os error 4551)"。
    - 已**手动关闭**智能应用控制。注意：该开关一旦关闭，需重置/重装 Windows 才能重新开启。
 
+3. **exe 被正在运行的 SaveLink 占用**
+   - 现象：打包时无法覆盖 `src-tauri/target/release/savelink-app.exe`，可能出现 `os error 5` 或类似文件占用错误。
+   - 当前 `build-installer.bat` 已在构建前关闭运行中的 SaveLink，并对锁文件类瞬时失败做重试。
+
+4. **cargo fmt / rustfmt**
+   - 本机此前缺少 `rustfmt` 组件，导致 `cargo fmt` 不能跑。
+   - 这不影响 `cargo check`、`cargo test`、`npm run build` 或打包；只是正式工程化时建议补装 rustfmt 后统一格式化一次。
+
 ## 以后怎么重新打包
 
 不需要重装任何东西，二选一：
 
-- **双击** `build-installer.bat`（推荐）。它会：自动定位 MSVC 环境 → 构建前自动关闭正在运行的 SaveLink（否则链接器无法覆盖 exe，会报 `LNK1104` 文件占用）→ 对"网络掉线/文件占用"等**瞬时**失败智能重试，但遇到真正的 TypeScript/Rust 编译错误会立即停下并提示 → 打完自动打开产物文件夹
+- **双击** `build-installer.bat`（推荐）。它会：自动定位 MSVC 环境 → 构建前自动关闭正在运行的 SaveLink（否则链接器无法覆盖 exe）→ 对"网络掉线/文件占用"等**瞬时**失败智能重试，但遇到真正的 TypeScript/Rust 编译错误会立即停下并提示 → 打完自动打开产物文件夹
 - 或在能找到 MSVC 环境的终端里手动执行：
   ```
   npm run tauri build

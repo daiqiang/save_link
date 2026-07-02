@@ -1,7 +1,15 @@
 # SaveLink 当前功能完成情况（给总规划会话）
 
-更新时间：2026-06-30  
+更新时间：2026-07-02
 用途：给总规划会话快速判断 SaveLink 当前阶段、已完成功能、已验收点和下一阶段优先级。
+
+> 备注：`PROGRESS.md`、`HANDOFF-codex.md`、`savelink-tech-architecture.md`、`savelink-restore-test-spec.md`、`savelink-app/README.md`、`savelink-app/BUILD.md`、`savelink-app/手动测试计划.md` 已同步到当前实现状态。
+
+## 版本历史
+
+| 版本 | 修改人 | 时间 | 备注 |
+| --- | --- | --- | --- |
+| 1.0 | Codex | 2026-07-02 | 补齐版本历史；同步 MVP 后补齐、当前已知待办与基线收口状态 |
 
 ## 一句话结论
 
@@ -127,11 +135,19 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 
 后端 service 有进度回调概念，但当前 Tauri command 里还是空回调。现在流程可用，但还没有真正的细粒度进度条/步骤事件。
 
-### 4. 设置页只开放 AppData 范围的打开权限
+### 4. 启动自检还没接入 Tauri 启动路径
+
+`startup_self_check` 已在 core 中实现并有测试覆盖，但当前 Tauri 启动流程尚未显式调用。后续如果要增强启动可靠性，可以在 `AppState::init` 或 setup 阶段接入，并把异常提示设计清楚。
+
+### 5. 应用图标仍是默认图标
+
+当前仍可能显示 Tauri 默认图标。更换 SaveLink 自定义图标需要重新生成 `src-tauri/icons/`，并通过绿色版/安装包复测任务栏、窗口、安装包图标。
+
+### 6. 设置页只开放 AppData 范围的打开权限
 
 这是有意收窄权限。当前设置页只打开 SaveLink 自己的数据目录和仓库目录，足够使用。不要为了方便直接开放整个磁盘。
 
-### 5. cargo fmt 未验证
+### 7. cargo fmt 未验证
 
 之前本机 Rust 工具链缺 `rustfmt` 组件，所以没有跑 `cargo fmt`。这不影响构建和运行，但如果要进入更正式的工程流程，建议安装 rustfmt 后统一格式化一次。
 
@@ -146,4 +162,3 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 5. 如果目标是云端能力：先设计“只同步快照仓库，不直接碰真实存档”的安全边界。
 
 当前状态适合先做一次“正式回归验收 + 路线图重排”，再决定下一个阶段。
-

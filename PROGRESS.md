@@ -5,128 +5,177 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-06-24 | 补齐版本历史，清理过期路线状态，统一为 MVP 已完成并打包 |
+| 1.1 | Codex | 2026-07-01 | 同步 6 月 30 日后续补齐：编辑/移除游戏、缺失目录创建恢复、设置页、打包脚本、Tauri opener 权限修复 |
+| 1.2 | Codex | 2026-07-02 | 基线收口：同步当前状态、补齐已知待办、复验 core/build/轻量端到端冒烟 |
 
 > 持久化的路线图与当前位置。上下文压缩不影响此文件——以它为准。
-> 最后更新：2026-06-24（第 6 步完成，全流程跑通）
+> 最后更新：2026-07-02（本地 MVP + 一轮验收补齐 + 基线收口）
 
 ## 当前位置
 
-**全部 6 步完成。MVP 已打包成 Windows 安装包。可安装试用。**
+**本地 MVP 已完成并打包；MVP 后第一轮实用补齐也已完成并验收。**
 
-进度条：
+当前核心闭环：
 
+```text
+添加游戏存档目录
+  -> 创建快照
+  -> 时间线查看
+  -> 修改备注 / 锁定 / 删除快照
+  -> 恢复指定版本
+  -> 恢复前自动备份
+  -> 缺失目录时创建目录并恢复
+  -> 设置页查看/打开/复制数据目录
 ```
-做什么(产品文档)        ████████████ 100%  ✅
-长什么样(原型图)        ████████████ 100%  ✅ demo-front-1，纯前端 mock
-怎么实现(架构文档)      ████████████ 100%  ✅
-验收标准(测试 33 用例)  ████████████ 100%  ✅ 全绿（含 SQLite 持久化）
-─────────────────────────────────────
-第1步 核心逻辑          ████████████ 100%  ✅ A/B/C/D/E 组 31/31 绿
-第2步 真 SQLite         ████████████ 100%  ✅ SqliteRepo 落盘；zip 后置
-第3步 Tauri 外壳+命令层  ████████████ 100%  ✅ 8 命令接通 core
-第4步 React 写前端      ████████████ 100%  ✅ 5 页面+交互，浏览器验证通过
-第5步 前后端接线        ████████████ 100%  ✅ 真窗口验证：加游戏/快照/抽屉通过
-第6步 打包 Windows 包    ████████████ 100%  ✅ MSI + NSIS + 独立 exe
+
+当前状态条：
+
+```text
+做什么(产品文档)           ████████████ 100%  ✅
+长什么样(原型图)           ████████████ 100%  ✅ demo-front-1，纯前端 mock
+怎么实现(架构文档)         ████████████ 100%  ✅ 已按实际实现同步偏差
+验收标准(core 测试)        ████████████ 100%  ✅ 34/34 绿
+────────────────────────────────────────
+第1步 核心逻辑             ████████████ 100%  ✅ A/B/C/D/E 组
+第2步 SQLite 持久化        ████████████ 100%  ✅ SqliteRepo 落盘；F 组持久化
+第3步 Tauri 外壳+命令层     ████████████ 100%  ✅ 13 个命令接通
+第4步 React 前端           ████████████ 100%  ✅ 主界面/弹窗/抽屉/设置页
+第5步 前后端接线           ████████████ 100%  ✅ invoke 收口在 api.ts
+第6步 Windows 打包          ████████████ 100%  ✅ MSI + NSIS + 绿色 exe
+MVP 后补齐                 ████████████ 100%  ✅ 编辑/移除/设置/缺失目录恢复
 ```
+
+## 已完成能力
+
+### 游戏管理
+
+- 添加游戏，选择单个存档目录。
+- 测试读取目录，显示文件数量和总大小。
+- 游戏列表展示名称、快照数量、最近快照时间。
+- 编辑游戏名称与存档路径。
+- 编辑时可重新选择目录、测试读取、保存修改。
+- 移除游戏：删除 SaveLink 内部游戏记录、该游戏快照记录和快照仓库文件。
+- 移除游戏不会删除真实存档目录。
+
+### 快照管理
+
+- 手动创建快照。
+- 存档未变化时返回 NoChange，不重复创建。
+- 时间线展示创建时间、备注、文件数量、大小、创建原因。
+- 快照详情抽屉可修改备注；备注目前承担“快照命名”的作用。
+- 快照可锁定/取消锁定。
+- 锁定快照不可删除。
+- 未锁定快照可删除。
+- 恢复前自动备份快照会以特殊标签展示。
+
+### 恢复流程
+
+- 恢复前先校验目标快照；目标损坏则不碰真实存档。
+- 恢复前强制自动备份当前真实存档。
+- 备份失败则中止恢复，不覆盖真实存档。
+- 覆盖恢复采用同盘临时目录 + rename 替换，尽量保证完整旧态或完整新态。
+- 恢复后校验真实存档内容与目标快照一致。
+- 恢复失败页已按错误类型精修：
+  - 快照损坏、备份失败、已回滚的恢复失败：明确提示本次恢复未修改真实存档。
+  - 极端的未回滚失败：提示真实存档可能已被改动，要求核对存档目录。
+- 存档目录缺失时，UI 已支持“创建目录并恢复”和“取消”。
+- “重新选择目录并恢复”暂未做；它依赖更完整的编辑路径/恢复联动，暂不算核心缺口。
+
+### 设置页
+
+- 顶部齿轮打开设置页。
+- 展示当前版本。
+- 展示运行方式说明：绿色版和安装版共用同一个用户数据目录。
+- 展示数据目录、快照仓库、数据库文件。
+- 数据目录和快照仓库支持“打开”。
+- 三个路径均支持“复制”。
+- 已修复 `@tauri-apps/plugin-opener` 的 ACL 权限问题：
+  - 允许 `opener:allow-open-path`。
+  - scope 仅开放 `$APPDATA` 与 `$APPDATA/**`，不开放整个磁盘。
+
+### 打包
+
+- `savelink-app/build-installer.bat` 是推荐打包入口。
+- 脚本会自动定位 MSVC 环境，构建前端，编译 Rust release，生成绿色 exe、NSIS、MSI。
+- 脚本会在构建前关闭运行中的 SaveLink，避免 exe 占用导致覆盖失败。
+- 脚本已具备针对锁文件/瞬时错误的重试能力。
 
 ## 安装包产物
 
-```
+```text
 savelink-app/src-tauri/target/release/
-├── savelink-app.exe                         独立可执行(11M)，免安装直接双击
+├── savelink-app.exe                         绿色版，可免安装直接运行
 └── bundle/
-    ├── msi/SaveLink_0.1.0_x64_en-US.msi      MSI 安装包(4.0M)
-    └── nsis/SaveLink_0.1.0_x64-setup.exe     NSIS 安装程序(2.7M)
+    ├── nsis/SaveLink_0.1.0_x64-setup.exe    NSIS 安装程序，推荐给普通用户
+    └── msi/SaveLink_0.1.0_x64_en-US.msi     MSI 安装包
 ```
 
-数据位置：`%APPDATA%/com.daiq.savelink/`（savelink.db + repository/）。
+运行时数据位置：
 
-## 后续可做（非 MVP 必需）
-
-- 真 zip 存储（当前 FsStore 是目录复制，不压缩）→ 接 zip crate 或 restic
-- 阶段2自动化：文件监听、游戏退出自动快照、保留策略
-- 阶段3游戏识别：复用 Ludusavi manifest
-- 阶段4云端：百度网盘/WebDAV/NAS（只同步快照仓库，绝不碰真实存档）
-- 应用图标换成自定义（当前是 Tauri 默认图标）
-
-## 用户验证清单（MVP 真机试用 / 回归验证）
-
+```text
+%APPDATA%\com.daiq.savelink\
+├── savelink.db
+└── repository\
 ```
-cd savelink-app
-npm run tauri dev        # 弹出真 SaveLink 窗口
+
+绿色版和安装版使用同一个 Tauri identifier：`com.daiq.savelink`，因此共享同一个用户数据目录。
+
+## 当前测试状态
+
+`savelink-core`：
+
+```text
+cargo test --no-fail-fast
 ```
-依次验证（建议先用一个无关紧要的测试目录，别拿真实游戏存档冒险）：
-- [ ] 窗口打开，左栏为空（真数据库初始无游戏）
-- [ ] 点"添加游戏"→"选择目录"弹出真系统目录选择器
-- [ ] 选一个测试目录→"测试读取"显示真实文件数/大小
-- [ ] 保存→游戏出现在左栏
-- [ ] "创建快照"→时间线新增，且 savelink.db 真的写了记录
-- [ ] "恢复"→走三步→真实目录被恢复，且生成 before_restore 备份
-- [ ] 关闭重开 app→数据还在（SQLite 落盘验证）
-数据库与仓库位置：系统 app_data_dir（Windows: %APPDATA%/<bundle-id>/）下 savelink.db + repository/
 
-> 注：原"第4步 前后端接通"已拆成 **第4步 写 React 前端** + **第5步 接线**，
-> 让"写前端"成为独立显眼的一步。打包顺延为第6步。
+当前结果：**34 个测试全绿**。
 
-## 六步路线图（已完成）
+分组：
 
-### 第 1 步：补完核心逻辑（B 组恢复 + E 组自检）✅ 已完成
-- 实现了 `RestoreService::restore_snapshot`（备份→同盘原子 rename 替换→校验）、
-  `restore_with_choice`、`startup_self_check`、`same_volume`。
-- 之前已实现：`FsStore`（D 组）、`SnapshotService::create_snapshot`/`delete_snapshot`（A/C 组）。
-- 结果：`cargo test --no-fail-fast` → 31/31 全绿，零警告。
-- 关键安全设计：备份成功才允许覆盖；同盘原子 rename 三段式（.tmp→.old→替换）保证崩溃也不留半残；
-  失败错误带 `rolled_back` 语义。均在 FailingStore 故障注入下挣得，未削弱测试。
+- A 组：创建快照，8 个。
+- B 组：恢复，9 个。
+- C 组：删除/锁定/删除游戏，6 个。
+- D 组：存储与扫描，6 个。
+- E 组：启动自检/同盘检测，2 个。
+- F 组：SQLite 持久化，3 个。
 
-### 第 2 步：把测试替身换成真实现 ✅ 已完成（SQLite 部分）
-- `InMemoryRepo` → `SqliteRepo`：数据落盘、关机不丢。用 `rusqlite 0.32` + `bundled`
-  （SQLite 源码一起编进来，用户无需手动安装任何东西；需本机有 C 工具链，已验证可用）。
-- 注意版本：最新 `libsqlite3-sys 0.38` 用了 rustc 未稳定的 `cfg_select`，故钉 `rusqlite@0.32`。
-- 新增 F 组持久化测试：写入→关闭连接→重开 .db→数据仍在。
-- 结果：33 个测试全绿（A–E 的 31 个 + F 组 2 个），证明换数据库后端上层逻辑与测试一行不改。
-- **zip 后置**：FsStore 已能正确存取/校验/恢复，zip 仅压缩优化，架构文档说 MVP 可接受不压缩。
-  待真有压缩需求再接 zip crate 或 restic。
+前端/打包已验证：
 
-### 第 3 步：套上 Tauri 桌面外壳 ✅ 已完成
-- `npm create tauri-app` 建 `savelink-app/`（React-TS 模板）。结构：`src/`=React 前端，
-  `src-tauri/`=Rust 壳。
-- `savelink-core` 作为路径依赖接入 `src-tauri`（保持 core 干净、可独立测试）。
-- `src-tauri/src/commands.rs`：DTO 层 + AppState（系统数据目录下真 SqliteRepo + FsStore）
-  + 8 个 Tauri command，全部真调用 core（非空壳）。
-- 命令清单：list_games / list_snapshots / scan_path / add_game / create_snapshot /
-  update_snapshot_meta / delete_snapshot / restore_snapshot。
-- Rust 编译通过；前端依赖已装、`npm run build` 通过。
-- 真 Tauri 窗口已完成接线验证；后续改动仍需用 `npm run tauri dev` 做回归。
+- `npm run build` 通过。
+- `build-installer.bat` 打包通过。
+- 绿色版实机打开验证通过。
+- 设置页“打开”数据目录/仓库目录复测通过。
 
-### 第 4 步：用 React 实现前端 ✅ 已完成
-- 照 `demo-front-1` 原型图，在 `savelink-app/src/` 用 React 实现全部页面与交互。
-- 文件结构：`lib/types.ts`（与 Rust DTO 对齐）、`lib/api.ts`（**数据访问抽象层，已接 Tauri invoke**）、
-  `lib/format.ts`、`lib/icons.tsx`（内联 SVG）、`App.css`（设计令牌）、
-  `App.tsx`（主壳）、`components/`（Toast / AddGameDialog / RestoreDialog / SnapshotDrawer）。
-- **关键设计**：组件只调用 `api.ts`，不直接碰 invoke。后续换后端/加命令也先从 `api.ts` 收口。
-- 浏览器验证（Vite dev + Preview 工具）：5 页面渲染正确；真接线后由 Tauri 窗口验证核心流程。
-- `npm run build`（tsc + vite）通过。
+## 已知未完成 / 暂不做
 
-### 第 5 步：前后端接线 ✅ 已完成
-- `lib/api.ts` 已从 mock 数组改成 `await invoke("命令名", {参数})`，组件层无需直接感知 Tauri。
-- 已竖切打通：添加游戏 → 游戏列表 → 创建快照 → 时间线刷新 → 快照抽屉 → 恢复。
-- 目录选择器已接系统对话框（`tauri-plugin-dialog`）。
-- 真窗口验证已覆盖：加游戏、测试读取、创建快照、查看抽屉、恢复并生成 before_restore。
-- 后续仍需继续加强真实边界：目录权限、大文件、游戏运行时文件锁、恢复进度事件、缺失目录用户选择。
+- 快照仓库仍是目录复制 `FsStore`，不是 zip 压缩包。
+- 多存档目录尚未做，当前 UI 和恢复流程按第一个存档目录运行。
+- 恢复进度事件未真正接到前端；当前恢复页给整体进行中提示，不伪造真实步骤完成态。
+- 启动自检 `startup_self_check` 在 core 存在，但 Tauri 启动路径尚未显式调用。
+- 帮助入口仍是占位 toast。
+- 应用图标仍是 Tauri 默认图标。
+- `cargo fmt` 未验证；本机 Rust 工具链此前缺 `rustfmt` 组件，不影响构建与测试。
 
-### 第 6 步：打包 + 真机测试 ✅ 已完成
-- 已打包 Windows 独立 exe、MSI、NSIS 安装包。
-- 验收状态：可安装试用；建议先用测试目录或非关键游戏存档验证，不要一上来指向唯一真实存档。
+## 后续可做（需总规划会话排优先级）
+
+这些都是 MVP 之后的增强，不是当前阻塞：
+
+- 更正式的一轮回归验收报告。
+- 接入真实恢复进度事件。
+- 启动时调用 `startup_self_check` 并补端到端验证。
+- 真 zip / restic 快照存储，降低空间占用与文件数量。
+- 多存档目录。
+- 自动化：文件监听、游戏退出后自动快照、保留策略。
+- 游戏识别：复用 Ludusavi manifest 或自建常见游戏路径库。
+- 云端：百度网盘/WebDAV/NAS；原则是只同步快照仓库，绝不直接同步真实存档目录。
+- 自定义应用图标与安装体验优化。
 
 ## 关键事实（防遗忘）
 
-- 工作目录：`D:\door\codex_workspace\save_link`
-- 核心 crate：`savelink-core/`（纯 Rust 逻辑，不依赖 Tauri；使用 `rusqlite 0.32 bundled` 持久化）
-- 原型图：`demo-front-1/index.html`（单文件、纯 mock，当高保真原型用，不是真前端）
-- 五份文档：mvp-product-prototype / low-fidelity-wireframe / visual-interaction-guidelines
-  / tech-architecture / restore-test-spec
-- 已实现(真)：model / error / scan / service / store::FsStore / repo::SqliteRepo / Tauri commands / React invoke 接线
-- 测试/辅助：repo::InMemoryRepo 仅保留作测试替身；testkit 仅测试使用
-- MVP 技术债：store::FsStore 是目录复制而非 zip，后续可替换为 ZipStore/ResticStore
-- 交接：详见 `HANDOFF-codex.md`。Claude 负责方向/验收，Codex 可按交接文档执行开发任务。
-- 进度的客观判据：`cargo test` 红绿灯 + 文件是否存在，不依赖记忆。
+- 工作目录：`C:\Users\daiqiang\door\project_workspace\save_link_workspace`
+- 核心 crate：`savelink-core/`
+- 桌面应用：`savelink-app/`
+- 高保真 mock 原型：`demo-front-1/index.html`
+- 当前正式状态总结：`SaveLink-current-status-for-planning-20260630.md`
+- 交接文档：`HANDOFF-codex.md`
+- 手动测试计划：`savelink-app/手动测试计划.md`

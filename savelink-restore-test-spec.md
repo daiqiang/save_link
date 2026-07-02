@@ -5,9 +5,11 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | Claude | 2026-06-23 | 第一版：定义 SaveLink 本地 MVP 中「快照创建 / 恢复 / 删除 / 存储层」关键路径的测试用例，作为测试先行（TDD）的客观验收基准 |
+| 1.1 | Codex | 2026-07-01 | 同步当前可执行测试：34 个全绿；补充删除游戏、游戏更新持久化、缺失目录创建恢复的实现状态 |
+| 1.2 | Codex | 2026-07-02 | 基线收口：同步当前已实现状态，保留本规格作为后续回归验收基准 |
 
-> **实现状态（2026-06-24）**：本规格已落成 `savelink-core/tests/` 下的可执行 Rust 测试并**全部转绿**
-> （A 创建 / B 恢复 / C 删除 / D 存储 / E 自检，另加 F 组 SQLite 持久化）。
+> **实现状态（2026-07-02）**：本规格已落成 `savelink-core/tests/` 下的可执行 Rust 测试并**全部转绿**
+> （A 创建 / B 恢复 / C 删除与锁定 / D 存储与扫描 / E 自检，另加 F 组 SQLite 持久化）。当前共 34 个测试。
 > 本文档继续作为**验收基准**：改动 `savelink-core` 后须保持这些断言全绿；
 > 加新功能须按同样标准补测试。详见 `savelink-core/README.md`。
 
@@ -24,7 +26,7 @@
 - `savelink-tech-architecture.md`：定义被测对象（`SnapshotStore`、`RestoreService`、事务设计、错误类型）。
 - `savelink-mvp-product-prototype.md`：定义被测对象必须遵守的 5 条安全规则。
 
-**测试先行**：这些用例应在实现 `restore_service` / `snapshot_service` 之前写出并保持红灯，实现到位后逐条转绿。无论由 Claude 还是 Codex 实现 MVP，通过这套测试是合并的前提。
+**测试先行原则**：新增或重写核心能力时，应先把对应用例写成可执行测试，再让实现转绿。当前 MVP 已实现，通过这套测试仍是后续合并的前提。
 
 ## 被测对象与边界
 
@@ -34,7 +36,7 @@
 SnapshotService.create_snapshot
 RestoreService.restore_snapshot
 SnapshotService.delete_snapshot
-SnapshotStore（ZipStore 实现）
+SnapshotStore（当前 FsStore 目录复制实现；ZipStore/ResticStore 是后续替换项）
 Scanner（扫描 / 哈希 / content_hash）
 ```
 
@@ -53,7 +55,7 @@ Scanner（扫描 / 哈希 / content_hash）
 fn make_save_dir(files: &[(相对路径, 字节内容)]) -> 临时目录
 fn make_repo() -> 临时仓库目录 + 干净的 SQLite
 fn dir_fingerprint(dir) -> 对目录做与 content_hash 同算法的指纹，用于"内容一致"断言
-fn corrupt_zip(key)      -> 故意破坏某快照文件，模拟损坏
+fn corrupt_snapshot(key) -> 故意破坏某快照文件或 ok 标记，模拟损坏
 fn read_snapshots(db, game_id) -> 时间线列表
 ```
 
@@ -220,6 +222,13 @@ Assert:
   · 在用户未确认前，不在该路径写入任何文件（安全规则 5）
 ```
 
+当前实现状态：
+
+- `restore_snapshot` 返回 `SaveDirMissingNeedsChoice`。
+- 前端已接“创建目录并恢复”和“取消”。
+- 后端 `restore_with_choice(CreateAndRestore)` 会创建目录并恢复。
+- “重新选择目录并恢复”后端枚举存在，但 UI 未做完整闭环。
+
 ### B8 [P1] 恢复完成后可立刻再恢复 before_restore 回到原状
 
 ```text
@@ -275,6 +284,29 @@ Assert:
 Act:    update_snapshot_meta 修改 note / locked
 Assert: note、locked 改变；created_at、content_hash、file_count、total_size 不变
         且对应 zip 文件字节不变
+```
+
+### C5 [P1] 删除游戏会移除元数据和仓库快照，但保留真实存档
+
+```text
+Arrange: 某游戏已有快照，真实存档目录存在
+Act:     delete_game(game_id)
+Assert:
+  · 游戏记录被删除
+  · 该游戏快照记录被删除
+  · 对应快照仓库文件被删除
+  · 真实存档目录仍存在，内容不被删除
+```
+
+### C6 [P0] 删除游戏时快照文件删除失败则中止
+
+```text
+Arrange: 注入 SnapshotStore.delete 失败
+Act:     delete_game(game_id) 预期失败
+Assert:
+  · 游戏记录仍存在
+  · 尚未成功删除的快照记录仍存在
+  · 不出现数据库与仓库大面积不一致
 ```
 
 ---
@@ -359,7 +391,33 @@ E2 钉死架构文档的关键假设：rename 原子性依赖同卷。跨卷必�
 | 静默创建/覆盖不存在的目录 | B7 |
 | 创建中断留垃圾/悬挂 | A4, E1, C3 |
 | 锁定快照被误删 | C1 |
+| 移除游戏误删真实存档 | C5 |
+| 移除游戏中途失败导致悬挂 | C6 |
 | 存档目录不可读仍写状态 | A6 |
+
+## F 组：SQLite 持久化
+
+### F1 [P1] 数据关闭重开仍在
+
+```text
+Arrange: 写入游戏与快照
+Act:     关闭连接，重新打开同一个 .db
+Assert:  游戏、快照仍能读回
+```
+
+### F2 [P1] 枚举字段往返正确
+
+```text
+Assert: reason / status / locked 等字段经过 SQLite 持久化后语义不变
+```
+
+### F3 [P1] 游戏更新持久化
+
+```text
+Arrange: 已有游戏
+Act:     update_game 修改名称与 save_paths，关闭并重新打开 .db
+Assert:  修改后的名称和路径仍在
+```
 
 **P0 全部为绿，是「这版可以碰用户真实存档」的最低门槛。** 任一 P0 红灯，MVP 不得发布、不得指向真实存档目录。
 
@@ -376,6 +434,6 @@ E2 钉死架构文档的关键假设：rename 原子性依赖同卷。跨卷必�
 > 谁的实现能让 B 组、E 组的 P0 用例全部转绿，谁的实现就是对的——
 > 这比任何一个 AI 嘴上说"我写得更稳"都更可信。
 
-下一步：把这些用例落成 `src-tauri/tests/` 下的实际 Rust 测试骨架（先红灯），再开始实现。需要时我可以直接生成这套测试骨架代码。
+当前下一步不是生成测试骨架，而是在每次改动后继续保持 `savelink-core/tests/` 全绿，并为新增核心能力补同级别测试。
 
 

@@ -1,46 +1,71 @@
 # savelink-core — 恢复/存储核心（已实现）
 
-SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核心逻辑。
-不依赖 Tauri，可独立 `cargo test`。被 `savelink-app` 的 Tauri 命令层薄壳包装后供前端调用。
+SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核心逻辑。不依赖 Tauri，可独立 `cargo test`。`savelink-app` 的 Tauri 命令层只做 DTO 和调用包装。
 
-> 历史：本 crate 最初是「测试先行骨架」（service/store 全 `todo!`、测试红灯），
-> 用作客观验收尺。现已全部实现，33 个测试全绿。
+> 历史：本 crate 最初是测试先行骨架，用作客观验收尺。现已实现，并由 A-F 组测试保护。
 
 ## 当前状态
 
-- 测试：**33 个全绿**（`cargo test --no-fail-fast`）。
-- 依赖：`rusqlite 0.32`（`bundled`，SQLite 源码内编，用户无需安装；
-  钉 0.32 是因为更高版本的 libsqlite3-sys 用了当前 rustc 未稳定的 `cfg_select`）。
+- 测试：**34 个全绿**（`cargo test --no-fail-fast`）。
+- 依赖：`rusqlite 0.32`（`bundled`，SQLite 源码内编，用户无需安装 SQLite）。
+- 生产 repo：`SqliteRepo`。
+- 生产 store：`FsStore`，即目录复制实现；zip/restic 是后续优化。
+
+## 测试分组
+
+| 分组 | 数量 | 说明 |
+| --- | ---: | --- |
+| A 创建快照 | 8 | 正常创建、未变化、变化检测、失败回滚、空目录、不可读目录 |
+| B 恢复 | 9 | 恢复前备份、目标损坏、替换恢复、回滚语义、缺失目录、进度顺序 |
+| C 删除/锁定/游戏删除 | 6 | 锁定不可删、删除回滚、元数据可变、移除游戏 |
+| D 存储/扫描 | 6 | create/restore 往返、verify、content_hash、storage_key 不透明 |
+| E 启动自检/同盘检测 | 2 | writing 残留清理、同卷判断 |
+| F SQLite 持久化 | 3 | 数据重开仍在、枚举往返、游戏更新持久化 |
 
 ## 模块地图
 
 | 模块 | 状态 | 说明 |
 | --- | --- | --- |
-| `model.rs` | ✅ | 领域类型。**勿改字段语义**——前端 DTO、SQL schema、测试都依赖它 |
-| `error.rs` | ✅ | 统一错误类型。`RestoreFailed{rolled_back}` 是对前端的契约，勿删字段 |
-| `scan.rs` | ✅ | content_hash 权威算法（FNV-1a）。测试夹具复用它，**改哈希只改这一处** |
-| `store.rs` | ✅ | `SnapshotStore` trait + `FsStore`（目录复制实现，zip 的零依赖等价替身） |
-| `repo.rs` | ✅ | `Repository` trait + `InMemoryRepo`（测试用）+ 可注入 `Clock`/`IdGen` |
-| `sqlite_repo.rs` | ✅ | `SqliteRepo`：生产用的落盘实现，与 InMemoryRepo 同 trait |
-| `service.rs` | ✅ | `SnapshotService` / `RestoreService` / `startup_self_check` / `same_volume` |
-| `testkit.rs` | ✅ | 故障注入 `FailingStore`、裁判 `dir_fingerprint`、`TempDir`、`corrupt_dir` |
+| `model.rs` | 已实现 | 领域类型。字段语义会影响 DTO、SQL schema、测试 |
+| `error.rs` | 已实现 | 统一错误类型。`RestoreFailed { rolled_back }` 是 UI 文案契约 |
+| `scan.rs` | 已实现 | content_hash 权威算法（FNV-1a） |
+| `store.rs` | 已实现 | `SnapshotStore` trait + `FsStore` 目录复制实现 |
+| `repo.rs` | 已实现 | `Repository` trait + `InMemoryRepo` 测试替身 + Clock/IdGen |
+| `sqlite_repo.rs` | 已实现 | `SqliteRepo` 落盘实现 |
+| `service.rs` | 已实现 | `SnapshotService`、`RestoreService`、`startup_self_check`、`same_volume` |
+| `testkit.rs` | 已实现 | 故障注入、临时目录、指纹裁判、损坏模拟 |
 
-## 改动这个 crate 的铁律（给后续开发者 / Codex）
+## 核心安全契约
 
-1. **不要改测试来迁就实现。** 测试是验收基准。允许新增测试，不允许削弱既有断言。
-2. **不要绕过故障注入。** `FailingStore`、损坏快照、Writing 残留等用例是整套规格存在的理由；
-   让它们绿的唯一正道是把事务/回滚逻辑写对。
-3. **存储抽象不可破。** 上层只认 `storage_key`（不透明）。换 zip/restic 时实现新的 `SnapshotStore`，
-   不准让 service 去解析 key 的结构。换数据库同理（新实现 `Repository`）。
-4. **恢复链路是命脉。** `RestoreService` 的「备份成功才覆盖 + 同盘原子 rename + rolled_back 语义」
-   动了就要重证 B 组、E 组全绿。改这里前先读 `savelink-restore-test-spec.md` B/E 组。
-5. **改完必须 `cargo test --no-fail-fast` 全绿才算数。**
+1. 恢复前必须先校验目标快照。
+2. 目标损坏时不碰真实存档。
+3. 恢复前必须强制生成 before_restore 备份。
+4. 备份失败则中止恢复，不覆盖真实存档。
+5. 覆盖恢复采用同盘临时目录 + rename 替换。
+6. 失败时 `RestoreFailed { rolled_back }` 的语义必须准确。
+7. 存档目录缺失时，默认返回“需要用户选择”，不静默创建。
+8. 选择“创建并恢复”时才创建目录并恢复。
+9. 快照内容不可变，可变的只有备注和锁定状态。
+10. 上层只认 `storage_key`，不得解析 store 的内部布局。
 
-## 运行
+## 改动这个 crate 的铁律
+
+1. 不要改测试来迁就实现。允许新增测试，不允许削弱既有断言。
+2. 不要绕过故障注入。`FailingStore` 是事务/回滚逻辑的验收工具。
+3. 存储抽象不可破。换 zip/restic 时实现新的 `SnapshotStore`，不要让 service 理解 zip 文件名。
+4. 恢复链路是命脉。动 `RestoreService` 前先读 `../savelink-restore-test-spec.md` 的 B/E 组。
+5. 改完必须跑：
 
 ```bash
-cargo test --no-fail-fast      # 全部（A 创建 / B 恢复 / C 删除 / D 存储 / E 自检 / F 持久化）
-cargo test --test b_restore    # 只跑恢复组（命脉）
+cargo test --no-fail-fast
+```
+
+## 常用命令
+
+```bash
+cargo test --no-fail-fast       # 全部 A-F 组
+cargo test --test b_restore     # 只跑恢复组
+cargo test --test c_delete_lock # 删除/锁定/删除游戏
 cargo test --test f_persistence # SQLite 落盘验证
 ```
 
@@ -48,5 +73,5 @@ cargo test --test f_persistence # SQLite 落盘验证
 
 - 做什么：`../savelink-mvp-product-prototype.md`
 - 怎么实现：`../savelink-tech-architecture.md`
-- 验收基准：`../savelink-restore-test-spec.md`（本 crate 的测试是它的可执行版本）
+- 验收基准：`../savelink-restore-test-spec.md`
 - 整体进度与交接：`../PROGRESS.md`、`../HANDOFF-codex.md`
