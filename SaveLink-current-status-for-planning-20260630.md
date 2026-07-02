@@ -9,7 +9,7 @@
 
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
-| 1.0 | Codex | 2026-07-02 | 补齐版本历史；同步 MVP 后补齐、当前已知待办与基线收口状态 |
+| 1.0 | Codex | 2026-07-02 | 补齐版本历史；同步 MVP 后补齐、当前已知待办与基线收口状态；接入 Tauri 启动自检 |
 
 ## 一句话结论
 
@@ -135,9 +135,9 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 
 后端 service 有进度回调概念，但当前 Tauri command 里还是空回调。现在流程可用，但还没有真正的细粒度进度条/步骤事件。
 
-### 4. 启动自检还没接入 Tauri 启动路径
+### 4. 启动自检已接入，剩余真实窗口场景验收
 
-`startup_self_check` 已在 core 中实现并有测试覆盖，但当前 Tauri 启动流程尚未显式调用。后续如果要增强启动可靠性，可以在 `AppState::init` 或 setup 阶段接入，并把异常提示设计清楚。
+`startup_self_check` 已在 core 中实现并有测试覆盖，当前 Tauri setup 会在 `AppState::init` 后、`app.manage(state)` 前显式调用。这样前端命令可用前会先清理上次异常中断留下的 Writing 半成品快照。后续正式回归时，可补一条真实窗口场景下的残留清理验收。
 
 ### 5. 应用图标仍是默认图标
 
