@@ -305,7 +305,10 @@ impl RestoreService {
         }
         // 校验临时目录内容与目标快照一致。
         match scan::fingerprint_dir(&tmp_dir) {
-            Ok(r) if r.content_hash == target.content_hash => {}
+            Ok(r)
+                if r.content_hash == target.content_hash
+                    && r.file_count == target.file_count
+                    && r.total_size == target.total_size => {}
             _ => {
                 let _ = fs::remove_dir_all(&tmp_dir);
                 return Err(SaveLinkError::RestoreFailed { rolled_back: true });
@@ -329,7 +332,10 @@ impl RestoreService {
         // 步骤 5：校验恢复结果（B3：内容等于目标，且不残留旧文件——rename 替换天然保证不残留）。
         progress(RestoreStep::Verify);
         match scan::fingerprint_dir(save_dir) {
-            Ok(r) if r.content_hash == target.content_hash => {}
+            Ok(r)
+                if r.content_hash == target.content_hash
+                    && r.file_count == target.file_count
+                    && r.total_size == target.total_size => {}
             _ => return Err(SaveLinkError::RestoreFailed { rolled_back: false }),
         }
 

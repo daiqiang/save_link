@@ -72,6 +72,51 @@ fn b3_restore_makes_save_equal_target_and_removes_old_files() {
 }
 
 #[test]
+fn b3b_restore_small_file_snapshot_keeps_files_in_chinese_path() {
+    let h = Harness::new(&[]);
+    let chinese_save_dir = h.tmp.child("模拟存档").join("艾尔登法环");
+    std::fs::create_dir_all(&chinese_save_dir).unwrap();
+    let game = savelink_core::model::Game {
+        id: h.game_id.clone(),
+        name: "EldenRing".into(),
+        icon: None,
+        repo_path: h.tmp.path().join("repo"),
+        save_paths: vec![chinese_save_dir.clone()],
+        created_at: h.clock.now_stamp(),
+        updated_at: h.clock.now_stamp(),
+    };
+    h.repo.update_game(game).unwrap();
+
+    savelink_core::testkit::write_files(&chinese_save_dir, &[("1.txt", "2026-06-23 第一行数据".as_bytes())]);
+    let target = match h.snapshots().create_snapshot(&h.game_id, Some("第一个存档快照".into()), Reason::Manual).unwrap() {
+        savelink_core::model::CreateOutcome::Created(s) => s,
+        _ => panic!("setup: target create"),
+    };
+    assert_eq!(target.file_count, 1, "B3b: 小文件快照也应记录 1 个文件");
+    assert!(target.total_size > 0, "B3b: 小文件快照大小应大于 0 字节");
+
+    let _ = std::fs::remove_dir_all(&chinese_save_dir);
+    savelink_core::testkit::write_files(
+        &chinese_save_dir,
+        &[("1.txt", "2026-06-23 第一行数据\r\n2026-07-06 第二行数据".as_bytes())],
+    );
+
+    h.restore().restore_snapshot(&h.game_id, &target.id, &no_progress()).expect("restore ok");
+
+    let restored = chinese_save_dir.join("1.txt");
+    assert!(restored.exists(), "B3b: 恢复后真实目录必须保留目标快照文件，不能变成空目录");
+    assert_eq!(
+        std::fs::read_to_string(restored).unwrap(),
+        "2026-06-23 第一行数据",
+        "B3b: 恢复后文件内容应等于目标小文件快照"
+    );
+    let restored_scan = savelink_core::scan::fingerprint_dir(&chinese_save_dir).unwrap();
+    assert_eq!(restored_scan.file_count, 1, "B3b: 恢复后真实目录文件数不能为 0");
+    assert_eq!(restored_scan.total_size, target.total_size, "B3b: 恢复后真实目录大小应等于目标快照");
+    assert_eq!(restored_scan.content_hash, target.content_hash, "B3b: 恢复后真实目录指纹应等于目标快照");
+}
+
+#[test]
 fn b4_corrupt_target_does_not_touch_save() {
     let h = Harness::new(&[]);
     let target_id = setup_target_and_current(&h, &[("s", b"TARGET")], &[("s", b"CURRENT")]);
