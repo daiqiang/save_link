@@ -5,10 +5,11 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-07-02 | 更新当前状态与待办，记录总规划会话注意点；同步基线收口要求；接入启动自检 |
+| 1.1 | 代强 | 2026-07-08 | 同步恢复校验增强、35 个 core 测试与云同步增量协议路线 |
 
 > 角色约定：总规划会话负责方向、范围和验收判断；本地开发会话负责按文档实现、验证、打包。
 > 开工前先读完本文档 + `PROGRESS.md`，再动代码。
-> 最后更新：2026-07-02（Codex）
+> 最后更新：2026-07-08（Codex）
 
 ---
 
@@ -37,7 +38,7 @@ MVP 后第一轮补齐也已完成：
 
 当前客观状态：
 
-- `savelink-core`：34 个测试全绿。
+- `savelink-core`：35 个测试全绿。
 - `savelink-app`：Tauri 桌面应用，React 前端 + Rust 命令薄壳。
 - 数据位置：`%APPDATA%\com.daiq.savelink\`。
 - 产物位置：`savelink-app/src-tauri/target/release/`。
@@ -55,6 +56,7 @@ MVP 后第一轮补齐也已完成：
    - `savelink-mvp-product-prototype.md`
    - `savelink-low-fidelity-wireframe.md`
    - `savelink-visual-interaction-guidelines.md`
+7. `savelink-cloud-sync-model-protocol-draft.md`：云同步数据边界、目录结构和增量协议草案。
 
 ## 三、不可触碰的红线
 
@@ -154,7 +156,9 @@ core 已有 progress 回调概念，当前 Tauri 命令传空回调。可改为�
 
 - 文件监听、游戏退出后自动快照、保留策略。
 - 游戏识别可考虑复用 Ludusavi manifest。
-- 云端原则：只同步快照仓库，绝不直接同步真实存档目录。
+- 云端原则：同步 SaveLink 的共享快照事实和云端元数据，绝不直接同步真实存档目录。
+- 不把 `latest.zip` 或整份 `savelink.db` 原样同步作为云端主线；主线是云端目录结构 + 增量同步。
+- 手动 zip 导出/导入只作为备份迁移工具，当前优先级低。
 
 ## 六、有疑问时
 

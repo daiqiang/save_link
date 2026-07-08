@@ -8,6 +8,7 @@
 | 1.1 | Claude | 2026-06-24 | 增补实现现状与偏差：MVP 已落地并打包 |
 | 1.2 | Codex | 2026-07-01 | 按当前代码重写现状：编辑/移除游戏、设置页、缺失目录创建恢复、opener 权限、34 个 core 测试 |
 | 1.3 | 代强 | 2026-07-02 | 同步 Tauri 启动自检接入状态 |
+| 1.4 | 代强 | 2026-07-08 | 同步恢复校验增强与云同步增量协议路线 |
 
 ## 文档用途
 
@@ -18,6 +19,7 @@
 - `PROGRESS.md`：当前进度与下一步候选项。
 - `HANDOFF-codex.md`：后续开发交接。
 - `savelink-restore-test-spec.md`：恢复/存储关键路径验收基准。
+- `savelink-cloud-sync-model-protocol-draft.md`：云同步数据边界、目录结构和增量协议草案。
 - `savelink-app/手动测试计划.md`：人工验收步骤。
 - `savelink-mvp-product-prototype.md`、`savelink-low-fidelity-wireframe.md`、`savelink-visual-interaction-guidelines.md`：产品、页面、视觉气质。
 
@@ -42,7 +44,7 @@ save_link_workspace/
 
 当前验证状态：
 
-- `savelink-core`：34 个测试全绿。
+- `savelink-core`：35 个测试全绿。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
 - 绿色版实机验证过设置页“打开”目录。
@@ -240,11 +242,11 @@ pub trait SnapshotStore: Send + Sync {
 4. 强制创建 before_restore 快照。
    - 失败：返回 BackupFailed，不覆盖真实存档。
 5. 将目标快照恢复到同盘临时目录。
-6. 校验临时目录内容 hash。
+6. 校验临时目录内容 hash、文件数和总大小。
 7. rename 真实目录 -> .old。
 8. rename 临时目录 -> 真实目录。
 9. 删除 .old。
-10. 校验恢复后真实目录 hash。
+10. 校验恢复后真实目录 hash、文件数和总大小。
 ```
 
 缺失目录续走：
@@ -268,6 +270,39 @@ pub trait SnapshotStore: Send + Sync {
 - `SnapshotLocked`：锁定快照不可删除。
 
 前端恢复失败页会根据错误类型给出“本次恢复未修改真实存档”或“请核对存档目录”的提示。
+
+## 云同步数据边界
+
+云同步主线不应是 `latest.zip` 覆盖上传，也不应把某台电脑的 `savelink.db` 整库原样上云。
+
+原因：
+
+- `latest.zip` 每次新增快照都可能重传整个历史包，不适合高频自动同步。
+- 当前 `games.save_paths` 保存本机真实存档路径，不能作为跨设备共享事实。
+- 直接同步整库难以做字段级合并，也容易让家里电脑拿到公司电脑的本地路径。
+
+当前推荐方向：
+
+```text
+云端目录结构 + 增量上传/下载 + 快照不可变约束
+```
+
+云端同步的是 SaveLink 的共享快照事实和云端元数据：
+
+- 游戏云端身份和名称。
+- 快照时间线元数据。
+- 快照内容文件。
+- 快照校验信息。
+- 备注、锁定、删除墓碑等可同步状态。
+
+本机私有数据不应被云端覆盖：
+
+- 真实游戏存档路径。
+- 本机设备 ID。
+- 百度网盘 token。
+- 本机设置和缓存。
+
+手动 zip 导出/导入仍可作为备份迁移工具，但当前优先级低，不作为百度网盘自动云同步的技术主线。
 
 ## 设置页与 Tauri 权限
 
@@ -312,7 +347,7 @@ Tauri 2 capability 需要：
 | MVP 后补齐 | 编辑/移除游戏、缺失目录创建恢复、设置页、打包脚本、权限修复 |
 | 阶段 2 自动化 | notify 文件监听、游戏退出后快照、保留策略 |
 | 阶段 3 游戏识别 | Ludusavi manifest / 常见游戏路径库 |
-| 阶段 4 云端 | 只同步快照仓库，绝不直接同步真实存档目录 |
+| 阶段 4 云端 | 云端目录结构 + 增量同步；同步共享快照事实和云端元数据，真实存档路径保留为本机绑定 |
 
 ## 当前结论
 
