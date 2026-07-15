@@ -1,9 +1,15 @@
 # SaveLink 打包说明（写给 Java 开发者）
 
+## 版本历史
+
+| 版本 | 修改人 | 时间 | 备注 |
+| --- | --- | --- | --- |
+| 1.0 | 代强 | 2026-07-14 | 补齐版本历史；同步 core 50 个测试、Fake 云同步闭环和当前 rustfmt 状态 |
+
 > 目标读者：熟悉 Java/Maven，但不熟悉 Rust / 前端 / Tauri 这套技术栈的人。
 > 下面用 Java 世界的概念来类比，帮你快速建立心智模型。
 
-## 当前状态（2026-07-02）
+## 当前状态（2026-07-14）
 
 当前推荐打包方式是直接运行本目录下的：
 
@@ -42,7 +48,7 @@ SaveLink 是一个 **Tauri** 桌面应用。可以把 Tauri 理解成"轻量版 
 |---|---|---|
 | `src/` | 前端界面（React + TypeScript） | 相当于"展示层" |
 | `src-tauri/` | Rust 写的桌面外壳，调用业务逻辑 | 相当于 `main()` + 胶水层 |
-| `../savelink-core/` | 纯业务逻辑（Rust，被 34 个测试保护） | 相当于一个独立的 `core` 模块/jar |
+| `../savelink-core/` | 纯业务逻辑（Rust，被 50 个测试保护） | 相当于一个独立的 `core` 模块/jar |
 
 ## 工具链对照表（重点）
 
@@ -116,8 +122,8 @@ Rust 编译成 **本地机器码**（直接是 Windows 的 `.exe`），所以最
    - 当前 `build-installer.bat` 已在构建前关闭运行中的 SaveLink，并对锁文件类瞬时失败做重试。
 
 4. **cargo fmt / rustfmt**
-   - 本机此前缺少 `rustfmt` 组件，导致 `cargo fmt` 不能跑。
-   - 这不影响 `cargo check`、`cargo test`、`npm run build` 或打包；只是正式工程化时建议补装 rustfmt 后统一格式化一次。
+   - 当前 `rustfmt` 已可用，本轮新增 Rust 文件已单独格式化。
+   - 全量 `cargo fmt --check` 会报告旧文件历史格式差异；建议未来单独做一次格式化提交，不要与业务改动混在一起。
 
 ## 以后怎么重新打包
 

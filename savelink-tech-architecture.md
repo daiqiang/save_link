@@ -9,6 +9,7 @@
 | 1.2 | Codex | 2026-07-01 | 按当前代码重写现状：编辑/移除游戏、设置页、缺失目录创建恢复、opener 权限、34 个 core 测试 |
 | 1.3 | 代强 | 2026-07-02 | 同步 Tauri 启动自检接入状态 |
 | 1.4 | 代强 | 2026-07-08 | 同步恢复校验增强与云同步增量协议路线 |
+| 1.5 | 代强 | 2026-07-14 | 同步百度 POC、协议 v1、云基础设施和 Fake 双设备闭环；明确百度适配器下一步 |
 
 ## 文档用途
 
@@ -19,7 +20,8 @@
 - `PROGRESS.md`：当前进度与下一步候选项。
 - `HANDOFF-codex.md`：后续开发交接。
 - `savelink-restore-test-spec.md`：恢复/存储关键路径验收基准。
-- `savelink-cloud-sync-model-protocol-draft.md`：云同步数据边界、目录结构和增量协议草案。
+- `savelink-cloud-sync-protocol-v1.md`：已定稿的云端目录、对象格式、同步流程和失败处理协议。
+- `baidu-netdisk-api-poc-report-20260714.md`：百度 OAuth/文件 API POC、2MiB 基准数据和云端物理格式决策证据。
 - `savelink-app/手动测试计划.md`：人工验收步骤。
 - `savelink-mvp-product-prototype.md`、`savelink-low-fidelity-wireframe.md`、`savelink-visual-interaction-guidelines.md`：产品、页面、视觉气质。
 
@@ -44,7 +46,7 @@ save_link_workspace/
 
 当前验证状态：
 
-- `savelink-core`：35 个测试全绿。
+- `savelink-core`：50 个测试全绿，其中 G/H 组 15 个保护云同步基础设施和 Fake 双设备闭环。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
 - 绿色版实机验证过设置页“打开”目录。
@@ -69,7 +71,7 @@ SaveLink 的核心承诺是“不丢用户存档”。所有技术选择服从�
 | 图标 | `src/lib/icons.tsx` | 内联 SVG，当前没有引入 lucide-react |
 | 核心逻辑 | Rust | 文件扫描、哈希、快照、恢复 |
 | 元数据 | SQLite via `rusqlite 0.32 bundled` | 用户无需单独安装 SQLite |
-| 快照存储 | `FsStore` 目录复制 | 当前不压缩；zip/restic 后置 |
+| 快照存储 | `FsStore` 将目录树写入 `repository` | 当前不压缩；zip/restic 后置 |
 | 目录选择 | `tauri-plugin-dialog` | 添加/编辑游戏选择目录 |
 | 打开路径 | `tauri-plugin-opener` | 设置页打开 AppData 范围内路径 |
 
@@ -91,6 +93,8 @@ SaveLink 的核心承诺是“不丢用户存档”。所有技术选择服从�
 │ savelink-core                                         │
 │ SnapshotService / RestoreService                      │
 │ Repository(SqliteRepo) + SnapshotStore(FsStore)        │
+│ CloudStateRepository(SqliteRepo)                       │
+│ CloudObjectStore(FakeCloudObjectStore；百度实现待接)    │
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -208,9 +212,11 @@ pub trait SnapshotStore: Send + Sync {
 
 当前实现：
 
-- `FsStore`
-- 一快照一个目录。
-- `{snapshot_id}.ok` 存内容哈希，用于 verify。
+- `FsStore` 是实现 `SnapshotStore` 的代码类型。
+- `repository` 是传给 `FsStore` 的运行时数据根目录，不是另一种代码实现。
+- `Repository` / `SqliteRepo` 是元数据持久化接口和 SQLite 实现，与小写路径 `repository/` 不是同一个概念。
+- 每条快照保存在 `repository/snapshots/{snapshot_id}/`。
+- 本机 `repository/snapshots/{snapshot_id}.ok` 存内容哈希，用于 verify。
 
 重要纪律：
 
@@ -287,13 +293,42 @@ pub trait SnapshotStore: Send + Sync {
 云端目录结构 + 增量上传/下载 + 快照不可变约束
 ```
 
+正式协议见 `savelink-cloud-sync-protocol-v1.md`。v1 按游戏目录列出 `.ok` 发现快照，不维护全局 `games.json`、`snapshots.json` 或 `tombstones.json`，避免多设备同时覆盖同一索引文件。
+
+当前已实现的本机云同步基础：
+
+- `cloud_model.rs`：云账号、游戏绑定、远端 `.ok` 缓存和同步状态模型。
+- `cloud_repo.rs`：独立 `CloudStateRepository`，不污染现有本地 `Repository` 契约。
+- `SqliteRepo`：新增 `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync`，旧数据库打开时自动补表。
+- `cloud_store.rs`：通用 `CloudObjectStore`、上传覆盖策略、云端条目模型和文件系统 `FakeCloudObjectStore`。
+- G 组 7 个测试：持久化、状态转换、目录排序、ignored 保留、CreateOnly/Overwrite、路径穿越防护和旧库补表。
+- `cloud_protocol.rs`：manifest、game、云端 `.ok` JSON 和逻辑路径的序列化、解析与严格校验。
+- `cloud_archive.rs`：单快照 zip、SHA-256、路径安全、防 zip slip 和解压后内容指纹校验。
+- `cloud_service.rs`：上传、发现、下载、冲突、幂等和接收落地编排。
+- H 组 8 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配和硬冲突。
+
+尚未实现 `BaiduNetdiskStore`、正式 OAuth/token 连接层和 Tauri 云同步命令/UI。
+
+百度网盘 POC 已通过，云端快照物理格式确定为：
+
+```text
+本机 repository/snapshots/{snapshot_id}/（由 FsStore 管理）
+  -> 临时打包 {snapshot_id}.zip
+  -> 上传 zip
+  -> 随后生成并上传云端 {snapshot_id}.ok
+```
+
+下载时先校验 `zip_size + zip_sha256`，解压后再校验 `content_hash + file_count + total_size`，通过后才能通过 `FsStore` 写入本机 `repository`。本机 `.ok` 与云端 `.ok` 内容不同；云端格式不要反向强制本地快照仓库改成 ZipStore。
+
 云端同步的是 SaveLink 的共享快照事实和云端元数据：
 
 - 游戏云端身份和名称。
 - 快照时间线元数据。
 - 快照内容文件。
 - 快照校验信息。
-- 备注、锁定、删除墓碑等可同步状态。
+- 发布快照时的备注和锁定状态。
+
+v1 上传后的备注/锁定修改只保存在本机，云端删除和删除墓碑后置。
 
 本机私有数据不应被云端覆盖：
 
@@ -337,7 +372,7 @@ Tauri 2 capability 需要：
 - `startup_self_check` 已在 Tauri setup 中显式调用；真实窗口残留清理场景可在正式回归时补验收。
 - 帮助入口仍是占位。
 - 应用图标仍是 Tauri 默认图标。
-- 本机此前缺 `rustfmt`，`cargo fmt` 未验证。
+- `rustfmt` 当前可用，新文件已格式化；全仓旧文件格式差异尚未单独收口。
 
 ## 路线图对应
 
@@ -347,7 +382,7 @@ Tauri 2 capability 需要：
 | MVP 后补齐 | 编辑/移除游戏、缺失目录创建恢复、设置页、打包脚本、权限修复 |
 | 阶段 2 自动化 | notify 文件监听、游戏退出后快照、保留策略 |
 | 阶段 3 游戏识别 | Ludusavi manifest / 常见游戏路径库 |
-| 阶段 4 云端 | 云端目录结构 + 增量同步；同步共享快照事实和云端元数据，真实存档路径保留为本机绑定 |
+| 阶段 4 云端 | POC、协议 v1 和 Fake 双设备完整闭环已完成；待实现百度适配器、账号连接和 UI |
 
 ## 当前结论
 

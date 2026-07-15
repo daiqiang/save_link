@@ -5,6 +5,8 @@
 //!
 //! 一个 `savelink.db` 文件即整个元数据库，无服务器、零安装，贴合"单机自包含"。
 
+use crate::cloud_model::{CloudAccount, CloudGameBinding, CloudSnapshotRecord, CloudSyncStatus};
+use crate::cloud_repo::CloudStateRepository;
 use crate::error::{Result, SaveLinkError};
 use crate::model::{Game, Reason, Snapshot, SnapshotStatus};
 use crate::repo::Repository;
@@ -89,7 +91,58 @@ impl SqliteRepo {
                 content_hash TEXT NOT NULL,
                 storage_key TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'complete'
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS cloud_accounts (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                account_identity TEXT,
+                display_name TEXT,
+                token_ref TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(provider, account_identity)
+             );
+             CREATE TABLE IF NOT EXISTS cloud_game_bindings (
+                account_id TEXT NOT NULL,
+                cloud_game_id TEXT NOT NULL,
+                local_game_id TEXT NOT NULL,
+                remote_revision INTEGER NOT NULL DEFAULT 0,
+                sync_enabled INTEGER NOT NULL DEFAULT 1,
+                last_scanned_at TEXT,
+                PRIMARY KEY (account_id, cloud_game_id),
+                UNIQUE(account_id, local_game_id)
+             );
+             CREATE TABLE IF NOT EXISTS cloud_snapshot_sync (
+                account_id TEXT NOT NULL,
+                cloud_game_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                note TEXT,
+                locked INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL,
+                total_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                archive_size INTEGER NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                published_at TEXT NOT NULL,
+                created_by_device_id TEXT NOT NULL,
+                sync_status TEXT NOT NULL CHECK (
+                    sync_status IN (
+                        'uploading', 'uploaded', 'remote_only', 'downloading',
+                        'downloaded', 'ignored', 'error'
+                    )
+                ),
+                last_synced_at TEXT,
+                last_error_code TEXT,
+                PRIMARY KEY (account_id, snapshot_id)
+             );
+             CREATE INDEX IF NOT EXISTS idx_cloud_snapshot_game
+                ON cloud_snapshot_sync(account_id, cloud_game_id, created_at DESC);",
         )
         .map_err(map_err)
     }
@@ -132,6 +185,33 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
 
 const SNAP_COLS: &str =
     "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status";
+
+const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code";
+
+fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnapshotRecord> {
+    let reason: String = row.get(4)?;
+    let locked: i64 = row.get(6)?;
+    let status: String = row.get(14)?;
+    Ok(CloudSnapshotRecord {
+        account_id: row.get(0)?,
+        cloud_game_id: row.get(1)?,
+        snapshot_id: row.get(2)?,
+        created_at: row.get(3)?,
+        reason: reason_from_str(&reason),
+        note: row.get(5)?,
+        locked: locked != 0,
+        file_count: row.get::<_, i64>(7)? as u64,
+        total_size: row.get::<_, i64>(8)? as u64,
+        content_hash: row.get(9)?,
+        archive_size: row.get::<_, i64>(10)? as u64,
+        archive_sha256: row.get(11)?,
+        published_at: row.get(12)?,
+        created_by_device_id: row.get(13)?,
+        sync_status: CloudSyncStatus::from_str(&status),
+        last_synced_at: row.get(15)?,
+        last_error_code: row.get(16)?,
+    })
+}
 
 impl Repository for SqliteRepo {
     fn insert_game(&self, game: Game) -> Result<()> {
@@ -326,5 +406,321 @@ impl Repository for SqliteRepo {
             out.push(r.map_err(map_err)?);
         }
         Ok(out)
+    }
+}
+
+impl CloudStateRepository for SqliteRepo {
+    fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO app_settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            params![key, value],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
+    fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare("SELECT value FROM app_settings WHERE key = ?1")
+            .map_err(map_err)?;
+        let mut rows = stmt
+            .query_map(params![key], |row| row.get(0))
+            .map_err(map_err)?;
+        match rows.next() {
+            Some(value) => Ok(Some(value.map_err(map_err)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn upsert_cloud_account(&self, account: CloudAccount) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO cloud_accounts
+                (id, provider, account_identity, display_name, token_ref, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(id) DO UPDATE SET
+                provider=excluded.provider,
+                account_identity=excluded.account_identity,
+                display_name=excluded.display_name,
+                token_ref=excluded.token_ref,
+                updated_at=excluded.updated_at",
+            params![
+                account.id,
+                account.provider,
+                account.account_identity,
+                account.display_name,
+                account.token_ref,
+                account.created_at,
+                account.updated_at,
+            ],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
+    fn get_cloud_account(&self, account_id: &str) -> Result<Option<CloudAccount>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, provider, account_identity, display_name, token_ref, created_at, updated_at
+                 FROM cloud_accounts WHERE id = ?1",
+            )
+            .map_err(map_err)?;
+        let mut rows = stmt
+            .query_map(params![account_id], |row| {
+                Ok(CloudAccount {
+                    id: row.get(0)?,
+                    provider: row.get(1)?,
+                    account_identity: row.get(2)?,
+                    display_name: row.get(3)?,
+                    token_ref: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(map_err)?;
+        match rows.next() {
+            Some(account) => Ok(Some(account.map_err(map_err)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn list_cloud_accounts(&self) -> Result<Vec<CloudAccount>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, provider, account_identity, display_name, token_ref, created_at, updated_at
+                 FROM cloud_accounts ORDER BY created_at, id",
+            )
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(CloudAccount {
+                    id: row.get(0)?,
+                    provider: row.get(1)?,
+                    account_identity: row.get(2)?,
+                    display_name: row.get(3)?,
+                    token_ref: row.get(4)?,
+                    created_at: row.get(5)?,
+                    updated_at: row.get(6)?,
+                })
+            })
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    fn upsert_cloud_game_binding(&self, binding: CloudGameBinding) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO cloud_game_bindings
+                (account_id, cloud_game_id, local_game_id, remote_revision, sync_enabled, last_scanned_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id, cloud_game_id) DO UPDATE SET
+                local_game_id=excluded.local_game_id,
+                remote_revision=excluded.remote_revision,
+                sync_enabled=excluded.sync_enabled,
+                last_scanned_at=excluded.last_scanned_at",
+            params![
+                binding.account_id,
+                binding.cloud_game_id,
+                binding.local_game_id,
+                binding.remote_revision as i64,
+                binding.sync_enabled as i64,
+                binding.last_scanned_at,
+            ],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
+    fn get_cloud_game_binding(
+        &self,
+        account_id: &str,
+        cloud_game_id: &str,
+    ) -> Result<Option<CloudGameBinding>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT account_id, cloud_game_id, local_game_id, remote_revision, sync_enabled, last_scanned_at
+                 FROM cloud_game_bindings WHERE account_id = ?1 AND cloud_game_id = ?2",
+            )
+            .map_err(map_err)?;
+        let mut rows = stmt
+            .query_map(params![account_id, cloud_game_id], |row| {
+                Ok(CloudGameBinding {
+                    account_id: row.get(0)?,
+                    cloud_game_id: row.get(1)?,
+                    local_game_id: row.get(2)?,
+                    remote_revision: row.get::<_, i64>(3)? as u64,
+                    sync_enabled: row.get::<_, i64>(4)? != 0,
+                    last_scanned_at: row.get(5)?,
+                })
+            })
+            .map_err(map_err)?;
+        match rows.next() {
+            Some(binding) => Ok(Some(binding.map_err(map_err)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn list_cloud_game_bindings(&self, account_id: &str) -> Result<Vec<CloudGameBinding>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn
+            .prepare(
+                "SELECT account_id, cloud_game_id, local_game_id, remote_revision, sync_enabled, last_scanned_at
+                 FROM cloud_game_bindings WHERE account_id = ?1 ORDER BY cloud_game_id",
+            )
+            .map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![account_id], |row| {
+                Ok(CloudGameBinding {
+                    account_id: row.get(0)?,
+                    cloud_game_id: row.get(1)?,
+                    local_game_id: row.get(2)?,
+                    remote_revision: row.get::<_, i64>(3)? as u64,
+                    sync_enabled: row.get::<_, i64>(4)? != 0,
+                    last_scanned_at: row.get(5)?,
+                })
+            })
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    fn upsert_cloud_snapshot(&self, snapshot: CloudSnapshotRecord) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO cloud_snapshot_sync
+                (account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked,
+                 file_count, total_size, content_hash, archive_size, archive_sha256,
+                 published_at, created_by_device_id, sync_status, last_synced_at, last_error_code)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             ON CONFLICT(account_id, snapshot_id) DO UPDATE SET
+                cloud_game_id=excluded.cloud_game_id,
+                created_at=excluded.created_at,
+                reason=excluded.reason,
+                note=excluded.note,
+                locked=excluded.locked,
+                file_count=excluded.file_count,
+                total_size=excluded.total_size,
+                content_hash=excluded.content_hash,
+                archive_size=excluded.archive_size,
+                archive_sha256=excluded.archive_sha256,
+                published_at=excluded.published_at,
+                created_by_device_id=excluded.created_by_device_id,
+                sync_status=excluded.sync_status,
+                last_synced_at=excluded.last_synced_at,
+                last_error_code=excluded.last_error_code",
+            params![
+                snapshot.account_id,
+                snapshot.cloud_game_id,
+                snapshot.snapshot_id,
+                snapshot.created_at,
+                reason_to_str(snapshot.reason),
+                snapshot.note,
+                snapshot.locked as i64,
+                snapshot.file_count as i64,
+                snapshot.total_size as i64,
+                snapshot.content_hash,
+                snapshot.archive_size as i64,
+                snapshot.archive_sha256,
+                snapshot.published_at,
+                snapshot.created_by_device_id,
+                snapshot.sync_status.as_str(),
+                snapshot.last_synced_at,
+                snapshot.last_error_code,
+            ],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
+    fn get_cloud_snapshot(
+        &self,
+        account_id: &str,
+        snapshot_id: &str,
+    ) -> Result<Option<CloudSnapshotRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT {CLOUD_SNAPSHOT_COLS} FROM cloud_snapshot_sync
+             WHERE account_id = ?1 AND snapshot_id = ?2"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+        let mut rows = stmt
+            .query_map(params![account_id, snapshot_id], row_to_cloud_snapshot)
+            .map_err(map_err)?;
+        match rows.next() {
+            Some(snapshot) => Ok(Some(snapshot.map_err(map_err)?)),
+            None => Ok(None),
+        }
+    }
+
+    fn list_cloud_snapshots(
+        &self,
+        account_id: &str,
+        cloud_game_id: &str,
+    ) -> Result<Vec<CloudSnapshotRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT {CLOUD_SNAPSHOT_COLS} FROM cloud_snapshot_sync
+             WHERE account_id = ?1 AND cloud_game_id = ?2
+             ORDER BY created_at DESC, snapshot_id DESC"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![account_id, cloud_game_id], row_to_cloud_snapshot)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    fn list_cloud_snapshots_by_status(
+        &self,
+        account_id: &str,
+        status: CloudSyncStatus,
+    ) -> Result<Vec<CloudSnapshotRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT {CLOUD_SNAPSHOT_COLS} FROM cloud_snapshot_sync
+             WHERE account_id = ?1 AND sync_status = ?2
+             ORDER BY created_at DESC, snapshot_id DESC"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![account_id, status.as_str()], row_to_cloud_snapshot)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    fn update_cloud_snapshot_status(
+        &self,
+        account_id: &str,
+        snapshot_id: &str,
+        status: CloudSyncStatus,
+        last_synced_at: Option<&str>,
+        last_error_code: Option<&str>,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE cloud_snapshot_sync
+                 SET sync_status = ?3, last_synced_at = ?4, last_error_code = ?5
+                 WHERE account_id = ?1 AND snapshot_id = ?2",
+                params![
+                    account_id,
+                    snapshot_id,
+                    status.as_str(),
+                    last_synced_at,
+                    last_error_code,
+                ],
+            )
+            .map_err(map_err)?;
+        if changed == 0 {
+            return Err(SaveLinkError::Io(format!(
+                "云端快照状态不存在: {account_id}/{snapshot_id}"
+            )));
+        }
+        Ok(())
     }
 }

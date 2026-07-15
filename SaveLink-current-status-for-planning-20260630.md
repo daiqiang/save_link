@@ -1,6 +1,6 @@
 # SaveLink 当前功能完成情况（给总规划会话）
 
-更新时间：2026-07-08
+更新时间：2026-07-14
 用途：给总规划会话快速判断 SaveLink 当前阶段、已完成功能、已验收点和下一阶段优先级。
 
 > 备注：`PROGRESS.md`、`HANDOFF-codex.md`、`savelink-tech-architecture.md`、`savelink-restore-test-spec.md`、`savelink-app/README.md`、`savelink-app/BUILD.md`、`savelink-app/手动测试计划.md` 已同步到当前实现状态。
@@ -11,6 +11,7 @@
 | --- | --- | --- | --- |
 | 1.0 | Codex | 2026-07-02 | 补齐版本历史；同步 MVP 后补齐、当前已知待办与基线收口状态；接入 Tauri 启动自检 |
 | 1.1 | 代强 | 2026-07-08 | 同步正式回归验收、恢复校验增强与云同步增量协议路线 |
+| 1.2 | 代强 | 2026-07-14 | 同步百度网盘 POC、协议 v1、云基础设施和 Fake 双设备闭环；明确百度正式适配下一步 |
 
 ## 一句话结论
 
@@ -18,14 +19,17 @@ SaveLink 当前已经不是空原型，而是一个可运行、可打包、可�
 
 MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `TC-41` 启动自检清理残留均已补测通过。恢复链路已增加小文件/中文路径回归测试，并把恢复后校验加强为 `content_hash + file_count + total_size`。
 
+云同步已完成无网络纵向闭环：协议 JSON、zip/SHA-256、安全解压、`CloudSyncService`、SQLite 云状态和 `FakeCloudObjectStore` 均已落地。设备 A 与 B 使用独立数据库和快照仓库，通过共享 Fake 云端完成上传、发现、下载和接收落地；core 当前 50 个测试全绿。尚未实现百度网盘正式适配器和用户界面。
+
 ## 当前架构状态
 
 - 客户端形态：Windows 桌面 C/S 架构应用，Tauri 壳 + React 前端 + Rust 后端命令层。
 - 核心逻辑：`savelink-core`，纯 Rust service/repo/store 抽象，独立于 Tauri。
 - 数据持久化：SQLite，数据库位于用户 AppData 下。
-- 快照仓库：当前为文件目录仓库实现（不是 zip 压缩包），位于用户 AppData 下的 repository。
+- 快照仓库：当前由 `FsStore` 以目录形式管理，实际数据位于用户 AppData 下的 `repository/`。
 - 前后端调用：React 组件通过 `src/lib/api.ts` 统一调用 Tauri `invoke`，组件内不直接散落 invoke。
-- 云同步路线：不再以 `latest.zip` 或整库 `savelink.db` 原样同步作为主线，改为云端目录结构 + 增量同步；详见 `savelink-cloud-sync-model-protocol-draft.md`。
+- 云同步路线：不再以 `latest.zip` 或整库 `savelink.db` 原样同步作为主线；百度网盘 POC 已通过，云端快照协议 v1 已定稿为按游戏目录发现的单快照 zip + `.ok`；详见 `savelink-cloud-sync-protocol-v1.md`。
+- 云同步本机基础：`SqliteRepo` 已实现 `CloudStateRepository`；`FakeCloudObjectStore` 可在本机模拟 CreateOnly、Overwrite、下载、列目录、查询和幂等删除。
 
 ## 已完成功能
 
@@ -121,13 +125,13 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 - 多存档目录。
 - 自动快照、文件监听、游戏退出后自动备份。
 - 压缩快照仓库（ZipStore/ResticStore），这是空间优化，不等同于云同步主线。
-- 云同步：优先做百度网盘 API 最小实验，验证目录镜像和单快照 zip 两种快照上传方式。
+- 云同步：Fake 双设备协议闭环已完成；待实现 `BaiduNetdiskStore`、正式 OAuth/token 连接层和 Tauri 命令/UI。
 
 ## 已知未完成或需要总规划判断的点
 
 ### 1. 快照仓库仍是目录复制，不是 zip
 
-当前快照仓库能用，但不是压缩包。后续如果关心空间占用和快照文件数量，可以规划 ZipStore 或 ResticStore。云同步方向需要另行验证目录镜像和单快照 zip 的上传效率，不能简单等同于“把整个 latest.zip 上传”。
+当前本地快照仓库能用，但不是压缩包。后续如果关心空间占用和快照文件数量，可以规划 ZipStore 或 ResticStore。这不阻塞云同步：上传时将 `repository/snapshots/{snapshot_id}/` 临时打包为单快照 zip；下载后完成双重校验，再通过 `FsStore` 写入本机 `repository`。
 
 ### 2. 多存档目录还没做
 
@@ -149,17 +153,17 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 
 这是有意收窄权限。当前设置页只打开 SaveLink 自己的数据目录和仓库目录，足够使用。不要为了方便直接开放整个磁盘。
 
-### 7. cargo fmt 未验证
+### 7. 全仓 Rust 格式尚未单独收口
 
-之前本机 Rust 工具链缺 `rustfmt` 组件，所以没有跑 `cargo fmt`。这不影响构建和运行，但如果要进入更正式的工程流程，建议安装 rustfmt 后统一格式化一次。
+当前 `rustfmt` 已可用，本轮新增 Rust 文件已单独格式化。全量 `cargo fmt --check` 会同时报告大量旧文件历史格式差异，因此本轮没有混入全仓机械格式化；后续可单独做一次格式提交。
 
 ## 建议总规划会话下一步判断
 
-我建议不要继续零散加 UI 小功能。当前路线已经收敛为：先做百度网盘 API 最小实验，再决定云端快照物理格式和同步协议实现方式。
+我建议不要继续零散加 UI 小功能。百度网盘 API 可行性、云端数据边界和快照协议 v1 已有结论，可以进入正式云同步最小闭环。
 
 下一步建议：
 
-1. 百度网盘 OAuth / 应用目录 / 上传下载最小链路实验。
-2. 对比目录镜像与单快照 zip 的上传、列目录、下载、校验体验。
-3. 根据实验结果细化 `savelink-cloud-sync-model-protocol-draft.md`。
-4. 再决定是否进入云同步代码实现。
+1. 本机云状态、协议 JSON、`CloudArchiveCodec`、`CloudSyncService` 和 Fake 双设备闭环已经完成。
+2. 实现 `BaiduNetdiskStore`，将 `CloudObjectStore` 逻辑路径映射到 `/apps/savelink/v1/`。
+3. 接入正式 OAuth/token 刷新，并用真实百度网盘复验上传、发现、下载和接收落地。
+4. 后端真实链路稳定后再增加 Tauri 命令和手动同步页面。

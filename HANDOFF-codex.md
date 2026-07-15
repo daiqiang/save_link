@@ -6,10 +6,11 @@
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-07-02 | 更新当前状态与待办，记录总规划会话注意点；同步基线收口要求；接入启动自检 |
 | 1.1 | 代强 | 2026-07-08 | 同步恢复校验增强、35 个 core 测试与云同步增量协议路线 |
+| 1.2 | 代强 | 2026-07-14 | 同步百度网盘 POC、协议 v1、本机云基础设施和 Fake 双设备闭环；core 增至 50 个测试 |
 
 > 角色约定：总规划会话负责方向、范围和验收判断；本地开发会话负责按文档实现、验证、打包。
 > 开工前先读完本文档 + `PROGRESS.md`，再动代码。
-> 最后更新：2026-07-08（Codex）
+> 最后更新：2026-07-14（Codex）
 
 ---
 
@@ -35,10 +36,14 @@ MVP 后第一轮补齐也已完成：
 - 修复 Tauri opener ACL 权限问题。
 - Tauri 启动时执行 `startup_self_check`，清理上次异常中断留下的 Writing 半成品快照。
 - 打包脚本可构建绿色版、NSIS、MSI。
+- 百度网盘 OAuth、应用目录、元数据/快照上传下载和 sha256 校验 POC 已通过。
+- 2MiB 基准测试已确认百度后端使用单快照 zip + `.ok`；本地快照仍由 `FsStore` 以目录形式保存在 `repository` 中。
+- 云同步本机基础设施已实现：4 张新表、`CloudStateRepository`、`CloudObjectStore`、文件系统 `FakeCloudObjectStore` 和 G 组测试。
+- 协议 JSON、`ZipCloudArchiveCodec` 和 `CloudSyncService` 已实现；设备 A -> Fake 云端 -> 设备 B 的上传、发现、下载、接收落地闭环已通过 H 组测试。
 
 当前客观状态：
 
-- `savelink-core`：35 个测试全绿。
+- `savelink-core`：50 个测试全绿，其中 G/H 组 15 个覆盖云同步基础设施和无网络双设备闭环。
 - `savelink-app`：Tauri 桌面应用，React 前端 + Rust 命令薄壳。
 - 数据位置：`%APPDATA%\com.daiq.savelink\`。
 - 产物位置：`savelink-app/src-tauri/target/release/`。
@@ -56,7 +61,8 @@ MVP 后第一轮补齐也已完成：
    - `savelink-mvp-product-prototype.md`
    - `savelink-low-fidelity-wireframe.md`
    - `savelink-visual-interaction-guidelines.md`
-7. `savelink-cloud-sync-model-protocol-draft.md`：云同步数据边界、目录结构和增量协议草案。
+7. `savelink-cloud-sync-protocol-v1.md`：已定稿的云端目录、对象格式、发现、上传、下载、冲突和失败恢复协议。
+8. `baidu-netdisk-api-poc-report-20260714.md`：OAuth/文件 API 实测、2MiB 基准数据和单快照 zip 决策证据。
 
 ## 三、不可触碰的红线
 
@@ -142,7 +148,7 @@ core 已有 progress 回调概念，当前 Tauri 命令传空回调。可改为�
 
 ### P4：真 zip / restic 存储
 
-当前 `FsStore` 是目录复制，不压缩。若要降低空间占用和快照文件数量，新增 `ZipStore` 或接 restic。不要让 service 解析具体存储结构。
+当前 `FsStore` 是把快照目录树写入 `repository` 的 `SnapshotStore` 实现，不压缩。若要降低空间占用和快照文件数量，新增 `ZipStore` 或接 restic。不要让 service 解析具体存储结构。
 
 ### P5：应用图标和安装体验
 
@@ -158,6 +164,13 @@ core 已有 progress 回调概念，当前 Tauri 命令传空回调。可改为�
 - 游戏识别可考虑复用 Ludusavi manifest。
 - 云端原则：同步 SaveLink 的共享快照事实和云端元数据，绝不直接同步真实存档目录。
 - 不把 `latest.zip` 或整份 `savelink.db` 原样同步作为云端主线；主线是云端目录结构 + 增量同步。
+- 百度网盘快照物理格式已定为每条快照一个 `{snapshot_id}.zip`，zip 上传成功后再生成并上传云端 `{snapshot_id}.ok`。
+- 云端快照协议 v1 已定稿：按游戏目录发现，不使用全局 `snapshots.json`；有效 `.ok` 是不可变发布记录。
+- v1 本机删除不删除云端副本，上传后备注/锁定修改暂不跨设备同步，避免第一版引入误删和可变元数据冲突。
+- `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync` 已落库；旧数据库打开时自动补表。
+- 协议 JSON、`CloudArchiveCodec` 和 `CloudSyncService` 已实现，Fake 云端已完成“上传 -> 发现 -> 下载 -> 双重校验 -> 写入另一套本机 repository -> 登记 SQLite”闭环。
+- 云同步术语统一为“接收云端快照并落地到本机快照仓库”；“导出/导入”只用于未来独立的手动备份功能。
+- 下一步实现 `BaiduNetdiskStore`，用真实百度网盘替换 Fake 适配器，并在同一 `CloudSyncService` 上复验闭环。
 - 手动 zip 导出/导入只作为备份迁移工具，当前优先级低。
 
 ## 六、有疑问时
