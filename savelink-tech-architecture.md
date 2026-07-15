@@ -10,6 +10,7 @@
 | 1.3 | 代强 | 2026-07-02 | 同步 Tauri 启动自检接入状态 |
 | 1.4 | 代强 | 2026-07-08 | 同步恢复校验增强与云同步增量协议路线 |
 | 1.5 | 代强 | 2026-07-14 | 同步百度 POC、协议 v1、云基础设施和 Fake 双设备闭环；明确百度适配器下一步 |
+| 1.6 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机连接层、真实百度验证、62 个默认测试和真实上传下一步 |
 
 ## 文档用途
 
@@ -46,7 +47,7 @@ save_link_workspace/
 
 当前验证状态：
 
-- `savelink-core`：50 个测试全绿，其中 G/H 组 15 个保护云同步基础设施和 Fake 双设备闭环。
+- `savelink-core`：62 个默认测试全绿，其中 G/H/I/K 组 25 个保护云同步基础设施、Fake 双设备闭环、百度 HTTP 契约和 OAuth；另有 1 个真实百度冒烟已按需执行通过。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
 - 绿色版实机验证过设置页“打开”目录。
@@ -72,6 +73,8 @@ SaveLink 的核心承诺是“不丢用户存档”。所有技术选择服从�
 | 核心逻辑 | Rust | 文件扫描、哈希、快照、恢复 |
 | 元数据 | SQLite via `rusqlite 0.32 bundled` | 用户无需单独安装 SQLite |
 | 快照存储 | `FsStore` 将目录树写入 `repository` | 当前不压缩；zip/restic 后置 |
+| 云端 HTTP | `reqwest 0.12 blocking + rustls` | 百度适配器流式上传/下载；HTTP 细节不进入同步业务层 |
+| 百度账号连接 | 系统浏览器 OAuth + loopback callback | `state` 校验后换 Token，凭据留在本机 AppData |
 | 目录选择 | `tauri-plugin-dialog` | 添加/编辑游戏选择目录 |
 | 打开路径 | `tauri-plugin-opener` | 设置页打开 AppData 范围内路径 |
 
@@ -94,7 +97,7 @@ SaveLink 的核心承诺是“不丢用户存档”。所有技术选择服从�
 │ SnapshotService / RestoreService                      │
 │ Repository(SqliteRepo) + SnapshotStore(FsStore)        │
 │ CloudStateRepository(SqliteRepo)                       │
-│ CloudObjectStore(FakeCloudObjectStore；百度实现待接)    │
+│ CloudObjectStore(FakeCloudObjectStore/BaiduNetdiskStore)│
 └──────────────────────────────────────────────────────┘
 ```
 
@@ -301,13 +304,16 @@ pub trait SnapshotStore: Send + Sync {
 - `cloud_repo.rs`：独立 `CloudStateRepository`，不污染现有本地 `Repository` 契约。
 - `SqliteRepo`：新增 `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync`，旧数据库打开时自动补表。
 - `cloud_store.rs`：通用 `CloudObjectStore`、上传覆盖策略、云端条目模型和文件系统 `FakeCloudObjectStore`。
+- `baidu_store.rs`：正式 `BaiduNetdiskStore`、逻辑/物理路径映射、Token 提供者边界、流式单步上传、分页列表、filemetas/dlink 下载、幂等删除和百度错误分类。
 - G 组 7 个测试：持久化、状态转换、目录排序、ignored 保留、CreateOnly/Overwrite、路径穿越防护和旧库补表。
 - `cloud_protocol.rs`：manifest、game、云端 `.ok` JSON 和逻辑路径的序列化、解析与严格校验。
 - `cloud_archive.rs`：单快照 zip、SHA-256、路径安全、防 zip slip 和解压后内容指纹校验。
 - `cloud_service.rs`：上传、发现、下载、冲突、幂等和接收落地编排。
 - H 组 8 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配和硬冲突。
+- 百度适配器内部单元测试 2 个，I 组本地 HTTP 契约测试 4 个；J 组真实百度对象存取冒烟默认忽略，2026-07-15 已使用环境变量注入 Token 执行通过。
+- `baidu_oauth.rs`：OAuth URL、授权码换 Token、刷新方法、随机 `state`、本机回调监听和 Token 文件仓库；K 组 6 个测试保护。
 
-尚未实现 `BaiduNetdiskStore`、正式 OAuth/token 连接层和 Tauri 云同步命令/UI。
+首次 OAuth 授权、凭据持久化、连接状态命令和快照“上云”入口已实现；尚未把按钮接到真正的 `CloudSyncService` 上传，也未完成自动刷新、解绑、凭据加密和真实百度双设备完整复验。`BaiduNetdiskStore` 当前按百度官方单步上传边界支持不超过 2 GiB 的对象，更大快照需要后续增加预上传/分片上传。
 
 百度网盘 POC 已通过，云端快照物理格式确定为：
 
@@ -336,6 +342,8 @@ v1 上传后的备注/锁定修改只保存在本机，云端删除和删除墓�
 - 本机设备 ID。
 - 百度网盘 token。
 - 本机设置和缓存。
+
+当前账号连接实现把 Token 保存到 `%APPDATA%\com.daiq.savelink\credentials\baidu-oauth.json`，SQLite `cloud_accounts.token_ref` 只保存相对引用。Token 不传 React、不写日志、不上传云端。该文件当前是明文 JSON，正式发布前应迁移到 Windows DPAPI、Credential Manager 或 Tauri Stronghold。
 
 手动 zip 导出/导入仍可作为备份迁移工具，但当前优先级低，不作为百度网盘自动云同步的技术主线。
 
@@ -372,6 +380,9 @@ Tauri 2 capability 需要：
 - `startup_self_check` 已在 Tauri setup 中显式调用；真实窗口残留清理场景可在正式回归时补验收。
 - 帮助入口仍是占位。
 - 应用图标仍是 Tauri 默认图标。
+- 百度首次授权已实现；自动刷新、授权失效重试、解绑和凭据加密尚未接入。
+- 快照“上云”按钮当前只建立账号连接，尚未触发真正的快照上传。
+- 百度适配器当前只实现不超过 2 GiB 的单步上传；断点续传和分片上传后置。
 - `rustfmt` 当前可用，新文件已格式化；全仓旧文件格式差异尚未单独收口。
 
 ## 路线图对应
@@ -382,7 +393,7 @@ Tauri 2 capability 需要：
 | MVP 后补齐 | 编辑/移除游戏、缺失目录创建恢复、设置页、打包脚本、权限修复 |
 | 阶段 2 自动化 | notify 文件监听、游戏退出后快照、保留策略 |
 | 阶段 3 游戏识别 | Ludusavi manifest / 常见游戏路径库 |
-| 阶段 4 云端 | POC、协议 v1 和 Fake 双设备完整闭环已完成；待实现百度适配器、账号连接和 UI |
+| 阶段 4 云端 | POC、协议 v1、Fake 双设备闭环、百度适配器和首次账号连接已完成；待实现真实上传、完整同步和状态 UI |
 
 ## 当前结论
 

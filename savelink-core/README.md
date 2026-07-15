@@ -5,30 +5,36 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-07-14 | 补齐版本历史；同步云状态仓库、协议 JSON、zip 编解码、CloudSyncService 与 G/H 组测试 |
+| 1.1 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 客户端与本机回调、I/J/K 组测试、真实百度验证和 62 个默认测试 |
 
 SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核心逻辑。不依赖 Tauri，可独立 `cargo test`。`savelink-app` 的 Tauri 命令层只做 DTO 和调用包装。
 
-> 历史：本 crate 最初是测试先行骨架，用作客观验收尺。现已实现，并由 A-F 组测试保护。
+> 历史：本 crate 最初是测试先行骨架，用作客观验收尺。现已实现，并由 A-K 组测试保护；J 组真实联网测试默认忽略。
 
 ## 当前状态
 
-- 测试：**50 个全绿**（`cargo test --no-fail-fast`）。
-- 主要依赖：`rusqlite 0.32`、`serde/serde_json`、`zip 2`、`sha2`、`chrono`；SQLite 使用 `bundled`，用户无需单独安装。
+- 测试：**62 个默认测试全绿**（`cargo test --no-fail-fast`），另有 1 个真实百度冒烟默认忽略、已人工执行通过。
+- 主要依赖：`rusqlite 0.32`、`serde/serde_json`、`zip 2`、`sha2`、`chrono`、`reqwest 0.12`；SQLite 使用 `bundled`，用户无需单独安装。
 - 生产 repo：`SqliteRepo`。
 - 生产 store：`FsStore`，即目录复制实现；zip/restic 是后续优化。
+- 云对象 store：`FakeCloudObjectStore` 用于无网络测试，`BaiduNetdiskStore` 用于正式百度文件 API。
 
 ## 测试分组
 
 | 分组 | 数量 | 说明 |
 | --- | ---: | --- |
 | A 创建快照 | 8 | 正常创建、未变化、变化检测、失败回滚、空目录、不可读目录 |
-| B 恢复 | 9 | 恢复前备份、目标损坏、替换恢复、回滚语义、缺失目录、进度顺序 |
+| B 恢复 | 10 | 恢复前备份、目标损坏、替换恢复、回滚语义、缺失目录、进度顺序、小文件中文路径回归 |
 | C 删除/锁定/游戏删除 | 6 | 锁定不可删、删除回滚、元数据可变、移除游戏 |
 | D 存储/扫描 | 6 | create/restore 往返、verify、content_hash、storage_key 不透明 |
 | E 启动自检/同盘检测 | 2 | writing 残留清理、同卷判断 |
 | F SQLite 持久化 | 3 | 数据重开仍在、枚举往返、游戏更新持久化 |
 | G 云同步基础 | 7 | 云状态持久化、状态转换、旧库补表、Fake 云对象操作和路径安全 |
 | H Fake 云同步闭环 | 8 | 协议 JSON、zip 安全、A/B 双设备往返、幂等、孤儿与损坏拒绝 |
+| 百度适配器内部单元 | 2 | 逻辑/物理路径映射、稳定错误分类和敏感信息边界 |
+| I 百度 HTTP 契约 | 4 | CreateOnly、路径映射、列表/stat、dlink 下载、幂等删除、缺失目录 |
+| J 真实百度冒烟 | 1（默认忽略） | 环境变量注入 Token，真实上传、列表、下载、校验和清理 |
+| K 百度 OAuth | 6 | URL、换 Token、随机 state、Token 文件仓库、本机回调和错误 state 拒绝 |
 
 ## 模块地图
 
@@ -43,6 +49,8 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 | `cloud_model.rs` | 已实现 | 云账号、游戏绑定、远端快照缓存和同步状态模型 |
 | `cloud_repo.rs` | 已实现 | `CloudStateRepository` 本机云状态持久化接口 |
 | `cloud_store.rs` | 已实现 | `CloudObjectStore` 与文件系统 `FakeCloudObjectStore` |
+| `baidu_store.rs` | 已实现 | 正式百度适配器、Token 提供者边界、流式 HTTP 对象操作和错误映射 |
+| `baidu_oauth.rs` | 已实现 | OAuth URL/换 Token/刷新方法、随机 state、本机回调监听和 Token 文件仓库 |
 | `cloud_protocol.rs` | 已实现 | v1 JSON 契约、逻辑路径、ID/hash/时间校验 |
 | `cloud_archive.rs` | 已实现 | 单快照 zip、SHA-256 和安全解压 |
 | `cloud_service.rs` | 已实现 | Fake/真实云后端共用的上传、发现、下载和接收落地编排 |
@@ -77,12 +85,16 @@ cargo test --no-fail-fast
 ## 常用命令
 
 ```bash
-cargo test --no-fail-fast       # 全部 A-F 组
+cargo test --no-fail-fast       # 全部默认测试（真实百度 J 组除外）
 cargo test --test b_restore     # 只跑恢复组
 cargo test --test c_delete_lock # 删除/锁定/删除游戏
 cargo test --test f_persistence # SQLite 落盘验证
 cargo test --test g_cloud_foundation # 云同步本机状态与假云端基础设施
 cargo test --test h_cloud_sync # 设备 A -> Fake 云端 -> 设备 B 闭环
+cargo test --test i_baidu_store # 百度适配器本地 HTTP 契约
+cargo test --test k_baidu_oauth # 百度 OAuth 与本机回调
+# 设置 SAVELINK_BAIDU_ACCESS_TOKEN 后按需运行真实冒烟：
+cargo test --test j_baidu_live -- --ignored
 ```
 
 ## 与文档的对应

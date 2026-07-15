@@ -7,6 +7,8 @@
 //! 实现顺序见 `savelink-tech-architecture.md`「落地顺序建议」；
 //! 验收标准见 `savelink-restore-test-spec.md`「验收矩阵」。
 
+pub mod baidu_store;
+pub mod baidu_oauth;
 pub mod cloud_archive;
 pub mod cloud_model;
 pub mod cloud_protocol;

@@ -1,6 +1,6 @@
 # SaveLink 当前功能完成情况（给总规划会话）
 
-更新时间：2026-07-14
+更新时间：2026-07-15
 用途：给总规划会话快速判断 SaveLink 当前阶段、已完成功能、已验收点和下一阶段优先级。
 
 > 备注：`PROGRESS.md`、`HANDOFF-codex.md`、`savelink-tech-architecture.md`、`savelink-restore-test-spec.md`、`savelink-app/README.md`、`savelink-app/BUILD.md`、`savelink-app/手动测试计划.md` 已同步到当前实现状态。
@@ -12,6 +12,7 @@
 | 1.0 | Codex | 2026-07-02 | 补齐版本历史；同步 MVP 后补齐、当前已知待办与基线收口状态；接入 Tauri 启动自检 |
 | 1.1 | 代强 | 2026-07-08 | 同步正式回归验收、恢复校验增强与云同步增量协议路线 |
 | 1.2 | 代强 | 2026-07-14 | 同步百度网盘 POC、协议 v1、云基础设施和 Fake 双设备闭环；明确百度正式适配下一步 |
+| 1.3 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机授权与 Token 持久化、上云入口和 62 个默认测试；明确真实上传下一步 |
 
 ## 一句话结论
 
@@ -19,7 +20,7 @@ SaveLink 当前已经不是空原型，而是一个可运行、可打包、可�
 
 MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `TC-41` 启动自检清理残留均已补测通过。恢复链路已增加小文件/中文路径回归测试，并把恢复后校验加强为 `content_hash + file_count + total_size`。
 
-云同步已完成无网络纵向闭环：协议 JSON、zip/SHA-256、安全解压、`CloudSyncService`、SQLite 云状态和 `FakeCloudObjectStore` 均已落地。设备 A 与 B 使用独立数据库和快照仓库，通过共享 Fake 云端完成上传、发现、下载和接收落地；core 当前 50 个测试全绿。尚未实现百度网盘正式适配器和用户界面。
+云同步已完成无网络纵向闭环、正式百度对象存储适配和首次账号连接：协议 JSON、zip/SHA-256、安全解压、`CloudSyncService`、SQLite 云状态、`FakeCloudObjectStore` 与 `BaiduNetdiskStore` 均已落地；系统浏览器 OAuth、本机回调、Token 持久化和快照“上云”授权入口已用绿色版实测。core 当前 62 个默认测试全绿，另有 1 个真实冒烟按需运行。尚未把“上云”按钮接到真正的单快照上传，也未完成真实百度双设备完整同步。
 
 ## 当前架构状态
 
@@ -29,7 +30,8 @@ MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `
 - 快照仓库：当前由 `FsStore` 以目录形式管理，实际数据位于用户 AppData 下的 `repository/`。
 - 前后端调用：React 组件通过 `src/lib/api.ts` 统一调用 Tauri `invoke`，组件内不直接散落 invoke。
 - 云同步路线：不再以 `latest.zip` 或整库 `savelink.db` 原样同步作为主线；百度网盘 POC 已通过，云端快照协议 v1 已定稿为按游戏目录发现的单快照 zip + `.ok`；详见 `savelink-cloud-sync-protocol-v1.md`。
-- 云同步本机基础：`SqliteRepo` 已实现 `CloudStateRepository`；`FakeCloudObjectStore` 可在本机模拟 CreateOnly、Overwrite、下载、列目录、查询和幂等删除。
+- 云存储适配：`SqliteRepo` 已实现 `CloudStateRepository`；`FakeCloudObjectStore` 保护无网络同步测试；`BaiduNetdiskStore` 将逻辑路径映射到 `/apps/savelink/v1/`，实现真实 HTTP 对象操作。
+- 百度账号连接：Tauri 已提供连接状态和发起授权命令；Token 独立保存在 AppData `credentials/baidu-oauth.json`，SQLite `cloud_accounts` 只保存 `token_ref`。
 
 ## 已完成功能
 
@@ -125,7 +127,7 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 - 多存档目录。
 - 自动快照、文件监听、游戏退出后自动备份。
 - 压缩快照仓库（ZipStore/ResticStore），这是空间优化，不等同于云同步主线。
-- 云同步：Fake 双设备协议闭环已完成；待实现 `BaiduNetdiskStore`、正式 OAuth/token 连接层和 Tauri 命令/UI。
+- 云同步：Fake 双设备协议闭环、`BaiduNetdiskStore`、首次 OAuth 账号连接和快照“上云”入口已完成；待接真正的单快照上传、真实百度双设备完整快照复验和同步状态 UI。
 
 ## 已知未完成或需要总规划判断的点
 
@@ -163,7 +165,7 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 
 下一步建议：
 
-1. 本机云状态、协议 JSON、`CloudArchiveCodec`、`CloudSyncService` 和 Fake 双设备闭环已经完成。
-2. 实现 `BaiduNetdiskStore`，将 `CloudObjectStore` 逻辑路径映射到 `/apps/savelink/v1/`。
-3. 接入正式 OAuth/token 刷新，并用真实百度网盘复验上传、发现、下载和接收落地。
-4. 后端真实链路稳定后再增加 Tauri 命令和手动同步页面。
+1. 本机云状态、协议 JSON、`CloudArchiveCodec`、`CloudSyncService`、Fake 双设备闭环和 `BaiduNetdiskStore` 已经完成。
+2. 首次 OAuth 授权、本机回调与凭据持久化已经完成；自动刷新、解绑和凭据加密作为后续账号层增强。
+3. 先让现有快照“上云”按钮使用已授权 `BaiduNetdiskStore` 调用 `CloudSyncService`，跑通单条快照真实上传。
+4. 再复验真实百度发现、下载和接收落地的双设备闭环，并补齐同步状态 UI。

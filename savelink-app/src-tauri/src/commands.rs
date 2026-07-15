@@ -5,6 +5,12 @@
 //!
 //! 对照 Java BS：这一层相当于 Spring Controller，core 相当于 Service 层。
 
+use crate::oauth_config::baidu_oauth_config;
+use savelink_core::baidu_oauth::{
+    new_oauth_state, BaiduOAuthClient, FileBaiduTokenStore, OAuthCallbackListener,
+};
+use savelink_core::cloud_model::CloudAccount;
+use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapshot};
 use savelink_core::repo::{Clock, IdGen, Repository};
 use savelink_core::service::{RestoreService, SnapshotService};
@@ -12,8 +18,16 @@ use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::store::{FsStore, SnapshotStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
+use tauri_plugin_opener::OpenerExt;
+
+const BAIDU_ACCOUNT_ID: &str = "baidu-netdisk";
+const BAIDU_PROVIDER: &str = "baidu_netdisk";
+const BAIDU_TOKEN_REF: &str = "credentials/baidu-oauth.json";
+const BAIDU_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 
 /// 真实时钟：输出本地时间 "YYYY-MM-DD HH:MM"。
 /// 该格式既能按字符串正确排序（时间线倒序依赖此），又便于前端直接展示。
@@ -32,7 +46,10 @@ impl IdGen for TimeIdGen {
     fn new_id(&self, prefix: &str) -> String {
         use std::sync::atomic::Ordering;
         let n = self.counter.fetch_add(1, Ordering::SeqCst);
-        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
         format!("{prefix}_{nanos}_{n}")
     }
 }
@@ -40,7 +57,10 @@ impl IdGen for TimeIdGen {
 /// 应用全局状态（类似 Spring 单例 Bean）：共享一份 repo / store / clock / ids。
 pub struct AppState {
     pub repo: Arc<dyn Repository>,
+    pub cloud_repo: Arc<dyn CloudStateRepository>,
     pub store: Arc<dyn SnapshotStore>,
+    pub baidu_token_store: FileBaiduTokenStore,
+    pub baidu_auth_in_progress: Arc<AtomicBool>,
     pub data_dir: PathBuf,
     pub repository_dir: PathBuf,
     pub clock: Arc<dyn Clock>,
@@ -51,25 +71,43 @@ impl AppState {
     /// 在指定数据目录下初始化：savelink.db + repository/ 仓库目录。
     pub fn init(data_dir: &std::path::Path) -> Result<Self, String> {
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
-        let repo = SqliteRepo::open(data_dir.join("savelink.db")).map_err(|e| e.to_string())?;
+        let sqlite_repo =
+            Arc::new(SqliteRepo::open(data_dir.join("savelink.db")).map_err(|e| e.to_string())?);
+        let repo: Arc<dyn Repository> = sqlite_repo.clone();
+        let cloud_repo: Arc<dyn CloudStateRepository> = sqlite_repo;
         let repository_dir = data_dir.join("repository");
         let store = FsStore::new(repository_dir.clone());
         Ok(Self {
-            repo: Arc::new(repo),
+            repo,
+            cloud_repo,
             store: Arc::new(store),
+            baidu_token_store: FileBaiduTokenStore::new(data_dir.join(BAIDU_TOKEN_REF)),
+            baidu_auth_in_progress: Arc::new(AtomicBool::new(false)),
             data_dir: data_dir.to_path_buf(),
             repository_dir,
             clock: Arc::new(SystemClock),
-            ids: Arc::new(TimeIdGen { counter: std::sync::atomic::AtomicU64::new(0) }),
+            ids: Arc::new(TimeIdGen {
+                counter: std::sync::atomic::AtomicU64::new(0),
+            }),
         })
     }
 
     fn snapshots(&self) -> SnapshotService {
-        SnapshotService::new(self.repo.clone(), self.store.clone(), self.clock.clone(), self.ids.clone())
+        SnapshotService::new(
+            self.repo.clone(),
+            self.store.clone(),
+            self.clock.clone(),
+            self.ids.clone(),
+        )
     }
 
     fn restorer(&self) -> RestoreService {
-        RestoreService::new(self.repo.clone(), self.store.clone(), self.clock.clone(), self.ids.clone())
+        RestoreService::new(
+            self.repo.clone(),
+            self.store.clone(),
+            self.clock.clone(),
+            self.ids.clone(),
+        )
     }
 }
 
@@ -105,6 +143,14 @@ pub struct AppInfoDto {
     pub database_path: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct BaiduConnectionDto {
+    pub connected: bool,
+    pub provider: String,
+    pub display_name: Option<String>,
+    pub expires_at: Option<String>,
+}
+
 fn reason_str(r: Reason) -> String {
     match r {
         Reason::Manual => "manual",
@@ -133,15 +179,46 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
         id: g.id.clone(),
         name: g.name.clone(),
         icon: g.icon.clone(),
-        save_paths: g.save_paths.iter().map(|p| p.to_string_lossy().to_string()).collect(),
+        save_paths: g
+            .save_paths
+            .iter()
+            .map(|p| p.to_string_lossy().to_string())
+            .collect(),
         snapshot_count: snaps.len(),
         last_snapshot_at: snaps.first().map(|s| s.created_at.clone()),
     }
 }
 
+fn baidu_connection_status(
+    cloud_repo: &Arc<dyn CloudStateRepository>,
+    token_store: &FileBaiduTokenStore,
+) -> Result<BaiduConnectionDto, String> {
+    let account = cloud_repo
+        .get_cloud_account(BAIDU_ACCOUNT_ID)
+        .map_err(|error| error.to_string())?;
+    let token = token_store.load().map_err(|error| error.to_string())?;
+    let connected = token
+        .as_ref()
+        .is_some_and(|token| !token.access_token.trim().is_empty());
+    Ok(BaiduConnectionDto {
+        connected,
+        provider: BAIDU_PROVIDER.into(),
+        display_name: account.and_then(|account| account.display_name),
+        expires_at: token.and_then(|token| token.expires_at),
+    })
+}
+
+struct AuthBusyGuard(Arc<AtomicBool>);
+
+impl Drop for AuthBusyGuard {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 /* ---------- Tauri 命令（前端通过 invoke 调用，类似发 HTTP 到 Controller） ---------- */
 
-use tauri::State;
+use tauri::{AppHandle, State};
 
 #[tauri::command]
 pub fn list_games(state: State<'_, AppState>) -> Result<Vec<GameDto>, String> {
@@ -160,13 +237,99 @@ pub fn get_app_info(state: State<'_, AppState>) -> Result<AppInfoDto, String> {
         version: env!("CARGO_PKG_VERSION").to_string(),
         data_dir: state.data_dir.to_string_lossy().to_string(),
         repository_dir: state.repository_dir.to_string_lossy().to_string(),
-        database_path: state.data_dir.join("savelink.db").to_string_lossy().to_string(),
+        database_path: state
+            .data_dir
+            .join("savelink.db")
+            .to_string_lossy()
+            .to_string(),
     })
 }
 
 #[tauri::command]
-pub fn list_snapshots(state: State<'_, AppState>, game_id: String) -> Result<Vec<SnapshotDto>, String> {
-    let snaps = state.repo.list_snapshots(&game_id).map_err(|e| e.to_string())?;
+pub fn get_baidu_connection_status(
+    state: State<'_, AppState>,
+) -> Result<BaiduConnectionDto, String> {
+    baidu_connection_status(&state.cloud_repo, &state.baidu_token_store)
+}
+
+#[tauri::command]
+pub async fn connect_baidu(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<BaiduConnectionDto, String> {
+    let current = baidu_connection_status(&state.cloud_repo, &state.baidu_token_store)?;
+    if current.connected {
+        return Ok(current);
+    }
+
+    let busy = state.baidu_auth_in_progress.clone();
+    if busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("百度网盘授权正在进行，请在浏览器中完成授权".into());
+    }
+    let _busy_guard = AuthBusyGuard(busy);
+
+    let config = baidu_oauth_config().map_err(|error| error.to_string())?;
+    let client = BaiduOAuthClient::new(config.clone()).map_err(|error| error.to_string())?;
+    let oauth_state = new_oauth_state().map_err(|error| error.to_string())?;
+    let callback =
+        OAuthCallbackListener::bind(config.redirect_uri()).map_err(|error| error.to_string())?;
+    let authorization_url = client
+        .authorization_url(&oauth_state)
+        .map_err(|error| error.to_string())?;
+
+    app.opener()
+        .open_url(authorization_url, None::<&str>)
+        .map_err(|error| format!("无法打开百度授权页面: {error}"))?;
+
+    let cloud_repo = state.cloud_repo.clone();
+    let token_store = state.baidu_token_store.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let code = callback
+            .wait_for_code(&oauth_state, BAIDU_CALLBACK_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        let token = client
+            .exchange_code(&code)
+            .map_err(|error| error.to_string())?;
+        token_store
+            .save(&token)
+            .map_err(|error| error.to_string())?;
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let created_at = cloud_repo
+            .get_cloud_account(BAIDU_ACCOUNT_ID)
+            .map_err(|error| error.to_string())?
+            .map(|account| account.created_at)
+            .unwrap_or_else(|| now.clone());
+        cloud_repo
+            .upsert_cloud_account(CloudAccount {
+                id: BAIDU_ACCOUNT_ID.into(),
+                provider: BAIDU_PROVIDER.into(),
+                account_identity: None,
+                display_name: Some("百度网盘".into()),
+                token_ref: Some(BAIDU_TOKEN_REF.into()),
+                created_at,
+                updated_at: now,
+            })
+            .map_err(|error| error.to_string())?;
+
+        baidu_connection_status(&cloud_repo, &token_store)
+    })
+    .await
+    .map_err(|error| format!("百度授权任务异常结束: {error}"))?
+}
+
+#[tauri::command]
+pub fn list_snapshots(
+    state: State<'_, AppState>,
+    game_id: String,
+) -> Result<Vec<SnapshotDto>, String> {
+    let snaps = state
+        .repo
+        .list_snapshots(&game_id)
+        .map_err(|e| e.to_string())?;
     Ok(snaps.iter().map(snapshot_to_dto).collect())
 }
 
@@ -205,11 +368,17 @@ pub fn add_game(
         name,
         icon: None,
         repo_path: std::path::PathBuf::new(), // 仓库由 store 管理，DTO 不暴露
-        save_paths: save_paths.into_iter().map(std::path::PathBuf::from).collect(),
+        save_paths: save_paths
+            .into_iter()
+            .map(std::path::PathBuf::from)
+            .collect(),
         created_at: now.clone(),
         updated_at: now,
     };
-    state.repo.insert_game(game.clone()).map_err(|e| e.to_string())?;
+    state
+        .repo
+        .insert_game(game.clone())
+        .map_err(|e| e.to_string())?;
     Ok(game_to_dto(&state.repo, &game))
 }
 
@@ -241,9 +410,15 @@ pub fn update_game(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "游戏不存在".to_string())?;
     game.name = name.trim().to_string();
-    game.save_paths = trimmed_paths.into_iter().map(std::path::PathBuf::from).collect();
+    game.save_paths = trimmed_paths
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect();
     game.updated_at = state.clock.now_stamp();
-    state.repo.update_game(game.clone()).map_err(|e| e.to_string())?;
+    state
+        .repo
+        .update_game(game.clone())
+        .map_err(|e| e.to_string())?;
     Ok(game_to_dto(&state.repo, &game))
 }
 
@@ -270,17 +445,26 @@ pub fn update_snapshot_meta(
     note: Option<String>,
     locked: Option<bool>,
 ) -> Result<(), String> {
-    state.snapshots().update_meta(&snapshot_id, note, locked).map_err(|e| e.to_string())
+    state
+        .snapshots()
+        .update_meta(&snapshot_id, note, locked)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_snapshot(state: State<'_, AppState>, snapshot_id: String) -> Result<(), String> {
-    state.snapshots().delete_snapshot(&snapshot_id).map_err(|e| e.to_string())
+    state
+        .snapshots()
+        .delete_snapshot(&snapshot_id)
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub fn delete_game(state: State<'_, AppState>, game_id: String) -> Result<(), String> {
-    state.snapshots().delete_game(&game_id).map_err(|e| e.to_string())
+    state
+        .snapshots()
+        .delete_game(&game_id)
+        .map_err(|e| e.to_string())
 }
 
 #[derive(Serialize)]
@@ -300,7 +484,10 @@ pub fn restore_snapshot(
         .restorer()
         .restore_snapshot(&game_id, &snapshot_id, &|_step| {})
         .map_err(|e| e.to_string())?;
-    Ok(RestoreResultDto { target_id: out.target_id, backup_id: out.backup_id })
+    Ok(RestoreResultDto {
+        target_id: out.target_id,
+        backup_id: out.backup_id,
+    })
 }
 
 /// 真实存档目录不存在时、用户已做出决策后的续走命令（安全规则 5）。
@@ -321,6 +508,8 @@ pub fn restore_snapshot_with_choice(
         .restorer()
         .restore_with_choice(&game_id, &snapshot_id, c, &|_step| {})
         .map_err(|e| e.to_string())?;
-    Ok(RestoreResultDto { target_id: out.target_id, backup_id: out.backup_id })
+    Ok(RestoreResultDto {
+        target_id: out.target_id,
+        backup_id: out.backup_id,
+    })
 }
-

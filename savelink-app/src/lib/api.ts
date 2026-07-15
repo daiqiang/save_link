@@ -5,7 +5,14 @@
 // 这就是当初让组件只依赖本层、不直接碰 invoke 的回报。
 
 import { invoke } from "@tauri-apps/api/core";
-import type { Game, Snapshot, ScanResult, RestoreResult, AppInfo } from "./types";
+import type {
+  AppInfo,
+  BaiduConnection,
+  Game,
+  RestoreResult,
+  ScanResult,
+  Snapshot,
+} from "./types";
 
 export async function listGames(): Promise<Game[]> {
   return invoke<Game[]>("list_games");
@@ -17,6 +24,14 @@ export async function getRepositoryPath(): Promise<string> {
 
 export async function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("get_app_info");
+}
+
+export async function getBaiduConnectionStatus(): Promise<BaiduConnection> {
+  return invoke<BaiduConnection>("get_baidu_connection_status");
+}
+
+export async function connectBaidu(): Promise<BaiduConnection> {
+  return invoke<BaiduConnection>("connect_baidu");
 }
 
 export async function listSnapshots(gameId: string): Promise<Snapshot[]> {

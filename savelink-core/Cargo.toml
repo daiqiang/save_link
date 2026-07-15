@@ -2,12 +2,14 @@
 name = "savelink-core"
 version = "0.1.0"
 edition = "2021"
-description = "SaveLink 本地存档核心：测试先行骨架（实现为 todo!，测试为红灯）"
+description = "SaveLink 本地存档、快照恢复与云同步核心"
 
 [dev-dependencies]
 
 [dependencies]
 chrono = "0.4"
+getrandom = "0.3"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "multipart", "rustls-tls"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

@@ -7,6 +7,7 @@
 | 1.0 | 代强 | 2026-07-07 | 第一版：定义云同步数据边界、目录结构、增量协议与百度网盘可行性验证点 |
 | 1.1 | 代强 | 2026-07-08 | 补充数据上云决策表，明确云端共享数据与本机私有数据 |
 | 1.2 | 代强 | 2026-07-14 | 根据百度 POC 定稿协议 v1；同步 Fake 双设备实现，并统一“接收落地”术语 |
+| 1.3 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth/Token 本机连接层和真实百度验证状态，不改变协议 v1 语义 |
 
 ## 文档状态
 
@@ -696,7 +697,7 @@ delete_file(logical_path)
 职责划分：
 
 - `CloudObjectStore`：逻辑文件上传、下载、列目录、查询和删除。
-- `BaiduNetdiskStore`：把逻辑路径映射到 `/apps/savelink/v1/`，处理 mkdir、precreate、upload、filemetas、dlink、token 刷新、限流和错误码。
+- `BaiduNetdiskStore`：把逻辑路径映射到 `/apps/savelink/v1/`，处理 mkdir、upload、filemetas、dlink、限流和错误码，并通过 `BaiduAccessTokenProvider` 获取当前 token。
 - `CloudArchiveCodec`：创建 zip、安全解压、计算 zip SHA-256。
 - `CloudSyncService`：初始化/校验 manifest，并执行发现、上传、下载、冲突判断和本机状态更新。
 - `SnapshotStore`：管理本机正式快照文件。
@@ -716,6 +717,8 @@ OAuth 登录和 token 刷新属于账号连接层，不属于快照协议。其�
 - API 返回的 md5 可以用于诊断，但不能替代协议要求的 zip SHA-256。
 
 百度网盘 POC 已验证 OAuth、应用目录、上传、覆盖、列表、下载、中文路径和 sha256 完整性。尚未验证的上线审核、普通用户账号授权、长期 token 轮换、限流和大文件分片属于产品化工作，不改变本协议的数据模型。
+
+2026-07-15 已实现正式 Rust `BaiduNetdiskStore`，并通过本地 HTTP 契约测试和真实百度对象上传、列表、下载、校验、删除冒烟。同日已跑通桌面端系统浏览器 OAuth、本机回调、Token 文件持久化和 SQLite `token_ref` 登记；Token 不进入云端对象。下一阶段是把已授权适配器接到 `CloudSyncService`，复验真实百度双设备完整快照闭环。
 
 ## 第一条正式实现闭环
 

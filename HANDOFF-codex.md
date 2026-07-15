@@ -7,10 +7,11 @@
 | 1.0 | 代强 | 2026-07-02 | 更新当前状态与待办，记录总规划会话注意点；同步基线收口要求；接入启动自检 |
 | 1.1 | 代强 | 2026-07-08 | 同步恢复校验增强、35 个 core 测试与云同步增量协议路线 |
 | 1.2 | 代强 | 2026-07-14 | 同步百度网盘 POC、协议 v1、本机云基础设施和 Fake 双设备闭环；core 增至 50 个测试 |
+| 1.3 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机授权与 Token 持久化、上云入口和 62 个默认测试；明确真实上传下一步 |
 
 > 角色约定：总规划会话负责方向、范围和验收判断；本地开发会话负责按文档实现、验证、打包。
 > 开工前先读完本文档 + `PROGRESS.md`，再动代码。
-> 最后更新：2026-07-14（Codex）
+> 最后更新：2026-07-15（Codex）
 
 ---
 
@@ -40,10 +41,14 @@ MVP 后第一轮补齐也已完成：
 - 2MiB 基准测试已确认百度后端使用单快照 zip + `.ok`；本地快照仍由 `FsStore` 以目录形式保存在 `repository` 中。
 - 云同步本机基础设施已实现：4 张新表、`CloudStateRepository`、`CloudObjectStore`、文件系统 `FakeCloudObjectStore` 和 G 组测试。
 - 协议 JSON、`ZipCloudArchiveCodec` 和 `CloudSyncService` 已实现；设备 A -> Fake 云端 -> 设备 B 的上传、发现、下载、接收落地闭环已通过 H 组测试。
+- 正式 `BaiduNetdiskStore` 已实现：逻辑路径映射、流式单步上传、CreateOnly/Overwrite、分页列表、stat、filemetas/dlink 下载、幂等删除、错误分类和临时下载清理均已接入。
+- I 组本地 HTTP 契约测试全绿；J 组真实百度网盘上传、列表、下载和删除冒烟已执行通过，Token 仅通过环境变量注入。
+- 正式客户端已实现百度 OAuth：系统浏览器授权、`127.0.0.1` 回调、随机 `state` 校验、授权码换 Token、本机 Token 文件持久化和 SQLite 账号引用登记均已实测通过。
+- 快照“上云”按钮当前只负责未授权时建立连接，尚未调用 `CloudSyncService` 上传快照。
 
 当前客观状态：
 
-- `savelink-core`：50 个测试全绿，其中 G/H 组 15 个覆盖云同步基础设施和无网络双设备闭环。
+- `savelink-core`：62 个默认测试全绿，其中 G/H/I/K 组 25 个覆盖云基础设施、Fake 双设备闭环、百度 HTTP 契约和 OAuth；另有 1 个默认忽略的真实百度冒烟已人工执行通过。
 - `savelink-app`：Tauri 桌面应用，React 前端 + Rust 命令薄壳。
 - 数据位置：`%APPDATA%\com.daiq.savelink\`。
 - 产物位置：`savelink-app/src-tauri/target/release/`。
@@ -170,7 +175,8 @@ core 已有 progress 回调概念，当前 Tauri 命令传空回调。可改为�
 - `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync` 已落库；旧数据库打开时自动补表。
 - 协议 JSON、`CloudArchiveCodec` 和 `CloudSyncService` 已实现，Fake 云端已完成“上传 -> 发现 -> 下载 -> 双重校验 -> 写入另一套本机 repository -> 登记 SQLite”闭环。
 - 云同步术语统一为“接收云端快照并落地到本机快照仓库”；“导出/导入”只用于未来独立的手动备份功能。
-- 下一步实现 `BaiduNetdiskStore`，用真实百度网盘替换 Fake 适配器，并在同一 `CloudSyncService` 上复验闭环。
+- `BaiduNetdiskStore` 和首次 OAuth 账号连接已完成并实测；下一步让快照“上云”按钮使用已授权 Token 调用 `CloudSyncService` 上传单条快照，再复验真实百度发现、下载和接收落地。
+- Token 当前保存在 `%APPDATA%\com.daiq.savelink\credentials\baidu-oauth.json`，SQLite 只保存引用；自动刷新、解绑和凭据加密尚未接入。
 - 手动 zip 导出/导入只作为备份迁移工具，当前优先级低。
 
 ## 六、有疑问时

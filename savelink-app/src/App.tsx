@@ -17,6 +17,7 @@ function SaveLink() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [creating, setCreating] = useState(false);
+  const [cloudConnectingId, setCloudConnectingId] = useState<string | null>(null);
 
   // 弹窗 / 抽屉 / 菜单状态
   const [showAdd, setShowAdd] = useState(false);
@@ -78,6 +79,26 @@ function SaveLink() {
     await api.updateSnapshotMeta(s.id, null, !s.locked);
     await refresh();
     toast(s.locked ? "已取消锁定" : "快照已锁定，不会被自动清理", "ok");
+  }
+
+  async function connectCloud(s: Snapshot) {
+    if (cloudConnectingId) return;
+    setCloudConnectingId(s.id);
+    try {
+      const current = await api.getBaiduConnectionStatus();
+      if (current.connected) {
+        toast("百度网盘已连接", "ok");
+        return;
+      }
+      toast("请在浏览器中完成百度网盘授权", "warn");
+      const connected = await api.connectBaidu();
+      if (!connected.connected) throw new Error("百度网盘授权未完成");
+      toast("百度网盘连接成功", "ok");
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setCloudConnectingId(null);
+    }
   }
 
   async function confirmDelete() {
@@ -166,6 +187,18 @@ function SaveLink() {
                   </div>
                   <div className="snap-actions" onClick={(e) => e.stopPropagation()}>
                     <button className="btn sm" onClick={() => setRestoreSnap(s)}><Icon.RotateCcw /> 恢复</button>
+                    <button
+                      className="iconbtn cloud-upload"
+                      title={cloudConnectingId === s.id ? "等待百度网盘授权" : "上传到云端"}
+                      aria-label={cloudConnectingId === s.id ? "等待百度网盘授权" : "上传到云端"}
+                      aria-busy={cloudConnectingId === s.id}
+                      disabled={cloudConnectingId !== null}
+                      onClick={() => connectCloud(s)}
+                    >
+                      {cloudConnectingId === s.id
+                        ? <span className="spin"><Icon.RotateCcw /></span>
+                        : <Icon.CloudUpload />}
+                    </button>
                     <button className="iconbtn" title={s.locked ? "取消锁定" : "锁定"} onClick={() => toggleLock(s)}>
                       {s.locked ? <Icon.Unlock /> : <Icon.Lock />}
                     </button>

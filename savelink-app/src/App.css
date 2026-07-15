@@ -114,6 +114,16 @@ button {
   transition: background var(--duration);
 }
 .iconbtn:hover { background: rgba(0, 0, 0, 0.06); }
+.iconbtn:disabled { opacity: 0.55; cursor: wait; }
+.iconbtn.cloud-upload {
+  color: var(--color-accent);
+  background: #f7faff;
+  border-color: #d7e3f8;
+}
+.iconbtn.cloud-upload:hover {
+  background: var(--color-accent-soft);
+  border-color: #b9cef3;
+}
 
 /* ---------- 游戏列表项 ---------- */
 .game-item {

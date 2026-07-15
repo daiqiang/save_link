@@ -40,5 +40,12 @@ export interface AppInfo {
   database_path: string;
 }
 
+export interface BaiduConnection {
+  connected: boolean;
+  provider: string;
+  display_name: string | null;
+  expires_at: string | null;
+}
+
 // 恢复进度步骤（对应核心 RestoreStep）。
 export type RestoreStep = "backup_current" | "restore_target" | "verify";
