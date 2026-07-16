@@ -17,7 +17,7 @@ function SaveLink() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [creating, setCreating] = useState(false);
-  const [cloudConnectingId, setCloudConnectingId] = useState<string | null>(null);
+  const [cloudUploadingId, setCloudUploadingId] = useState<string | null>(null);
 
   // 弹窗 / 抽屉 / 菜单状态
   const [showAdd, setShowAdd] = useState(false);
@@ -81,23 +81,28 @@ function SaveLink() {
     toast(s.locked ? "已取消锁定" : "快照已锁定，不会被自动清理", "ok");
   }
 
-  async function connectCloud(s: Snapshot) {
-    if (cloudConnectingId) return;
-    setCloudConnectingId(s.id);
+  async function uploadToCloud(s: Snapshot) {
+    if (cloudUploadingId || s.cloud_status === "uploaded" || s.cloud_status === "downloaded") return;
+    setCloudUploadingId(s.id);
     try {
       const current = await api.getBaiduConnectionStatus();
-      if (current.connected) {
-        toast("百度网盘已连接", "ok");
-        return;
+      if (!current.connected) {
+        toast("请在浏览器中完成百度网盘授权，授权后将继续上传", "warn");
+        const connected = await api.connectBaidu();
+        if (!connected.connected) throw new Error("百度网盘授权未完成");
       }
-      toast("请在浏览器中完成百度网盘授权", "warn");
-      const connected = await api.connectBaidu();
-      if (!connected.connected) throw new Error("百度网盘授权未完成");
-      toast("百度网盘连接成功", "ok");
+      toast("正在打包并上传这条快照", "warn");
+      const result = await api.uploadSnapshotToBaidu(s.game_id, s.id);
+      await loadSnapshots(s.game_id);
+      toast(
+        result.outcome === "already_present" ? "这条快照已经保存在百度网盘" : "快照已保存到百度网盘",
+        "ok",
+      );
     } catch (error) {
       toast(String(error), "err");
+      await loadSnapshots(s.game_id).catch(() => undefined);
     } finally {
-      setCloudConnectingId(null);
+      setCloudUploadingId(null);
     }
   }
 
@@ -170,7 +175,18 @@ function SaveLink() {
             <div className="section-label">时间线</div>
             <div className="timeline">
               {shown.length === 0 && <div className="empty-tl">还没有快照。点击「创建快照」保存当前存档状态。</div>}
-              {shown.map((s) => (
+              {shown.map((s) => {
+                const cloudBusy = cloudUploadingId === s.id;
+                const cloudUploaded = s.cloud_status === "uploaded" || s.cloud_status === "downloaded";
+                const cloudFailed = s.cloud_status === "error";
+                const cloudTitle = cloudBusy
+                  ? "正在上传到百度网盘"
+                  : cloudUploaded
+                    ? "已保存到百度网盘"
+                    : cloudFailed
+                      ? "上次上传失败，点击重试"
+                      : "上传到百度网盘";
+                return (
                 <div key={s.id} className={`snap ${s.reason === "before_restore" ? "is-backup" : ""}`}
                   onClick={() => setDrawerSnap(s)}>
                   <div className="snap-main">
@@ -188,16 +204,18 @@ function SaveLink() {
                   <div className="snap-actions" onClick={(e) => e.stopPropagation()}>
                     <button className="btn sm" onClick={() => setRestoreSnap(s)}><Icon.RotateCcw /> 恢复</button>
                     <button
-                      className="iconbtn cloud-upload"
-                      title={cloudConnectingId === s.id ? "等待百度网盘授权" : "上传到云端"}
-                      aria-label={cloudConnectingId === s.id ? "等待百度网盘授权" : "上传到云端"}
-                      aria-busy={cloudConnectingId === s.id}
-                      disabled={cloudConnectingId !== null}
-                      onClick={() => connectCloud(s)}
+                      className={`iconbtn cloud-upload ${cloudUploaded ? "is-uploaded" : ""} ${cloudFailed ? "is-error" : ""}`}
+                      title={cloudTitle}
+                      aria-label={cloudTitle}
+                      aria-busy={cloudBusy}
+                      disabled={cloudUploadingId !== null || cloudUploaded}
+                      onClick={() => uploadToCloud(s)}
                     >
-                      {cloudConnectingId === s.id
+                      {cloudBusy
                         ? <span className="spin"><Icon.RotateCcw /></span>
-                        : <Icon.CloudUpload />}
+                        : cloudUploaded
+                          ? <Icon.Check />
+                          : <Icon.CloudUpload />}
                     </button>
                     <button className="iconbtn" title={s.locked ? "取消锁定" : "锁定"} onClick={() => toggleLock(s)}>
                       {s.locked ? <Icon.Unlock /> : <Icon.Lock />}
@@ -206,7 +224,8 @@ function SaveLink() {
                       onClick={(e) => setMenu({ snap: s, x: e.clientX, y: e.clientY })}><Icon.More /></button>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

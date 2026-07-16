@@ -1,5 +1,11 @@
 # savelink-app — SaveLink 桌面应用（Tauri + React）
 
+## 版本历史
+
+| 版本 | 修改人 | 时间 | 备注 |
+| --- | --- | --- | --- |
+| 1.0 | 代强 | 2026-07-16 | 补齐版本历史；同步百度 OAuth、Token 自动刷新、单快照真实上云和状态 UI |
+
 SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
 
 ## 当前能力
@@ -12,6 +18,8 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - 编辑游戏名称和存档路径。
 - 移除游戏（删除 SaveLink 内部记录与仓库快照，不删除真实存档目录）。
 - 设置页显示版本、数据目录、快照仓库、数据库文件，并支持打开/复制路径。
+- 快照可手动上传到百度网盘；未授权时授权后自动续传，成功后显示持久化绿色勾选。
+- access token 临近过期时自动通过 refresh token 刷新。
 - 可通过 `build-installer.bat` 生成绿色版 exe、NSIS、MSI。
 
 ## 结构
@@ -51,6 +59,9 @@ savelink-app/
 list_games
 get_repository_path
 get_app_info
+get_baidu_connection_status
+connect_baidu
+upload_snapshot_to_baidu
 list_snapshots
 scan_path
 add_game
@@ -90,6 +101,8 @@ src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 
 ```text
 %APPDATA%\com.daiq.savelink\
+├── credentials\baidu-oauth.json
+├── cloud-work\
 ├── savelink.db
 └── repository\
 ```

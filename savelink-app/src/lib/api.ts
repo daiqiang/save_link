@@ -8,6 +8,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
   BaiduConnection,
+  CloudUploadResult,
   Game,
   RestoreResult,
   ScanResult,
@@ -32,6 +33,13 @@ export async function getBaiduConnectionStatus(): Promise<BaiduConnection> {
 
 export async function connectBaidu(): Promise<BaiduConnection> {
   return invoke<BaiduConnection>("connect_baidu");
+}
+
+export async function uploadSnapshotToBaidu(
+  gameId: string,
+  snapshotId: string,
+): Promise<CloudUploadResult> {
+  return invoke<CloudUploadResult>("upload_snapshot_to_baidu", { gameId, snapshotId });
 }
 
 export async function listSnapshots(gameId: string): Promise<Snapshot[]> {

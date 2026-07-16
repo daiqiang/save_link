@@ -8,9 +8,13 @@
 use crate::oauth_config::baidu_oauth_config;
 use savelink_core::baidu_oauth::{
     new_oauth_state, BaiduOAuthClient, FileBaiduTokenStore, OAuthCallbackListener,
+    RefreshingBaiduTokenProvider,
 };
-use savelink_core::cloud_model::CloudAccount;
+use savelink_core::baidu_store::BaiduNetdiskStore;
+use savelink_core::cloud_archive::ZipCloudArchiveCodec;
+use savelink_core::cloud_model::{CloudAccount, CloudSnapshotRecord};
 use savelink_core::cloud_repo::CloudStateRepository;
+use savelink_core::cloud_service::{CloudSyncError, CloudSyncService, UploadOutcome};
 use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapshot};
 use savelink_core::repo::{Clock, IdGen, Repository};
 use savelink_core::service::{RestoreService, SnapshotService};
@@ -28,6 +32,8 @@ const BAIDU_ACCOUNT_ID: &str = "baidu-netdisk";
 const BAIDU_PROVIDER: &str = "baidu_netdisk";
 const BAIDU_TOKEN_REF: &str = "credentials/baidu-oauth.json";
 const BAIDU_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
+const DEVICE_ID_SETTING: &str = "device_id";
+const REPOSITORY_ID_SETTING: &str = "repository_id";
 
 /// 真实时钟：输出本地时间 "YYYY-MM-DD HH:MM"。
 /// 该格式既能按字符串正确排序（时间线倒序依赖此），又便于前端直接展示。
@@ -56,11 +62,15 @@ impl IdGen for TimeIdGen {
 
 /// 应用全局状态（类似 Spring 单例 Bean）：共享一份 repo / store / clock / ids。
 pub struct AppState {
+    pub sqlite_repo: Arc<SqliteRepo>,
     pub repo: Arc<dyn Repository>,
     pub cloud_repo: Arc<dyn CloudStateRepository>,
     pub store: Arc<dyn SnapshotStore>,
     pub baidu_token_store: FileBaiduTokenStore,
     pub baidu_auth_in_progress: Arc<AtomicBool>,
+    pub baidu_upload_in_progress: Arc<AtomicBool>,
+    pub device_id: String,
+    pub cloud_repository_id: String,
     pub data_dir: PathBuf,
     pub repository_dir: PathBuf,
     pub clock: Arc<dyn Clock>,
@@ -73,16 +83,23 @@ impl AppState {
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let sqlite_repo =
             Arc::new(SqliteRepo::open(data_dir.join("savelink.db")).map_err(|e| e.to_string())?);
+        let device_id = ensure_local_cloud_id(&sqlite_repo, DEVICE_ID_SETTING, "device")?;
+        let cloud_repository_id =
+            ensure_local_cloud_id(&sqlite_repo, REPOSITORY_ID_SETTING, "repo")?;
         let repo: Arc<dyn Repository> = sqlite_repo.clone();
-        let cloud_repo: Arc<dyn CloudStateRepository> = sqlite_repo;
+        let cloud_repo: Arc<dyn CloudStateRepository> = sqlite_repo.clone();
         let repository_dir = data_dir.join("repository");
         let store = FsStore::new(repository_dir.clone());
         Ok(Self {
+            sqlite_repo,
             repo,
             cloud_repo,
             store: Arc::new(store),
             baidu_token_store: FileBaiduTokenStore::new(data_dir.join(BAIDU_TOKEN_REF)),
             baidu_auth_in_progress: Arc::new(AtomicBool::new(false)),
+            baidu_upload_in_progress: Arc::new(AtomicBool::new(false)),
+            device_id,
+            cloud_repository_id,
             data_dir: data_dir.to_path_buf(),
             repository_dir,
             clock: Arc::new(SystemClock),
@@ -111,6 +128,22 @@ impl AppState {
     }
 }
 
+fn ensure_local_cloud_id(repo: &SqliteRepo, setting: &str, prefix: &str) -> Result<String, String> {
+    if let Some(existing) = repo
+        .get_setting(setting)
+        .map_err(|error| error.to_string())?
+    {
+        savelink_core::cloud_protocol::validate_id(&existing, setting)
+            .map_err(|error| error.to_string())?;
+        return Ok(existing);
+    }
+    let random = new_oauth_state().map_err(|error| error.to_string())?;
+    let value = format!("{prefix}_{random}");
+    repo.set_setting(setting, &value)
+        .map_err(|error| error.to_string())?;
+    Ok(value)
+}
+
 /* ---------- DTO：前端契约（对应架构文档 lib/types.ts） ---------- */
 
 #[derive(Serialize, Deserialize)]
@@ -133,6 +166,8 @@ pub struct SnapshotDto {
     pub locked: bool,
     pub file_count: u64,
     pub total_size: u64,
+    pub cloud_status: Option<String>,
+    pub cloud_error_code: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -151,6 +186,13 @@ pub struct BaiduConnectionDto {
     pub expires_at: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudUploadDto {
+    pub snapshot_id: String,
+    pub outcome: String,
+    pub cloud_status: String,
+}
+
 fn reason_str(r: Reason) -> String {
     match r {
         Reason::Manual => "manual",
@@ -161,6 +203,10 @@ fn reason_str(r: Reason) -> String {
 }
 
 fn snapshot_to_dto(s: &Snapshot) -> SnapshotDto {
+    snapshot_to_dto_with_cloud(s, None)
+}
+
+fn snapshot_to_dto_with_cloud(s: &Snapshot, cloud: Option<&CloudSnapshotRecord>) -> SnapshotDto {
     SnapshotDto {
         id: s.id.clone(),
         game_id: s.game_id.clone(),
@@ -170,6 +216,8 @@ fn snapshot_to_dto(s: &Snapshot) -> SnapshotDto {
         locked: s.locked,
         file_count: s.file_count,
         total_size: s.total_size,
+        cloud_status: cloud.map(|record| record.sync_status.as_str().to_string()),
+        cloud_error_code: cloud.and_then(|record| record.last_error_code.clone()),
     }
 }
 
@@ -197,9 +245,14 @@ fn baidu_connection_status(
         .get_cloud_account(BAIDU_ACCOUNT_ID)
         .map_err(|error| error.to_string())?;
     let token = token_store.load().map_err(|error| error.to_string())?;
-    let connected = token
-        .as_ref()
-        .is_some_and(|token| !token.access_token.trim().is_empty());
+    let connected = token.as_ref().is_some_and(|token| {
+        !token.access_token.trim().is_empty()
+            && (!token.expires_within(Duration::ZERO)
+                || token
+                    .refresh_token
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().is_empty()))
+    });
     Ok(BaiduConnectionDto {
         connected,
         provider: BAIDU_PROVIDER.into(),
@@ -322,6 +375,96 @@ pub async fn connect_baidu(
 }
 
 #[tauri::command]
+pub async fn upload_snapshot_to_baidu(
+    state: State<'_, AppState>,
+    game_id: String,
+    snapshot_id: String,
+) -> Result<CloudUploadDto, String> {
+    let busy = state.baidu_upload_in_progress.clone();
+    if busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("已有快照正在上传，请等待当前上传完成".into());
+    }
+    let _busy_guard = AuthBusyGuard(busy);
+
+    let config = baidu_oauth_config().map_err(|error| error.to_string())?;
+    let sqlite_repo = state.sqlite_repo.clone();
+    let snapshot_store = state.store.clone();
+    let token_store = state.baidu_token_store.clone();
+    let token_store_on_error = token_store.clone();
+    let clock = state.clock.clone();
+    let work_dir = state.data_dir.join("cloud-work");
+    let account_id = BAIDU_ACCOUNT_ID.to_string();
+    let device_id = state.device_id.clone();
+    let repository_id = state.cloud_repository_id.clone();
+    let requested_snapshot_id = snapshot_id.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let oauth_client = BaiduOAuthClient::new(config).map_err(|error| error.to_string())?;
+        let token_provider = Arc::new(RefreshingBaiduTokenProvider::new(token_store, oauth_client));
+        let cloud_store =
+            Arc::new(BaiduNetdiskStore::new(token_provider).map_err(|error| error.to_string())?);
+        let service = CloudSyncService::new(
+            sqlite_repo,
+            snapshot_store,
+            cloud_store,
+            Arc::new(ZipCloudArchiveCodec::new()),
+            clock,
+            work_dir,
+            account_id,
+            device_id,
+            repository_id,
+        )
+        .map_err(|error| cloud_upload_error_message(&error))?;
+
+        match service.upload_snapshot(&game_id, &snapshot_id) {
+            Ok(outcome) => Ok(CloudUploadDto {
+                snapshot_id,
+                outcome: match outcome {
+                    UploadOutcome::Uploaded => "uploaded",
+                    UploadOutcome::AlreadyPresent => "already_present",
+                }
+                .into(),
+                cloud_status: "uploaded".into(),
+            }),
+            Err(error) => {
+                if error.code() == "auth_required" {
+                    let _ = token_store_on_error.clear();
+                }
+                Err(cloud_upload_error_message(&error))
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("快照上传任务异常结束: {error}"))?
+    .map_err(|error| {
+        if error.trim().is_empty() {
+            format!("快照 {requested_snapshot_id} 上传失败")
+        } else {
+            error
+        }
+    })
+}
+
+fn cloud_upload_error_message(error: &CloudSyncError) -> String {
+    match error.code() {
+        "auth_required" => "百度网盘授权已失效，请重新授权后再上传".into(),
+        "network_unavailable" => "无法连接百度网盘，请检查网络后重试".into(),
+        "rate_limited" => "百度网盘请求过于频繁，请稍后重试".into(),
+        "snapshot_id_conflict" => "云端存在同编号但内容不同的快照，已停止上传".into(),
+        "snapshot_content_mismatch" | "local_store_failed" => {
+            "本机快照校验失败，未上传任何发布记录".into()
+        }
+        "archive_size_mismatch" | "archive_hash_mismatch" => {
+            "云端快照文件校验失败，请稍后重试".into()
+        }
+        _ => format!("快照上传失败：{error}"),
+    }
+}
+
+#[tauri::command]
 pub fn list_snapshots(
     state: State<'_, AppState>,
     game_id: String,
@@ -330,7 +473,16 @@ pub fn list_snapshots(
         .repo
         .list_snapshots(&game_id)
         .map_err(|e| e.to_string())?;
-    Ok(snaps.iter().map(snapshot_to_dto).collect())
+    snaps
+        .iter()
+        .map(|snapshot| {
+            let cloud = state
+                .cloud_repo
+                .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot.id)
+                .map_err(|error| error.to_string())?;
+            Ok(snapshot_to_dto_with_cloud(snapshot, cloud.as_ref()))
+        })
+        .collect()
 }
 
 #[tauri::command]
@@ -347,6 +499,8 @@ pub fn scan_path(path: String) -> Result<SnapshotDto, String> {
         locked: false,
         file_count: r.file_count,
         total_size: r.total_size,
+        cloud_status: None,
+        cloud_error_code: None,
     })
 }
 

@@ -124,6 +124,17 @@ button {
   background: var(--color-accent-soft);
   border-color: #b9cef3;
 }
+.iconbtn.cloud-upload.is-uploaded {
+  color: #257a4b;
+  background: #edf8f1;
+  border-color: #b8dec6;
+  cursor: default;
+}
+.iconbtn.cloud-upload.is-error {
+  color: var(--color-danger);
+  background: var(--color-danger-soft);
+  border-color: #efc1c1;
+}
 
 /* ---------- 游戏列表项 ---------- */
 .game-item {

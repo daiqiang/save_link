@@ -6,6 +6,7 @@
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-07-14 | 补齐版本历史；同步云状态仓库、协议 JSON、zip 编解码、CloudSyncService 与 G/H 组测试 |
 | 1.1 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 客户端与本机回调、I/J/K 组测试、真实百度验证和 62 个默认测试 |
+| 1.2 | 代强 | 2026-07-16 | 接入 Token 自动刷新与正式客户端真实上传；K 组增至 8 个，默认测试增至 64 个 |
 
 SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核心逻辑。不依赖 Tauri，可独立 `cargo test`。`savelink-app` 的 Tauri 命令层只做 DTO 和调用包装。
 
@@ -13,7 +14,7 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 
 ## 当前状态
 
-- 测试：**62 个默认测试全绿**（`cargo test --no-fail-fast`），另有 1 个真实百度冒烟默认忽略、已人工执行通过。
+- 测试：**64 个默认测试全绿**（`cargo test --no-fail-fast`），另有 1 个真实百度冒烟默认忽略、已人工执行通过。
 - 主要依赖：`rusqlite 0.32`、`serde/serde_json`、`zip 2`、`sha2`、`chrono`、`reqwest 0.12`；SQLite 使用 `bundled`，用户无需单独安装。
 - 生产 repo：`SqliteRepo`。
 - 生产 store：`FsStore`，即目录复制实现；zip/restic 是后续优化。
@@ -34,7 +35,7 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 | 百度适配器内部单元 | 2 | 逻辑/物理路径映射、稳定错误分类和敏感信息边界 |
 | I 百度 HTTP 契约 | 4 | CreateOnly、路径映射、列表/stat、dlink 下载、幂等删除、缺失目录 |
 | J 真实百度冒烟 | 1（默认忽略） | 环境变量注入 Token，真实上传、列表、下载、校验和清理 |
-| K 百度 OAuth | 6 | URL、换 Token、随机 state、Token 文件仓库、本机回调和错误 state 拒绝 |
+| K 百度 OAuth | 8 | URL、换/刷新 Token、随机 state、Token 文件仓库、本机回调、错误 state 拒绝和刷新持久化 |
 
 ## 模块地图
 
@@ -50,7 +51,7 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 | `cloud_repo.rs` | 已实现 | `CloudStateRepository` 本机云状态持久化接口 |
 | `cloud_store.rs` | 已实现 | `CloudObjectStore` 与文件系统 `FakeCloudObjectStore` |
 | `baidu_store.rs` | 已实现 | 正式百度适配器、Token 提供者边界、流式 HTTP 对象操作和错误映射 |
-| `baidu_oauth.rs` | 已实现 | OAuth URL/换 Token/刷新方法、随机 state、本机回调监听和 Token 文件仓库 |
+| `baidu_oauth.rs` | 已实现 | OAuth URL/换 Token、自动刷新提供者、随机 state、本机回调监听和 Token 文件仓库 |
 | `cloud_protocol.rs` | 已实现 | v1 JSON 契约、逻辑路径、ID/hash/时间校验 |
 | `cloud_archive.rs` | 已实现 | 单快照 zip、SHA-256 和安全解压 |
 | `cloud_service.rs` | 已实现 | Fake/真实云后端共用的上传、发现、下载和接收落地编排 |

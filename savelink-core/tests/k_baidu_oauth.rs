@@ -1,7 +1,8 @@
 use savelink_core::baidu_oauth::{
     new_oauth_state, BaiduOAuthClient, BaiduOAuthConfig, BaiduOAuthToken, FileBaiduTokenStore,
-    OAuthCallbackListener,
+    OAuthCallbackListener, RefreshingBaiduTokenProvider,
 };
+use savelink_core::baidu_store::BaiduAccessTokenProvider;
 use savelink_core::testkit::TempDir;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -145,6 +146,96 @@ fn k06_callback_ignores_wrong_state_then_accepts_real_callback() {
     send_callback(port, "code=attacker&state=wrong-state");
     send_callback(port, "code=real-code&state=real-state");
     assert_eq!(waiter.join().unwrap().unwrap(), "real-code");
+}
+
+#[test]
+fn k07_expired_token_is_refreshed_and_persisted() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (request_tx, request_rx) = mpsc::channel();
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = [0u8; 8192];
+        let count = stream.read(&mut request).unwrap();
+        request_tx
+            .send(String::from_utf8_lossy(&request[..count]).to_string())
+            .unwrap();
+        let body = r#"{"access_token":"access-new","expires_in":2592000,"scope":"basic netdisk"}"#;
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        )
+        .unwrap();
+    });
+
+    let temp = TempDir::new();
+    let store = FileBaiduTokenStore::new(temp.path().join("credentials/baidu-oauth.json"));
+    store
+        .save(&BaiduOAuthToken {
+            access_token: "access-old".into(),
+            refresh_token: Some("refresh-old".into()),
+            expires_in: 1,
+            scope: Some("basic netdisk".into()),
+            session_key: None,
+            session_secret: None,
+            saved_at: "2020-01-01T00:00:00Z".into(),
+            expires_at: Some("2020-01-01T00:00:01Z".into()),
+        })
+        .unwrap();
+    let config = BaiduOAuthConfig::with_options(
+        "app-key",
+        "secret-key",
+        "http://127.0.0.1:53682/oauth/callback",
+        "basic,netdisk",
+        format!("http://{address}"),
+        Duration::from_secs(5),
+    )
+    .unwrap();
+    let provider = RefreshingBaiduTokenProvider::with_refresh_before(
+        store.clone(),
+        BaiduOAuthClient::new(config).unwrap(),
+        Duration::ZERO,
+    );
+
+    assert_eq!(provider.access_token().unwrap(), "access-new");
+    let saved = store.load().unwrap().unwrap();
+    assert_eq!(saved.access_token, "access-new");
+    assert_eq!(saved.refresh_token.as_deref(), Some("refresh-old"));
+    let request = request_rx.recv().unwrap();
+    assert!(request.contains("grant_type=refresh_token"));
+    assert!(request.contains("refresh_token=refresh-old"));
+}
+
+#[test]
+fn k08_unexpired_token_is_used_without_refresh_request() {
+    let temp = TempDir::new();
+    let store = FileBaiduTokenStore::new(temp.path().join("credentials/baidu-oauth.json"));
+    store
+        .save(&BaiduOAuthToken {
+            access_token: "access-current".into(),
+            refresh_token: Some("refresh-current".into()),
+            expires_in: 2_592_000,
+            scope: Some("basic netdisk".into()),
+            session_key: None,
+            session_secret: None,
+            saved_at: "2099-01-01T00:00:00Z".into(),
+            expires_at: Some("2099-02-01T00:00:00Z".into()),
+        })
+        .unwrap();
+    let config = BaiduOAuthConfig::with_options(
+        "app-key",
+        "secret-key",
+        "http://127.0.0.1:53682/oauth/callback",
+        "basic,netdisk",
+        "http://127.0.0.1:9",
+        Duration::from_millis(50),
+    )
+    .unwrap();
+    let provider = RefreshingBaiduTokenProvider::new(store, BaiduOAuthClient::new(config).unwrap());
+
+    assert_eq!(provider.access_token().unwrap(), "access-current");
 }
 
 fn connect_with_retry(port: u16) -> TcpStream {

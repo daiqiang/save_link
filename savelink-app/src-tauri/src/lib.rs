@@ -26,6 +26,7 @@ pub fn run() {
             commands::get_app_info,
             commands::get_baidu_connection_status,
             commands::connect_baidu,
+            commands::upload_snapshot_to_baidu,
             commands::list_snapshots,
             commands::scan_path,
             commands::add_game,

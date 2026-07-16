@@ -21,6 +21,8 @@ export interface Snapshot {
   locked: boolean;
   file_count: number;
   total_size: number; // 字节
+  cloud_status: "uploading" | "uploaded" | "remote_only" | "downloading" | "downloaded" | "ignored" | "error" | null;
+  cloud_error_code: string | null;
 }
 
 export interface ScanResult {
@@ -45,6 +47,12 @@ export interface BaiduConnection {
   provider: string;
   display_name: string | null;
   expires_at: string | null;
+}
+
+export interface CloudUploadResult {
+  snapshot_id: string;
+  outcome: "uploaded" | "already_present";
+  cloud_status: "uploaded";
 }
 
 // 恢复进度步骤（对应核心 RestoreStep）。

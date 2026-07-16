@@ -2,7 +2,7 @@
 
 use crate::baidu_store::BaiduAccessTokenProvider;
 use crate::cloud_store::{CloudStoreError, CloudStoreResult};
-use chrono::{Duration as ChronoDuration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, SecondsFormat, Utc};
 use reqwest::blocking::Client;
 use reqwest::Url;
 use serde::{Deserialize, Serialize};
@@ -12,6 +12,7 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -125,6 +126,30 @@ pub struct BaiduOAuthToken {
     pub session_secret: Option<String>,
     pub saved_at: String,
     pub expires_at: Option<String>,
+}
+
+impl BaiduOAuthToken {
+    pub fn expires_within(&self, duration: Duration) -> bool {
+        let deadline =
+            Utc::now() + ChronoDuration::from_std(duration).unwrap_or(ChronoDuration::MAX);
+        self.expiration_time()
+            .map(|expiration| expiration <= deadline)
+            .unwrap_or(false)
+    }
+
+    fn expiration_time(&self) -> Option<DateTime<Utc>> {
+        if let Some(value) = self.expires_at.as_deref() {
+            return DateTime::parse_from_rfc3339(value)
+                .ok()
+                .map(|timestamp| timestamp.with_timezone(&Utc));
+        }
+        if self.expires_in <= 0 {
+            return None;
+        }
+        DateTime::parse_from_rfc3339(&self.saved_at)
+            .ok()
+            .map(|saved| saved.with_timezone(&Utc) + ChronoDuration::seconds(self.expires_in))
+    }
 }
 
 pub struct BaiduOAuthClient {
@@ -306,6 +331,85 @@ impl BaiduAccessTokenProvider for FileBaiduTokenStore {
             .map(|token| token.access_token)
             .filter(|token| !token.trim().is_empty())
             .ok_or(CloudStoreError::AuthRequired)
+    }
+}
+
+pub struct RefreshingBaiduTokenProvider {
+    token_store: FileBaiduTokenStore,
+    oauth_client: BaiduOAuthClient,
+    refresh_before: Duration,
+    refresh_lock: Mutex<()>,
+}
+
+impl RefreshingBaiduTokenProvider {
+    pub fn new(token_store: FileBaiduTokenStore, oauth_client: BaiduOAuthClient) -> Self {
+        Self::with_refresh_before(token_store, oauth_client, Duration::from_secs(5 * 60))
+    }
+
+    pub fn with_refresh_before(
+        token_store: FileBaiduTokenStore,
+        oauth_client: BaiduOAuthClient,
+        refresh_before: Duration,
+    ) -> Self {
+        Self {
+            token_store,
+            oauth_client,
+            refresh_before,
+            refresh_lock: Mutex::new(()),
+        }
+    }
+
+    fn current_access_token(&self) -> CloudStoreResult<String> {
+        let _guard = self
+            .refresh_lock
+            .lock()
+            .map_err(|_| CloudStoreError::Provider("百度凭据刷新锁已损坏".into()))?;
+        let mut token = self
+            .token_store
+            .load()
+            .map_err(map_token_store_error)?
+            .ok_or(CloudStoreError::AuthRequired)?;
+        if token.access_token.trim().is_empty() {
+            return Err(CloudStoreError::AuthRequired);
+        }
+        if token.expires_within(self.refresh_before) {
+            let refresh_token = token
+                .refresh_token
+                .as_deref()
+                .filter(|value| !value.trim().is_empty())
+                .ok_or(CloudStoreError::AuthRequired)?
+                .to_string();
+            let mut refreshed = self
+                .oauth_client
+                .refresh_access_token(&refresh_token)
+                .map_err(map_refresh_error)?;
+            if refreshed.refresh_token.is_none() {
+                refreshed.refresh_token = Some(refresh_token);
+            }
+            self.token_store
+                .save(&refreshed)
+                .map_err(map_token_store_error)?;
+            token = refreshed;
+        }
+        Ok(token.access_token)
+    }
+}
+
+impl BaiduAccessTokenProvider for RefreshingBaiduTokenProvider {
+    fn access_token(&self) -> CloudStoreResult<String> {
+        self.current_access_token()
+    }
+}
+
+fn map_token_store_error(error: BaiduOAuthError) -> CloudStoreError {
+    CloudStoreError::Provider(error.to_string())
+}
+
+fn map_refresh_error(error: BaiduOAuthError) -> CloudStoreError {
+    match error {
+        BaiduOAuthError::Network(_) => CloudStoreError::NetworkUnavailable,
+        BaiduOAuthError::Provider(_) => CloudStoreError::AuthRequired,
+        other => CloudStoreError::Provider(other.to_string()),
     }
 }
 

@@ -13,6 +13,7 @@
 | 1.1 | 代强 | 2026-07-08 | 同步正式回归验收、恢复校验增强与云同步增量协议路线 |
 | 1.2 | 代强 | 2026-07-14 | 同步百度网盘 POC、协议 v1、云基础设施和 Fake 双设备闭环；明确百度正式适配下一步 |
 | 1.3 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机授权与 Token 持久化、上云入口和 62 个默认测试；明确真实上传下一步 |
+| 1.4 | 代强 | 2026-07-16 | 同步单快照真实上云、Token 自动刷新、上传状态 UI、云端实机验收和 64 个默认测试 |
 
 ## 一句话结论
 
@@ -20,7 +21,7 @@ SaveLink 当前已经不是空原型，而是一个可运行、可打包、可�
 
 MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `TC-41` 启动自检清理残留均已补测通过。恢复链路已增加小文件/中文路径回归测试，并把恢复后校验加强为 `content_hash + file_count + total_size`。
 
-云同步已完成无网络纵向闭环、正式百度对象存储适配和首次账号连接：协议 JSON、zip/SHA-256、安全解压、`CloudSyncService`、SQLite 云状态、`FakeCloudObjectStore` 与 `BaiduNetdiskStore` 均已落地；系统浏览器 OAuth、本机回调、Token 持久化和快照“上云”授权入口已用绿色版实测。core 当前 62 个默认测试全绿，另有 1 个真实冒烟按需运行。尚未把“上云”按钮接到真正的单快照上传，也未完成真实百度双设备完整同步。
+云同步已完成无网络纵向闭环、百度对象存储、OAuth 和单快照真实上云：快照按钮会在授权后自动续传，通过 `CloudSyncService` 生成 zip 与 `.ok`，上传成功后 SQLite 记录 `uploaded` 并显示绿色勾选。2026-07-16 已在百度应用目录和绿色版页面双侧实测。core 当前 64 个默认测试全绿，另有 1 个真实冒烟按需运行。尚未完成第二设备的真实百度发现、下载和接收落地。
 
 ## 当前架构状态
 
@@ -127,7 +128,7 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 - 多存档目录。
 - 自动快照、文件监听、游戏退出后自动备份。
 - 压缩快照仓库（ZipStore/ResticStore），这是空间优化，不等同于云同步主线。
-- 云同步：Fake 双设备协议闭环、`BaiduNetdiskStore`、首次 OAuth 账号连接和快照“上云”入口已完成；待接真正的单快照上传、真实百度双设备完整快照复验和同步状态 UI。
+- 云同步：Fake 双设备协议闭环、`BaiduNetdiskStore`、OAuth、Token 自动刷新和单快照真实上云已完成；待实现真实百度发现、下载、接收落地和第二设备状态 UI。
 
 ## 已知未完成或需要总规划判断的点
 
@@ -166,6 +167,6 @@ savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 下一步建议：
 
 1. 本机云状态、协议 JSON、`CloudArchiveCodec`、`CloudSyncService`、Fake 双设备闭环和 `BaiduNetdiskStore` 已经完成。
-2. 首次 OAuth 授权、本机回调与凭据持久化已经完成；自动刷新、解绑和凭据加密作为后续账号层增强。
-3. 先让现有快照“上云”按钮使用已授权 `BaiduNetdiskStore` 调用 `CloudSyncService`，跑通单条快照真实上传。
-4. 再复验真实百度发现、下载和接收落地的双设备闭环，并补齐同步状态 UI。
+2. OAuth、Token 自动刷新和单快照真实上云已经完成。
+3. 新增真实百度“发现云端快照”命令，在第二套本机数据目录中读取 `.ok` 目录。
+4. 接入下载与接收落地，验证 zip/SHA-256/内容指纹后写入第二套本机快照仓库，并补齐状态 UI。
