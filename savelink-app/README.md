@@ -4,7 +4,7 @@
 
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
-| 1.0 | 代强 | 2026-07-16 | 补齐版本历史；同步百度 OAuth、真实上云、设备 B 发现/下载/接收和未绑定目录保护 |
+| 1.0 | 代强 | 2026-07-16 | 补齐版本历史；同步百度真实双设备上传、接收、目录绑定和安全恢复闭环 |
 
 SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
 
@@ -22,6 +22,7 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - access token 临近过期时自动通过 refresh token 刷新。
 - 顶栏云端存档窗口可按游戏发现百度快照并手动下载；接收成功后显示在本机时间线。
 - 云端接收的游戏不继承其他设备的存档路径；绑定本机目录前禁止创建快照和恢复。
+- 未绑定游戏提供独立“绑定存档目录”入口；目录扫描成功后才可绑定，绑定不会自动创建快照、恢复或上云。
 - `run-device-b-test.bat` 可用独立 AppData 目录启动“设备 B 隔离测试”profile。
 - 可通过 `build-installer.bat` 生成绿色版 exe、NSIS、MSI。
 
@@ -39,6 +40,7 @@ savelink-app/
 │   │   └── icons.tsx            内联 SVG 图标
 │   └── components/
 │       ├── AddGameDialog.tsx
+│       ├── BindSavePathDialog.tsx
 │       ├── EditGameDialog.tsx
 │       ├── RestoreDialog.tsx
 │       ├── SettingsDialog.tsx

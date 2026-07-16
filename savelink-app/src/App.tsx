@@ -11,6 +11,7 @@ import { RestoreDialog } from "./components/RestoreDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SnapshotDrawer } from "./components/SnapshotDrawer";
 import { CloudSnapshotsDialog } from "./components/CloudSnapshotsDialog";
+import { BindSavePathDialog } from "./components/BindSavePathDialog";
 
 function SaveLink() {
   const toast = useToast();
@@ -26,6 +27,7 @@ function SaveLink() {
   const [showSettings, setShowSettings] = useState(false);
   const [showCloud, setShowCloud] = useState(false);
   const [editingGame, setEditingGame] = useState<Game | null>(null);
+  const [bindingGame, setBindingGame] = useState<Game | null>(null);
   const [drawerSnap, setDrawerSnap] = useState<Snapshot | null>(null);
   const [restoreSnap, setRestoreSnap] = useState<Snapshot | null>(null);
   const [deleteSnap, setDeleteSnap] = useState<Snapshot | null>(null);
@@ -174,15 +176,23 @@ function SaveLink() {
             </div>
 
             <div className="toolbar">
-              <button className="btn primary" onClick={createSnapshot} disabled={creating || selected.save_paths.length === 0}>
-                {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
-              </button>
+              {selected.save_paths.length === 0 ? (
+                <button className="btn primary" onClick={() => setBindingGame(selected)}>
+                  <Icon.Folder /> 绑定存档目录
+                </button>
+              ) : (
+                <button className="btn primary" onClick={createSnapshot} disabled={creating}>
+                  {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
+                </button>
+              )}
               <button className="btn" onClick={() => setEditingGame(selected)}><Icon.Edit /> 编辑游戏</button>
             </div>
 
             <div className="section-label">时间线</div>
             <div className="timeline">
-              {shown.length === 0 && <div className="empty-tl">还没有快照。点击「创建快照」保存当前存档状态。</div>}
+              {shown.length === 0 && <div className="empty-tl">{selected.save_paths.length === 0
+                ? "尚未绑定本机存档目录。"
+                : "还没有快照。点击「创建快照」保存当前存档状态。"}</div>}
               {shown.map((s) => {
                 const cloudBusy = cloudUploadingId === s.id;
                 const cloudUploaded = s.cloud_status === "uploaded" || s.cloud_status === "downloaded";
@@ -286,6 +296,14 @@ function SaveLink() {
           setSelectedId(remaining[0]?.id ?? null);
           setSnapshots([]);
           loadGames();
+        }} />}
+
+      {bindingGame && <BindSavePathDialog game={bindingGame}
+        onClose={() => setBindingGame(null)}
+        onBound={(game) => {
+          setBindingGame(null);
+          setGames((current) => current.map((item) => item.id === game.id ? game : item));
+          setSelectedId(game.id);
         }} />}
 
       {drawerSnap && selected && (
