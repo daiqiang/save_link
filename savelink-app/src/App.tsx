@@ -10,6 +10,7 @@ import { EditGameDialog } from "./components/EditGameDialog";
 import { RestoreDialog } from "./components/RestoreDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
 import { SnapshotDrawer } from "./components/SnapshotDrawer";
+import { CloudSnapshotsDialog } from "./components/CloudSnapshotsDialog";
 
 function SaveLink() {
   const toast = useToast();
@@ -18,10 +19,12 @@ function SaveLink() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [creating, setCreating] = useState(false);
   const [cloudUploadingId, setCloudUploadingId] = useState<string | null>(null);
+  const [profileLabel, setProfileLabel] = useState<string | null>(null);
 
   // 弹窗 / 抽屉 / 菜单状态
   const [showAdd, setShowAdd] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [showCloud, setShowCloud] = useState(false);
   const [editingGame, setEditingGame] = useState<Game | null>(null);
   const [drawerSnap, setDrawerSnap] = useState<Snapshot | null>(null);
   const [restoreSnap, setRestoreSnap] = useState<Snapshot | null>(null);
@@ -43,6 +46,7 @@ function SaveLink() {
   }, []);
 
   useEffect(() => { loadGames(); }, [loadGames]);
+  useEffect(() => { api.getAppInfo().then((info) => setProfileLabel(info.profile_label)).catch(() => undefined); }, []);
   // 切换游戏：先立即清空上一个游戏的残留，再按 selectedId 加载；
   // cancelled 守卫避免“切得快时旧请求后到、把别的游戏快照回填进来”。
   useEffect(() => {
@@ -61,6 +65,7 @@ function SaveLink() {
 
   async function createSnapshot() {
     if (!selected) return;
+    if (selected.save_paths.length === 0) return toast("请先绑定本机存档目录", "warn");
     setCreating(true);
     try {
       const s = await api.createSnapshot(selected.id, null);
@@ -119,9 +124,10 @@ function SaveLink() {
       <div className="topbar">
         <div className="brand">
           <span className="logo"><Icon.History size={20} /></span>
-          SaveLink <span className="sub">本地存档时间线</span>
+          SaveLink <span className={`sub ${profileLabel ? "test-profile" : ""}`}>{profileLabel ?? "本地存档时间线"}</span>
         </div>
         <div className="spacer" />
+        <button className="iconbtn" title="云端存档" onClick={() => setShowCloud(true)}><Icon.CloudUpload /></button>
         <button className="iconbtn" title="设置" onClick={() => setShowSettings(true)}><Icon.Settings /></button>
         <button className="iconbtn" title="帮助" onClick={() => toast("帮助文档：后续补充", "warn")}><Icon.Help /></button>
       </div>
@@ -136,9 +142,11 @@ function SaveLink() {
             onClick={() => setSelectedId(g.id)}>
             <div className="game-cover">{g.name[0] ?? "游"}</div>
             <div className="game-meta">
-              <div className="game-name"><span className="status-dot ok" />{g.name}</div>
+              <div className="game-name"><span className={`status-dot ${g.save_paths.length > 0 ? "ok" : "warn"}`} />{g.name}</div>
               <div className="game-sub">
-                {g.snapshot_count} 个快照{g.last_snapshot_at ? ` · 最近 ${g.last_snapshot_at.slice(11) || g.last_snapshot_at}` : ""}
+                {g.save_paths.length === 0
+                  ? `${g.snapshot_count} 个快照 · 尚未绑定存档目录`
+                  : <>{g.snapshot_count} 个快照{g.last_snapshot_at ? ` · 最近 ${g.last_snapshot_at.slice(11) || g.last_snapshot_at}` : ""}</>}
               </div>
             </div>
           </div>
@@ -154,7 +162,7 @@ function SaveLink() {
               <div className="cover">{selected.name[0] ?? "游"}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h1>{selected.name}</h1>
-                <div className="path"><Icon.Folder size={14} /><span className="mono">{selected.save_paths[0]}</span></div>
+                <div className="path"><Icon.Folder size={14} /><span className="mono">{selected.save_paths[0] ?? "尚未绑定本机存档目录"}</span></div>
               </div>
             </div>
 
@@ -166,7 +174,7 @@ function SaveLink() {
             </div>
 
             <div className="toolbar">
-              <button className="btn primary" onClick={createSnapshot} disabled={creating}>
+              <button className="btn primary" onClick={createSnapshot} disabled={creating || selected.save_paths.length === 0}>
                 {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
               </button>
               <button className="btn" onClick={() => setEditingGame(selected)}><Icon.Edit /> 编辑游戏</button>
@@ -202,7 +210,8 @@ function SaveLink() {
                     </div>
                   </div>
                   <div className="snap-actions" onClick={(e) => e.stopPropagation()}>
-                    <button className="btn sm" onClick={() => setRestoreSnap(s)}><Icon.RotateCcw /> 恢复</button>
+                    <button className="btn sm" title={selected.save_paths.length === 0 ? "请先绑定本机存档目录" : "恢复"}
+                      disabled={selected.save_paths.length === 0} onClick={() => setRestoreSnap(s)}><Icon.RotateCcw /> 恢复</button>
                     <button
                       className={`iconbtn cloud-upload ${cloudUploaded ? "is-uploaded" : ""} ${cloudFailed ? "is-error" : ""}`}
                       title={cloudTitle}
@@ -251,6 +260,13 @@ function SaveLink() {
         onCreated={(g) => { setShowAdd(false); setSelectedId(g.id); loadGames(); }} />}
 
       {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
+
+      {showCloud && <CloudSnapshotsDialog onClose={() => setShowCloud(false)}
+        onReceived={async (gameId) => {
+          await loadGames();
+          setSelectedId(gameId);
+          await loadSnapshots(gameId);
+        }} />}
 
       {editingGame && <EditGameDialog game={editingGame}
         onClose={() => setEditingGame(null)}

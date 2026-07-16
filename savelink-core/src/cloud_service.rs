@@ -111,6 +111,13 @@ pub enum ReceiveOutcome {
     AlreadyPresent,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudSnapshotDiscovery {
+    pub cloud_game_id: String,
+    pub game_name: String,
+    pub snapshot: CloudSnapshotRecord,
+}
+
 pub struct CloudSyncService<R>
 where
     R: Repository + CloudStateRepository,
@@ -199,6 +206,14 @@ where
     }
 
     pub fn discover_remote_snapshots(&self) -> CloudSyncResult<Vec<CloudSnapshotRecord>> {
+        Ok(self
+            .discover_remote_catalog()?
+            .into_iter()
+            .map(|entry| entry.snapshot)
+            .collect())
+    }
+
+    pub fn discover_remote_catalog(&self) -> CloudSyncResult<Vec<CloudSnapshotDiscovery>> {
         self.ensure_manifest()?;
         let game_entries = match self.cloud_store.list_directory(&games_path()) {
             Ok(entries) => entries,
@@ -214,7 +229,6 @@ where
             let cloud_game_id = entry.name;
             crate::cloud_protocol::validate_id(&cloud_game_id, "cloud_game_id")?;
             let game = self.read_game_document(&cloud_game_id)?;
-            self.materialize_cloud_game(&game)?;
 
             let snapshot_entries = match self
                 .cloud_store
@@ -236,10 +250,14 @@ where
                 let status = self.discovery_status(&commit)?;
                 let record = record_from_commit(&self.account_id, &commit, status, None);
                 self.repo.upsert_cloud_snapshot(record.clone())?;
-                discovered.push(record);
+                discovered.push(CloudSnapshotDiscovery {
+                    cloud_game_id: cloud_game_id.clone(),
+                    game_name: game.name.clone(),
+                    snapshot: record,
+                });
             }
         }
-        discovered.sort_by(|left, right| right.created_at.cmp(&left.created_at));
+        discovered.sort_by(|left, right| right.snapshot.created_at.cmp(&left.snapshot.created_at));
         Ok(discovered)
     }
 

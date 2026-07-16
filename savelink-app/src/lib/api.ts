@@ -9,6 +9,8 @@ import type {
   AppInfo,
   BaiduConnection,
   CloudUploadResult,
+  CloudReceiveResult,
+  CloudSnapshot,
   Game,
   RestoreResult,
   ScanResult,
@@ -40,6 +42,14 @@ export async function uploadSnapshotToBaidu(
   snapshotId: string,
 ): Promise<CloudUploadResult> {
   return invoke<CloudUploadResult>("upload_snapshot_to_baidu", { gameId, snapshotId });
+}
+
+export async function discoverBaiduSnapshots(): Promise<CloudSnapshot[]> {
+  return invoke<CloudSnapshot[]>("discover_baidu_snapshots");
+}
+
+export async function receiveBaiduSnapshot(snapshotId: string): Promise<CloudReceiveResult> {
+  return invoke<CloudReceiveResult>("receive_baidu_snapshot", { snapshotId });
 }
 
 export async function listSnapshots(gameId: string): Promise<Snapshot[]> {

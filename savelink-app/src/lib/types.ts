@@ -2,6 +2,7 @@
 // 第 5 步接线时，invoke 的返回值就是这些类型。
 
 export type SnapshotReason = "manual" | "before_restore" | "auto";
+export type CloudSyncStatus = "uploading" | "uploaded" | "remote_only" | "downloading" | "downloaded" | "ignored" | "error";
 
 export interface Game {
   id: string;
@@ -21,7 +22,7 @@ export interface Snapshot {
   locked: boolean;
   file_count: number;
   total_size: number; // 字节
-  cloud_status: "uploading" | "uploaded" | "remote_only" | "downloading" | "downloaded" | "ignored" | "error" | null;
+  cloud_status: CloudSyncStatus | null;
   cloud_error_code: string | null;
 }
 
@@ -40,6 +41,7 @@ export interface AppInfo {
   data_dir: string;
   repository_dir: string;
   database_path: string;
+  profile_label: string | null;
 }
 
 export interface BaiduConnection {
@@ -53,6 +55,26 @@ export interface CloudUploadResult {
   snapshot_id: string;
   outcome: "uploaded" | "already_present";
   cloud_status: "uploaded";
+}
+
+export interface CloudSnapshot {
+  cloud_game_id: string;
+  game_name: string;
+  snapshot_id: string;
+  created_at: string;
+  note: string | null;
+  reason: SnapshotReason;
+  locked: boolean;
+  file_count: number;
+  total_size: number;
+  cloud_status: CloudSyncStatus;
+  last_error_code: string | null;
+}
+
+export interface CloudReceiveResult {
+  snapshot_id: string;
+  game_id: string;
+  outcome: "downloaded" | "already_present";
 }
 
 // 恢复进度步骤（对应核心 RestoreStep）。

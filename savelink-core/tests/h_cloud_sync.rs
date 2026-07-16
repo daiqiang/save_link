@@ -282,22 +282,30 @@ fn h4_device_a_uploads_and_device_b_discovers_downloads_and_lands_snapshot() {
         .unwrap()
         .is_some());
 
-    let discovered = device_b.service.discover_remote_snapshots().unwrap();
+    let discovered = device_b.service.discover_remote_catalog().unwrap();
     assert_eq!(discovered.len(), 1);
-    assert_eq!(discovered[0].sync_status, CloudSyncStatus::RemoteOnly);
+    assert_eq!(discovered[0].game_name, "Elden Ring");
+    assert_eq!(
+        discovered[0].snapshot.sync_status,
+        CloudSyncStatus::RemoteOnly
+    );
     assert_eq!(
         device_b.service.discover_remote_snapshots().unwrap().len(),
         1
     );
-    let cloud_game = device_b.repo.get_game("game_1").unwrap().unwrap();
     assert!(
-        cloud_game.save_paths.is_empty(),
-        "云端游戏不能携带设备 A 的路径"
+        device_b.repo.get_game("game_1").unwrap().is_none(),
+        "仅发现云端目录时不能污染本机游戏列表"
     );
 
     assert_eq!(
         device_b.service.receive_remote_snapshot("snap_1").unwrap(),
         ReceiveOutcome::Downloaded
+    );
+    let cloud_game = device_b.repo.get_game("game_1").unwrap().unwrap();
+    assert!(
+        cloud_game.save_paths.is_empty(),
+        "云端游戏不能携带设备 A 的路径"
     );
     assert_eq!(
         device_b.service.receive_remote_snapshot("snap_1").unwrap(),

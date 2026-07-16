@@ -4,7 +4,7 @@
 
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
-| 1.0 | 代强 | 2026-07-16 | 补齐版本历史；同步百度 OAuth、Token 自动刷新、单快照真实上云和状态 UI |
+| 1.0 | 代强 | 2026-07-16 | 补齐版本历史；同步百度 OAuth、真实上云、设备 B 发现/下载/接收和未绑定目录保护 |
 
 SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
 
@@ -20,6 +20,9 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - 设置页显示版本、数据目录、快照仓库、数据库文件，并支持打开/复制路径。
 - 快照可手动上传到百度网盘；未授权时授权后自动续传，成功后显示持久化绿色勾选。
 - access token 临近过期时自动通过 refresh token 刷新。
+- 顶栏云端存档窗口可按游戏发现百度快照并手动下载；接收成功后显示在本机时间线。
+- 云端接收的游戏不继承其他设备的存档路径；绑定本机目录前禁止创建快照和恢复。
+- `run-device-b-test.bat` 可用独立 AppData 目录启动“设备 B 隔离测试”profile。
 - 可通过 `build-installer.bat` 生成绿色版 exe、NSIS、MSI。
 
 ## 结构
@@ -39,6 +42,7 @@ savelink-app/
 │       ├── EditGameDialog.tsx
 │       ├── RestoreDialog.tsx
 │       ├── SettingsDialog.tsx
+│       ├── CloudSnapshotsDialog.tsx
 │       ├── SnapshotDrawer.tsx
 │       └── Toast.tsx
 └── src-tauri/
@@ -62,6 +66,8 @@ get_app_info
 get_baidu_connection_status
 connect_baidu
 upload_snapshot_to_baidu
+discover_baidu_snapshots
+receive_baidu_snapshot
 list_snapshots
 scan_path
 add_game
@@ -108,6 +114,14 @@ src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 ```
 
 绿色版和安装版共用同一个 Tauri identifier，所以共用同一个用户数据目录。
+
+设备 B 验收使用独立目录：
+
+```text
+%APPDATA%\com.daiq.savelink-device-b-test\
+```
+
+先通过 `build-installer.bat` 生成 release exe，再运行 `run-device-b-test.bat`。脚本只设置隔离数据目录并启动同一份程序，不复制或覆盖正式数据。
 
 ## 权限注意
 

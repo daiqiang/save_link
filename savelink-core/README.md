@@ -6,15 +6,15 @@
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-07-14 | 补齐版本历史；同步云状态仓库、协议 JSON、zip 编解码、CloudSyncService 与 G/H 组测试 |
 | 1.1 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 客户端与本机回调、I/J/K 组测试、真实百度验证和 62 个默认测试 |
-| 1.2 | 代强 | 2026-07-16 | 接入 Token 自动刷新与正式客户端真实上传；K 组增至 8 个，默认测试增至 64 个 |
+| 1.2 | 代强 | 2026-07-16 | 接入 Token 自动刷新、真实上传及设备 B 发现/下载/接收；新增 L 组，默认测试保持 64 个 |
 
 SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核心逻辑。不依赖 Tauri，可独立 `cargo test`。`savelink-app` 的 Tauri 命令层只做 DTO 和调用包装。
 
-> 历史：本 crate 最初是测试先行骨架，用作客观验收尺。现已实现，并由 A-K 组测试保护；J 组真实联网测试默认忽略。
+> 历史：本 crate 最初是测试先行骨架，用作客观验收尺。现已实现，并由 A-L 组测试保护；J/L 组真实联网测试默认忽略。
 
 ## 当前状态
 
-- 测试：**64 个默认测试全绿**（`cargo test --no-fail-fast`），另有 1 个真实百度冒烟默认忽略、已人工执行通过。
+- 测试：**64 个默认测试全绿**（`cargo test --no-fail-fast`），另有 J/L 两个真实百度测试默认忽略、均已按需执行通过。
 - 主要依赖：`rusqlite 0.32`、`serde/serde_json`、`zip 2`、`sha2`、`chrono`、`reqwest 0.12`；SQLite 使用 `bundled`，用户无需单独安装。
 - 生产 repo：`SqliteRepo`。
 - 生产 store：`FsStore`，即目录复制实现；zip/restic 是后续优化。
@@ -36,6 +36,7 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 | I 百度 HTTP 契约 | 4 | CreateOnly、路径映射、列表/stat、dlink 下载、幂等删除、缺失目录 |
 | J 真实百度冒烟 | 1（默认忽略） | 环境变量注入 Token，真实上传、列表、下载、校验和清理 |
 | K 百度 OAuth | 8 | URL、换/刷新 Token、随机 state、Token 文件仓库、本机回调、错误 state 拒绝和刷新持久化 |
+| L 真实百度设备 B 接收 | 1（默认忽略） | 只读发现、下载、双重校验、接收落地及设备 A 路径隔离 |
 
 ## 模块地图
 
@@ -86,7 +87,7 @@ cargo test --no-fail-fast
 ## 常用命令
 
 ```bash
-cargo test --no-fail-fast       # 全部默认测试（真实百度 J 组除外）
+cargo test --no-fail-fast       # 全部默认测试（真实百度 J/L 组除外）
 cargo test --test b_restore     # 只跑恢复组
 cargo test --test c_delete_lock # 删除/锁定/删除游戏
 cargo test --test f_persistence # SQLite 落盘验证
@@ -96,6 +97,7 @@ cargo test --test i_baidu_store # 百度适配器本地 HTTP 契约
 cargo test --test k_baidu_oauth # 百度 OAuth 与本机回调
 # 设置 SAVELINK_BAIDU_ACCESS_TOKEN 后按需运行真实冒烟：
 cargo test --test j_baidu_live -- --ignored
+cargo test --test l_baidu_sync_live -- --ignored
 ```
 
 ## 与文档的对应

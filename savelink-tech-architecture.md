@@ -11,7 +11,7 @@
 | 1.4 | 代强 | 2026-07-08 | 同步恢复校验增强与云同步增量协议路线 |
 | 1.5 | 代强 | 2026-07-14 | 同步百度 POC、协议 v1、云基础设施和 Fake 双设备闭环；明确百度适配器下一步 |
 | 1.6 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机连接层、真实百度验证、62 个默认测试和真实上传下一步 |
-| 1.7 | 代强 | 2026-07-16 | 同步单快照真实上云、Token 自动刷新、上传状态 UI、实机验收和 64 个默认测试 |
+| 1.7 | 代强 | 2026-07-16 | 同步真实上云及设备 B 发现、下载、双重校验、接收落地、隔离模式和未绑定保护 |
 
 ## 文档用途
 
@@ -47,10 +47,12 @@ save_link_workspace/
 - Windows 绿色版 exe、NSIS、MSI 打包。
 - 百度 OAuth、本机 Token 持久化与过期前自动刷新。
 - 快照按钮手动上云，成功后持久化状态并显示绿色勾选。
+- 顶栏云端存档窗口可发现并下载真实百度快照；接收成功后创建未绑定的本机游戏。
+- 未绑定本机存档目录时禁止创建快照和恢复，下载与恢复保持为两个独立动作。
 
 当前验证状态：
 
-- `savelink-core`：64 个默认测试全绿，其中 G/H/I/K 组 27 个保护云同步基础设施、Fake 双设备闭环、百度 HTTP 契约、OAuth 和 Token 刷新；另有 1 个真实百度冒烟已按需执行通过。
+- `savelink-core`：64 个默认测试全绿，其中 G/H/I/K 组 27 个保护云同步基础设施、Fake 双设备闭环、百度 HTTP 契约、OAuth 和 Token 刷新；J/L 两个真实百度测试均已按需执行通过。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
 - 绿色版实机验证过设置页“打开”目录。
@@ -141,6 +143,11 @@ savelink-app/src/
 list_games
 get_repository_path
 get_app_info
+get_baidu_connection_status
+connect_baidu
+upload_snapshot_to_baidu
+discover_baidu_snapshots
+receive_baidu_snapshot
 list_snapshots
 scan_path
 add_game
@@ -168,6 +175,8 @@ Windows 运行时数据：
 
 ```text
 %APPDATA%\com.daiq.savelink\
+├── credentials\baidu-oauth.json
+├── cloud-work\
 ├── savelink.db
 └── repository\
     └── snapshots\
@@ -176,6 +185,8 @@ Windows 运行时数据：
 ```
 
 绿色版 `savelink-app.exe` 和安装版使用同一个 identifier，因此共用同一个数据目录。
+
+仅用于双设备验收时，可通过 `SAVELINK_TEST_DATA_DIR` 指向绝对路径启动隔离 profile。当前 `run-device-b-test.bat` 使用 `%APPDATA%\com.daiq.savelink-device-b-test`，并在顶栏显示“设备 B 隔离测试”；代码拒绝把测试变量指向正式数据目录。
 
 ## 数据模型现状
 
@@ -314,9 +325,10 @@ pub trait SnapshotStore: Send + Sync {
 - `cloud_service.rs`：上传、发现、下载、冲突、幂等和接收落地编排。
 - H 组 8 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配和硬冲突。
 - 百度适配器内部单元测试 2 个，I 组本地 HTTP 契约测试 4 个；J 组真实百度对象存取冒烟默认忽略，2026-07-15 已使用环境变量注入 Token 执行通过。
-- `baidu_oauth.rs`：OAuth URL、授权码换 Token、刷新方法、随机 `state`、本机回调监听和 Token 文件仓库；K 组 6 个测试保护。
+- `baidu_oauth.rs`：OAuth URL、授权码换 Token、刷新方法、随机 `state`、本机回调监听和 Token 文件仓库；K 组 8 个测试保护。
+- L 组真实百度设备 B 测试默认忽略，保护只读发现不创建游戏、下载后双重校验、接收落地及设备路径隔离；2026-07-16 已按需执行通过。
 
-OAuth、凭据持久化、自动刷新、连接状态命令和单快照真实上云已实现。按钮通过 `CloudSyncService` 打包、校验并发布 `.zip + .ok`，SQLite 记录状态；尚未完成解绑、凭据加密和真实百度发现/下载。`BaiduNetdiskStore` 当前按百度官方单步上传边界支持不超过 2 GiB 的对象，更大快照需要后续增加预上传/分片上传。
+OAuth、凭据持久化、自动刷新、真实上云和设备 B 发现/下载/接收已实现。上传通过 `CloudSyncService` 发布 `.zip + .ok`；下载先校验压缩包，再校验解压内容，通过后才写本机仓库。只读发现不创建本机游戏，接收后创建的游戏不含设备 A 路径。尚未完成解绑和凭据加密；`BaiduNetdiskStore` 当前按百度官方单步上传边界支持不超过 2 GiB 的对象，更大快照需要后续增加预上传/分片上传。
 
 百度网盘 POC 已通过，云端快照物理格式确定为：
 
@@ -384,7 +396,7 @@ Tauri 2 capability 需要：
 - 帮助入口仍是占位。
 - 应用图标仍是 Tauri 默认图标。
 - 百度首次授权、过期前自动刷新和授权失效后重新连接已实现；解绑和凭据加密尚未接入。
-- 快照“上云”按钮已触发真正上传；真实百度发现、下载和接收落地尚未接入页面。
+- 真实百度上传、发现、下载和接收落地均已接入页面；设备 B 绑定测试目录后的安全恢复尚待最终验收。
 - 百度适配器当前只实现不超过 2 GiB 的单步上传；断点续传和分片上传后置。
 - `rustfmt` 当前可用，新文件已格式化；全仓旧文件格式差异尚未单独收口。
 
@@ -396,7 +408,7 @@ Tauri 2 capability 需要：
 | MVP 后补齐 | 编辑/移除游戏、缺失目录创建恢复、设置页、打包脚本、权限修复 |
 | 阶段 2 自动化 | notify 文件监听、游戏退出后快照、保留策略 |
 | 阶段 3 游戏识别 | Ludusavi manifest / 常见游戏路径库 |
-| 阶段 4 云端 | POC、协议 v1、Fake 双设备闭环、百度适配器、OAuth 和真实上传已完成；待实现真实发现、下载和接收状态 UI |
+| 阶段 4 云端 | POC、协议 v1、Fake/真实双设备传输、百度适配器、OAuth、上传与接收状态 UI 已完成；待规划绑定体验并验收安全恢复 |
 
 ## 当前结论
 

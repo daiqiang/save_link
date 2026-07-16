@@ -14,7 +14,9 @@ use savelink_core::baidu_store::BaiduNetdiskStore;
 use savelink_core::cloud_archive::ZipCloudArchiveCodec;
 use savelink_core::cloud_model::{CloudAccount, CloudSnapshotRecord};
 use savelink_core::cloud_repo::CloudStateRepository;
-use savelink_core::cloud_service::{CloudSyncError, CloudSyncService, UploadOutcome};
+use savelink_core::cloud_service::{
+    CloudSnapshotDiscovery, CloudSyncError, CloudSyncService, ReceiveOutcome, UploadOutcome,
+};
 use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapshot};
 use savelink_core::repo::{Clock, IdGen, Repository};
 use savelink_core::service::{RestoreService, SnapshotService};
@@ -68,9 +70,10 @@ pub struct AppState {
     pub store: Arc<dyn SnapshotStore>,
     pub baidu_token_store: FileBaiduTokenStore,
     pub baidu_auth_in_progress: Arc<AtomicBool>,
-    pub baidu_upload_in_progress: Arc<AtomicBool>,
+    pub baidu_sync_in_progress: Arc<AtomicBool>,
     pub device_id: String,
     pub cloud_repository_id: String,
+    pub profile_label: Option<String>,
     pub data_dir: PathBuf,
     pub repository_dir: PathBuf,
     pub clock: Arc<dyn Clock>,
@@ -80,6 +83,13 @@ pub struct AppState {
 impl AppState {
     /// 在指定数据目录下初始化：savelink.db + repository/ 仓库目录。
     pub fn init(data_dir: &std::path::Path) -> Result<Self, String> {
+        Self::init_with_profile(data_dir, None)
+    }
+
+    pub fn init_with_profile(
+        data_dir: &std::path::Path,
+        profile_label: Option<String>,
+    ) -> Result<Self, String> {
         std::fs::create_dir_all(data_dir).map_err(|e| e.to_string())?;
         let sqlite_repo =
             Arc::new(SqliteRepo::open(data_dir.join("savelink.db")).map_err(|e| e.to_string())?);
@@ -97,9 +107,10 @@ impl AppState {
             store: Arc::new(store),
             baidu_token_store: FileBaiduTokenStore::new(data_dir.join(BAIDU_TOKEN_REF)),
             baidu_auth_in_progress: Arc::new(AtomicBool::new(false)),
-            baidu_upload_in_progress: Arc::new(AtomicBool::new(false)),
+            baidu_sync_in_progress: Arc::new(AtomicBool::new(false)),
             device_id,
             cloud_repository_id,
+            profile_label,
             data_dir: data_dir.to_path_buf(),
             repository_dir,
             clock: Arc::new(SystemClock),
@@ -176,6 +187,7 @@ pub struct AppInfoDto {
     pub data_dir: String,
     pub repository_dir: String,
     pub database_path: String,
+    pub profile_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -193,6 +205,28 @@ pub struct CloudUploadDto {
     pub cloud_status: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudSnapshotDto {
+    pub cloud_game_id: String,
+    pub game_name: String,
+    pub snapshot_id: String,
+    pub created_at: String,
+    pub note: Option<String>,
+    pub reason: String,
+    pub locked: bool,
+    pub file_count: u64,
+    pub total_size: u64,
+    pub cloud_status: String,
+    pub last_error_code: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct CloudReceiveDto {
+    pub snapshot_id: String,
+    pub game_id: String,
+    pub outcome: String,
+}
+
 fn reason_str(r: Reason) -> String {
     match r {
         Reason::Manual => "manual",
@@ -200,6 +234,23 @@ fn reason_str(r: Reason) -> String {
         Reason::Auto => "auto",
     }
     .to_string()
+}
+
+fn cloud_snapshot_to_dto(discovery: CloudSnapshotDiscovery) -> CloudSnapshotDto {
+    let record = discovery.snapshot;
+    CloudSnapshotDto {
+        cloud_game_id: discovery.cloud_game_id,
+        game_name: discovery.game_name,
+        snapshot_id: record.snapshot_id,
+        created_at: record.created_at,
+        note: record.note,
+        reason: reason_str(record.reason),
+        locked: record.locked,
+        file_count: record.file_count,
+        total_size: record.total_size,
+        cloud_status: record.sync_status.as_str().into(),
+        last_error_code: record.last_error_code,
+    }
 }
 
 fn snapshot_to_dto(s: &Snapshot) -> SnapshotDto {
@@ -269,6 +320,64 @@ impl Drop for AuthBusyGuard {
     }
 }
 
+struct BaiduCloudRuntime {
+    sqlite_repo: Arc<SqliteRepo>,
+    snapshot_store: Arc<dyn SnapshotStore>,
+    token_store: FileBaiduTokenStore,
+    clock: Arc<dyn Clock>,
+    work_dir: PathBuf,
+    device_id: String,
+    repository_id: String,
+}
+
+impl BaiduCloudRuntime {
+    fn from_state(state: &AppState) -> Self {
+        Self {
+            sqlite_repo: state.sqlite_repo.clone(),
+            snapshot_store: state.store.clone(),
+            token_store: state.baidu_token_store.clone(),
+            clock: state.clock.clone(),
+            work_dir: state.data_dir.join("cloud-work"),
+            device_id: state.device_id.clone(),
+            repository_id: state.cloud_repository_id.clone(),
+        }
+    }
+
+    fn build(self) -> Result<CloudSyncService<SqliteRepo>, String> {
+        let config = baidu_oauth_config().map_err(|error| error.to_string())?;
+        let oauth_client = BaiduOAuthClient::new(config).map_err(|error| error.to_string())?;
+        let token_provider = Arc::new(RefreshingBaiduTokenProvider::new(
+            self.token_store,
+            oauth_client,
+        ));
+        let cloud_store =
+            Arc::new(BaiduNetdiskStore::new(token_provider).map_err(|error| error.to_string())?);
+        CloudSyncService::new(
+            self.sqlite_repo,
+            self.snapshot_store,
+            cloud_store,
+            Arc::new(ZipCloudArchiveCodec::new()),
+            self.clock,
+            self.work_dir,
+            BAIDU_ACCOUNT_ID,
+            self.device_id,
+            self.repository_id,
+        )
+        .map_err(|error| error.to_string())
+    }
+}
+
+fn acquire_cloud_sync_guard(state: &AppState) -> Result<AuthBusyGuard, String> {
+    let busy = state.baidu_sync_in_progress.clone();
+    if busy
+        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+        .is_err()
+    {
+        return Err("已有云端任务正在进行，请等待当前任务完成".into());
+    }
+    Ok(AuthBusyGuard(busy))
+}
+
 /* ---------- Tauri 命令（前端通过 invoke 调用，类似发 HTTP 到 Controller） ---------- */
 
 use tauri::{AppHandle, State};
@@ -295,6 +404,7 @@ pub fn get_app_info(state: State<'_, AppState>) -> Result<AppInfoDto, String> {
             .join("savelink.db")
             .to_string_lossy()
             .to_string(),
+        profile_label: state.profile_label.clone(),
     })
 }
 
@@ -380,44 +490,13 @@ pub async fn upload_snapshot_to_baidu(
     game_id: String,
     snapshot_id: String,
 ) -> Result<CloudUploadDto, String> {
-    let busy = state.baidu_upload_in_progress.clone();
-    if busy
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("已有快照正在上传，请等待当前上传完成".into());
-    }
-    let _busy_guard = AuthBusyGuard(busy);
-
-    let config = baidu_oauth_config().map_err(|error| error.to_string())?;
-    let sqlite_repo = state.sqlite_repo.clone();
-    let snapshot_store = state.store.clone();
-    let token_store = state.baidu_token_store.clone();
-    let token_store_on_error = token_store.clone();
-    let clock = state.clock.clone();
-    let work_dir = state.data_dir.join("cloud-work");
-    let account_id = BAIDU_ACCOUNT_ID.to_string();
-    let device_id = state.device_id.clone();
-    let repository_id = state.cloud_repository_id.clone();
+    let _busy_guard = acquire_cloud_sync_guard(&state)?;
+    let runtime = BaiduCloudRuntime::from_state(&state);
+    let token_store_on_error = state.baidu_token_store.clone();
     let requested_snapshot_id = snapshot_id.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
-        let oauth_client = BaiduOAuthClient::new(config).map_err(|error| error.to_string())?;
-        let token_provider = Arc::new(RefreshingBaiduTokenProvider::new(token_store, oauth_client));
-        let cloud_store =
-            Arc::new(BaiduNetdiskStore::new(token_provider).map_err(|error| error.to_string())?);
-        let service = CloudSyncService::new(
-            sqlite_repo,
-            snapshot_store,
-            cloud_store,
-            Arc::new(ZipCloudArchiveCodec::new()),
-            clock,
-            work_dir,
-            account_id,
-            device_id,
-            repository_id,
-        )
-        .map_err(|error| cloud_upload_error_message(&error))?;
+        let service = runtime.build()?;
 
         match service.upload_snapshot(&game_id, &snapshot_id) {
             Ok(outcome) => Ok(CloudUploadDto {
@@ -448,6 +527,69 @@ pub async fn upload_snapshot_to_baidu(
     })
 }
 
+#[tauri::command]
+pub async fn discover_baidu_snapshots(
+    state: State<'_, AppState>,
+) -> Result<Vec<CloudSnapshotDto>, String> {
+    let _busy_guard = acquire_cloud_sync_guard(&state)?;
+    let runtime = BaiduCloudRuntime::from_state(&state);
+    let token_store_on_error = state.baidu_token_store.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let service = runtime.build()?;
+        match service.discover_remote_catalog() {
+            Ok(discovered) => Ok(discovered.into_iter().map(cloud_snapshot_to_dto).collect()),
+            Err(error) => {
+                if error.code() == "auth_required" {
+                    let _ = token_store_on_error.clear();
+                }
+                Err(cloud_discovery_error_message(&error))
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("云端存档发现任务异常结束: {error}"))?
+}
+
+#[tauri::command]
+pub async fn receive_baidu_snapshot(
+    state: State<'_, AppState>,
+    snapshot_id: String,
+) -> Result<CloudReceiveDto, String> {
+    let _busy_guard = acquire_cloud_sync_guard(&state)?;
+    let runtime = BaiduCloudRuntime::from_state(&state);
+    let repo = runtime.sqlite_repo.clone();
+    let token_store_on_error = state.baidu_token_store.clone();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let cloud_game_id = repo
+            .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "尚未发现这条云端快照，请先刷新云端存档列表".to_string())?
+            .cloud_game_id;
+        let service = runtime.build()?;
+        match service.receive_remote_snapshot(&snapshot_id) {
+            Ok(outcome) => Ok(CloudReceiveDto {
+                snapshot_id,
+                game_id: cloud_game_id,
+                outcome: match outcome {
+                    ReceiveOutcome::Downloaded => "downloaded",
+                    ReceiveOutcome::AlreadyPresent => "already_present",
+                }
+                .into(),
+            }),
+            Err(error) => {
+                if error.code() == "auth_required" {
+                    let _ = token_store_on_error.clear();
+                }
+                Err(cloud_receive_error_message(&error))
+            }
+        }
+    })
+    .await
+    .map_err(|error| format!("云端快照下载任务异常结束: {error}"))?
+}
+
 fn cloud_upload_error_message(error: &CloudSyncError) -> String {
     match error.code() {
         "auth_required" => "百度网盘授权已失效，请重新授权后再上传".into(),
@@ -461,6 +603,31 @@ fn cloud_upload_error_message(error: &CloudSyncError) -> String {
             "云端快照文件校验失败，请稍后重试".into()
         }
         _ => format!("快照上传失败：{error}"),
+    }
+}
+
+fn cloud_discovery_error_message(error: &CloudSyncError) -> String {
+    match error.code() {
+        "auth_required" => "百度网盘授权已失效，请重新授权后刷新".into(),
+        "network_unavailable" => "无法连接百度网盘，请检查网络后刷新".into(),
+        "rate_limited" => "百度网盘请求过于频繁，请稍后刷新".into(),
+        "snapshot_id_conflict" => "云端存在相互冲突的快照记录，已停止读取".into(),
+        "remote_zip_missing" => "云端快照缺少 zip 文件，未加入可下载列表".into(),
+        _ => format!("读取云端存档失败：{error}"),
+    }
+}
+
+fn cloud_receive_error_message(error: &CloudSyncError) -> String {
+    match error.code() {
+        "auth_required" => "百度网盘授权已失效，请重新授权后下载".into(),
+        "network_unavailable" => "无法连接百度网盘，请检查网络后重试".into(),
+        "rate_limited" => "百度网盘请求过于频繁，请稍后重试".into(),
+        "archive_size_mismatch" | "archive_hash_mismatch" | "snapshot_content_mismatch" => {
+            "下载的云端快照校验失败，未写入本机快照仓库".into()
+        }
+        "snapshot_id_conflict" => "本机存在同编号但内容不同的快照，已停止下载".into(),
+        "remote_zip_missing" => "云端快照文件不完整，无法下载".into(),
+        _ => format!("下载云端存档失败：{error}"),
     }
 }
 

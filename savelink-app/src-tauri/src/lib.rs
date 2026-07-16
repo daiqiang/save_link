@@ -4,7 +4,10 @@ mod oauth_config;
 
 use commands::AppState;
 use savelink_core::service::startup_self_check;
+use std::path::PathBuf;
 use tauri::Manager;
+
+const TEST_DATA_DIR_ENV: &str = "SAVELINK_TEST_DATA_DIR";
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -13,8 +16,13 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // 在系统应用数据目录下初始化数据库与仓库（savelink.db + repository/）。
-            let data_dir = app.path().app_data_dir().expect("无法获取应用数据目录");
-            let state = AppState::init(&data_dir).expect("初始化数据层失败");
+            let default_data_dir = app.path().app_data_dir().expect("无法获取应用数据目录");
+            let (data_dir, profile_label) = configured_data_dir(default_data_dir);
+            let state = match profile_label {
+                Some(label) => AppState::init_with_profile(&data_dir, Some(label)),
+                None => AppState::init(&data_dir),
+            }
+            .expect("初始化数据层失败");
             // 清理上次异常中断留下的 Writing 半成品快照，再开放前端命令。
             startup_self_check(&state.repo, &state.store).expect("启动自检失败");
             app.manage(state);
@@ -27,6 +35,8 @@ pub fn run() {
             commands::get_baidu_connection_status,
             commands::connect_baidu,
             commands::upload_snapshot_to_baidu,
+            commands::discover_baidu_snapshots,
+            commands::receive_baidu_snapshot,
             commands::list_snapshots,
             commands::scan_path,
             commands::add_game,
@@ -40,4 +50,17 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+fn configured_data_dir(default_data_dir: PathBuf) -> (PathBuf, Option<String>) {
+    let Some(value) = std::env::var_os(TEST_DATA_DIR_ENV).filter(|value| !value.is_empty()) else {
+        return (default_data_dir, None);
+    };
+    let path = PathBuf::from(value);
+    assert!(path.is_absolute(), "{TEST_DATA_DIR_ENV} 必须是绝对路径");
+    assert_ne!(
+        path, default_data_dir,
+        "{TEST_DATA_DIR_ENV} 不能指向正式数据目录"
+    );
+    (path, Some("设备 B 隔离测试".into()))
 }

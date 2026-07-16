@@ -8,11 +8,11 @@
 | 1.1 | 代强 | 2026-07-08 | 同步恢复校验增强、35 个 core 测试与云同步增量协议路线 |
 | 1.2 | 代强 | 2026-07-14 | 同步百度网盘 POC、协议 v1、本机云基础设施和 Fake 双设备闭环；core 增至 50 个测试 |
 | 1.3 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机授权与 Token 持久化、上云入口和 62 个默认测试；明确真实上传下一步 |
-| 1.4 | 代强 | 2026-07-16 | 同步单快照真实上云、Token 自动刷新、上传状态 UI、云端实机验收和 64 个默认测试 |
+| 1.4 | 代强 | 2026-07-16 | 同步真实上云及设备 B 发现、下载、双重校验、接收落地、隔离模式和未绑定目录保护 |
 
 > 角色约定：总规划会话负责方向、范围和验收判断；本地开发会话负责按文档实现、验证、打包。
 > 开工前先读完本文档 + `PROGRESS.md`，再动代码。
-> 最后更新：2026-07-15（Codex）
+> 最后更新：2026-07-16（Codex）
 
 ---
 
@@ -48,10 +48,12 @@ MVP 后第一轮补齐也已完成：
 - 快照“上云”按钮已调用 `CloudSyncService`：未授权时授权后续传，已授权时直接上传；上传中旋转，成功后显示绿色勾选并持久化 `uploaded`。
 - `RefreshingBaiduTokenProvider` 会在 Token 临近过期时刷新并保存新凭据；授权失效时清除本机无效 Token，下一次点击重新授权。
 - 2026-07-16 真实绿色版已把单条快照上传为同 ID 的 `.zip` 与 `.ok`，百度客户端和 SaveLink 页面均验收通过。
+- 顶栏“云端存档”已接入真实百度发现和下载：只读发现不创建本机游戏；下载通过 zip 与内容指纹双重校验后，才写入设备 B 的 `repository`/SQLite 并创建未绑定游戏。
+- 设备 B 隔离模式使用 `%APPDATA%\com.daiq.savelink-device-b-test`，顶栏显示测试标识；未绑定本机存档目录时创建快照和恢复均禁用。
 
 当前客观状态：
 
-- `savelink-core`：64 个默认测试全绿，其中 G/H/I/K 组 27 个覆盖云基础设施、Fake 双设备闭环、百度 HTTP 契约、OAuth 和 Token 刷新；另有 1 个默认忽略的真实百度冒烟已人工执行通过。
+- `savelink-core`：64 个默认测试全绿，其中 G/H/I/K 组 27 个覆盖云基础设施、Fake 双设备闭环、百度 HTTP 契约、OAuth 和 Token 刷新；J/L 两个默认忽略的真实百度测试均已按需执行通过。
 - `savelink-app`：Tauri 桌面应用，React 前端 + Rust 命令薄壳。
 - 数据位置：`%APPDATA%\com.daiq.savelink\`。
 - 产物位置：`savelink-app/src-tauri/target/release/`。
@@ -178,7 +180,7 @@ core 已有 progress 回调概念，当前 Tauri 命令传空回调。可改为�
 - `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync` 已落库；旧数据库打开时自动补表。
 - 协议 JSON、`CloudArchiveCodec` 和 `CloudSyncService` 已实现，Fake 云端已完成“上传 -> 发现 -> 下载 -> 双重校验 -> 写入另一套本机 repository -> 登记 SQLite”闭环。
 - 云同步术语统一为“接收云端快照并落地到本机快照仓库”；“导出/导入”只用于未来独立的手动备份功能。
-- `BaiduNetdiskStore`、OAuth、自动刷新和单快照真实上云已完成并实测；下一步在第二套本机数据目录中接入真实百度发现、下载和接收落地。
+- `BaiduNetdiskStore`、OAuth、自动刷新、真实上云及设备 B 发现/下载/接收已完成并实测；下一步由总规划决定绑定交互，并用假存档目录验收绑定后的安全恢复。
 - Token 当前保存在 `%APPDATA%\com.daiq.savelink\credentials\baidu-oauth.json`，SQLite 只保存引用；解绑和凭据加密尚未接入。
 - 手动 zip 导出/导入只作为备份迁移工具，当前优先级低。
 
