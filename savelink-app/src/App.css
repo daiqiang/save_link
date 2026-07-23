@@ -116,22 +116,28 @@ button {
 }
 .iconbtn:hover { background: rgba(0, 0, 0, 0.06); }
 .iconbtn:disabled { opacity: 0.55; cursor: wait; }
-.iconbtn.cloud-upload {
+.btn.cloud-upload {
+  min-width: 78px;
+  justify-content: center;
+  white-space: nowrap;
   color: var(--color-accent);
   background: #f7faff;
   border-color: #d7e3f8;
 }
-.iconbtn.cloud-upload:hover {
+.btn.cloud-upload:hover:not(:disabled) {
   background: var(--color-accent-soft);
   border-color: #b9cef3;
 }
-.iconbtn.cloud-upload.is-uploaded {
+.btn.cloud-upload.is-uploaded {
   color: #257a4b;
   background: #edf8f1;
   border-color: #b8dec6;
   cursor: default;
 }
-.iconbtn.cloud-upload.is-error {
+.btn.cloud-upload.is-uploaded:disabled {
+  opacity: 1;
+}
+.btn.cloud-upload.is-error {
   color: var(--color-danger);
   background: var(--color-danger-soft);
   border-color: #efc1c1;

@@ -204,6 +204,13 @@ function SaveLink() {
                     : cloudFailed
                       ? "上次上传失败，点击重试"
                       : "上传到百度网盘";
+                const cloudLabel = cloudBusy
+                  ? "上传中"
+                  : cloudUploaded
+                    ? "已上云"
+                    : cloudFailed
+                      ? "重试"
+                      : "上传";
                 return (
                 <div key={s.id} className={`snap ${s.reason === "before_restore" ? "is-backup" : ""}`}
                   onClick={() => setDrawerSnap(s)}>
@@ -223,7 +230,7 @@ function SaveLink() {
                     <button className="btn sm" title={selected.save_paths.length === 0 ? "请先绑定本机存档目录" : "恢复"}
                       disabled={selected.save_paths.length === 0} onClick={() => setRestoreSnap(s)}><Icon.RotateCcw /> 恢复</button>
                     <button
-                      className={`iconbtn cloud-upload ${cloudUploaded ? "is-uploaded" : ""} ${cloudFailed ? "is-error" : ""}`}
+                      className={`btn sm cloud-upload ${cloudUploaded ? "is-uploaded" : ""} ${cloudFailed ? "is-error" : ""}`}
                       title={cloudTitle}
                       aria-label={cloudTitle}
                       aria-busy={cloudBusy}
@@ -235,6 +242,7 @@ function SaveLink() {
                         : cloudUploaded
                           ? <Icon.Check />
                           : <Icon.CloudUpload />}
+                      <span>{cloudLabel}</span>
                     </button>
                     <button className="iconbtn" title={s.locked ? "取消锁定" : "锁定"} onClick={() => toggleLock(s)}>
                       {s.locked ? <Icon.Unlock /> : <Icon.Lock />}
