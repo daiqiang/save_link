@@ -48,6 +48,9 @@ export const Icon = {
   Edit: ({ size = 16 }: P): JSX.Element => (
     <svg {...base(size)}><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" /><path d="M18.5 2.5a2.12 2.12 0 0 1 3 3L12 15l-4 1 1-4z" /></svg>
   ),
+  Save: ({ size = 16 }: P): JSX.Element => (
+    <svg {...base(size)}><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" /><path d="M17 21v-8H7v8M7 3v5h8" /></svg>
+  ),
   Shield: ({ size = 16 }: P): JSX.Element => (
     <svg {...base(size)}><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /></svg>
   ),

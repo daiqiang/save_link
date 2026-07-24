@@ -5,6 +5,8 @@ import * as api from "../lib/api";
 import { useToast } from "./Toast";
 import type { Game, Snapshot } from "../lib/types";
 
+type PendingAction = "close" | "restore" | "delete";
+
 interface Props {
   game: Game;
   snapshot: Snapshot;
@@ -17,14 +19,32 @@ interface Props {
 export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, onDelete }: Props) {
   const toast = useToast();
   const [note, setNote] = useState(snapshot.note ?? "");
+  const [savedNote, setSavedNote] = useState(snapshot.note ?? "");
+  const [savingNote, setSavingNote] = useState(false);
+  const [noteSaveFailed, setNoteSaveFailed] = useState(false);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
   // 用本地 locked 状态：toggle 后立刻同步抽屉内的按钮/状态/删除禁用，
   // 否则抽屉读的是打开时的 snapshot prop（refresh 不会更新它），按钮文案会和时间线不一致。
   const [locked, setLocked] = useState(snapshot.locked);
+  const noteDirty = note !== savedNote;
 
   async function saveNote() {
-    await api.updateSnapshotMeta(snapshot.id, note.trim(), null);
-    onChanged();
-    toast("备注已保存", "ok");
+    if (!noteDirty || savingNote) return;
+    const normalized = note.trim();
+    setSavingNote(true);
+    setNoteSaveFailed(false);
+    try {
+      await api.updateSnapshotMeta(snapshot.id, normalized, null);
+      setNote(normalized);
+      setSavedNote(normalized);
+      onChanged();
+      toast("备注已保存", "ok");
+    } catch (error) {
+      setNoteSaveFailed(true);
+      toast(`备注保存失败：${String(error)}`, "err");
+    } finally {
+      setSavingNote(false);
+    }
   }
   async function toggleLock() {
     const next = !locked;
@@ -34,23 +54,48 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
     toast(next ? "快照已锁定，不会被自动清理" : "已取消锁定", "ok");
   }
 
+  function executeAction(action: PendingAction) {
+    if (action === "restore") onRestore(snapshot);
+    else if (action === "delete") onDelete(snapshot);
+    else onClose();
+  }
+
+  function requestAction(action: PendingAction) {
+    if (noteDirty) setPendingAction(action);
+    else executeAction(action);
+  }
+
   return (
     <>
-      <div className="drawer-mask" onClick={onClose} />
+      <div className="drawer-mask" onClick={() => requestAction("close")} />
       <div className="drawer">
         <div className="drawer-head">
           <h3>快照详情</h3>
-          <button className="iconbtn" onClick={onClose}><Icon.Close /></button>
+          <button className="iconbtn" title="关闭" onClick={() => requestAction("close")}><Icon.Close /></button>
         </div>
         <div className="drawer-body">
           <div className="drawer-title">{game.name}</div>
           <div className="drawer-time">{snapshot.created_at}</div>
 
           <div className="field">
-            <label>备注</label>
-            <textarea className="input" value={note} onChange={(e) => setNote(e.target.value)} />
-            <div style={{ marginTop: 8 }}>
-              <button className="btn sm" onClick={saveNote}>保存备注</button>
+            <div className="note-label-row">
+              <label>备注</label>
+              <span className={`note-state ${noteSaveFailed ? "error" : noteDirty ? "dirty" : "saved"}`} aria-live="polite">
+                {noteSaveFailed
+                  ? <><Icon.Alert size={13} /> 保存失败，请重试</>
+                  : noteDirty
+                    ? <><span className="note-state-dot" /> 有未保存修改</>
+                    : <><Icon.Check size={13} /> 已保存</>}
+              </span>
+            </div>
+            <textarea className="input" value={note} onChange={(event) => {
+              setNote(event.target.value);
+              setNoteSaveFailed(false);
+            }} />
+            <div className="note-actions">
+              <button className="btn sm primary note-save" onClick={saveNote} disabled={!noteDirty || savingNote}>
+                <Icon.Save size={14} /> 保存备注
+              </button>
             </div>
           </div>
 
@@ -69,7 +114,7 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
         <div className="drawer-foot">
           <button className="btn primary" disabled={game.save_paths.length === 0}
             title={game.save_paths.length === 0 ? "请先绑定本机存档目录" : "恢复这个版本"}
-            onClick={() => onRestore(snapshot)}>
+            onClick={() => requestAction("restore")}>
             <Icon.RotateCcw /> 恢复这个版本
           </button>
           <div style={{ display: "flex", gap: 10 }}>
@@ -77,12 +122,32 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
               {locked ? <><Icon.Unlock /> 取消锁定</> : <><Icon.Lock /> 锁定</>}
             </button>
             <button className="btn danger" style={{ flex: 1 }} disabled={locked}
-              onClick={() => locked ? toast("锁定快照不能删除，请先取消锁定", "warn") : onDelete(snapshot)}>
+              onClick={() => locked ? toast("锁定快照不能删除，请先取消锁定", "warn") : requestAction("delete")}>
               <Icon.Trash /> 删除
             </button>
           </div>
         </div>
       </div>
+      {pendingAction && (
+        <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && setPendingAction(null)}>
+          <div className="modal narrow">
+            <div className="modal-head">
+              <h3>放弃备注修改？</h3>
+              <button className="iconbtn" title="关闭" onClick={() => setPendingAction(null)}><Icon.Close /></button>
+            </div>
+            <div className="modal-body">
+              <div className="callout warn">
+                <span className="ic"><Icon.Alert /></span>
+                <div>当前备注尚未保存。放弃后，本次修改将不会保留。</div>
+              </div>
+            </div>
+            <div className="modal-foot">
+              <button className="btn" onClick={() => setPendingAction(null)}>继续编辑</button>
+              <button className="btn danger" onClick={() => executeAction(pendingAction)}>放弃修改</button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
