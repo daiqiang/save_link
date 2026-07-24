@@ -69,6 +69,7 @@ button {
 }
 .topbar .brand { display: flex; align-items: center; gap: 8px; font-weight: 650; font-size: 15px; }
 .topbar .brand .logo { color: var(--color-accent); display: inline-flex; }
+.topbar .brand .app-version { font-weight: 400; font-size: 11px; color: var(--color-text-3); }
 .topbar .brand .sub { font-weight: 400; font-size: 12px; color: var(--color-text-3); }
 .topbar .brand .sub.test-profile { color: var(--color-warn); font-weight: 600; }
 .topbar .spacer { flex: 1; }

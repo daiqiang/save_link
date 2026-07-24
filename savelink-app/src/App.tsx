@@ -21,6 +21,7 @@ function SaveLink() {
   const [creating, setCreating] = useState(false);
   const [cloudUploadingId, setCloudUploadingId] = useState<string | null>(null);
   const [profileLabel, setProfileLabel] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState<string | null>(null);
 
   // 弹窗 / 抽屉 / 菜单状态
   const [showAdd, setShowAdd] = useState(false);
@@ -48,7 +49,14 @@ function SaveLink() {
   }, []);
 
   useEffect(() => { loadGames(); }, [loadGames]);
-  useEffect(() => { api.getAppInfo().then((info) => setProfileLabel(info.profile_label)).catch(() => undefined); }, []);
+  useEffect(() => {
+    api.getAppInfo()
+      .then((info) => {
+        setProfileLabel(info.profile_label);
+        setAppVersion(info.version);
+      })
+      .catch(() => undefined);
+  }, []);
   // 切换游戏：先立即清空上一个游戏的残留，再按 selectedId 加载；
   // cancelled 守卫避免“切得快时旧请求后到、把别的游戏快照回填进来”。
   useEffect(() => {
@@ -126,7 +134,9 @@ function SaveLink() {
       <div className="topbar">
         <div className="brand">
           <span className="logo"><Icon.History size={20} /></span>
-          SaveLink <span className={`sub ${profileLabel ? "test-profile" : ""}`}>{profileLabel ?? "本地存档时间线"}</span>
+          SaveLink
+          {appVersion && <span className="app-version">v{appVersion}</span>}
+          <span className={`sub ${profileLabel ? "test-profile" : ""}`}>{profileLabel ?? "本地存档时间线"}</span>
         </div>
         <div className="spacer" />
         <button className="iconbtn" title="云端存档" onClick={() => setShowCloud(true)}><Icon.CloudUpload /></button>

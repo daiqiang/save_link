@@ -54,7 +54,6 @@ export function SettingsDialog({ onClose }: Props) {
             <div className="hint muted"><span className="spin"><Icon.RotateCcw /></span> 正在读取应用信息…</div>
           ) : (
             <div className="settings-list">
-              <InfoRow label="当前版本" value={`SaveLink ${info.version}`} />
               <InfoRow label="运行方式" value="绿色版和安装版共用同一个用户数据目录" />
               <PathRow label="数据目录" value={info.data_dir} onCopy={copy} onOpen={reveal} />
               <PathRow label="快照仓库" value={info.repository_dir} onCopy={copy} onOpen={reveal} />
