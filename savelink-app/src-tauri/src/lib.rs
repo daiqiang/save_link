@@ -1,5 +1,6 @@
 // Tauri 应用入口。命令实现见 commands 模块。
 mod commands;
+mod desktop;
 mod oauth_config;
 
 use commands::AppState;
@@ -12,9 +13,14 @@ const TEST_DATA_DIR_ENV: &str = "SAVELINK_TEST_DATA_DIR";
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            desktop::show_main_window(app);
+        }))
+        .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
+            desktop::setup(app)?;
             // 在系统应用数据目录下初始化数据库与仓库（savelink.db + repository/）。
             let default_data_dir = app.path().app_data_dir().expect("无法获取应用数据目录");
             let (data_dir, profile_label) = configured_data_dir(default_data_dir);
@@ -28,6 +34,7 @@ pub fn run() {
             app.manage(state);
             Ok(())
         })
+        .on_window_event(desktop::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
             commands::get_repository_path,
