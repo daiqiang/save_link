@@ -5,6 +5,7 @@ use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
 fn main() {
+    println!("cargo:rerun-if-changed=icons/icon.ico");
     println!("cargo:rerun-if-env-changed=SAVELINK_BAIDU_APP_KEY");
     println!("cargo:rerun-if-env-changed=SAVELINK_BAIDU_SECRET_KEY");
     println!("cargo:rerun-if-env-changed=SAVELINK_BAIDU_REDIRECT_URI");
