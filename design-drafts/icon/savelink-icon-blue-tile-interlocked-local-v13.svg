@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 256 256">
+  <defs>
+    <clipPath id="tile-clip">
+      <rect x="8" y="8" width="240" height="240" rx="52"/>
+    </clipPath>
+    <mask id="upper-link-weave" maskUnits="userSpaceOnUse" x="0" y="0" width="256" height="256">
+      <rect width="256" height="256" fill="#ffffff"/>
+      <rect
+        x="165"
+        y="166.5"
+        width="28"
+        height="19"
+        rx="9.5"
+        transform="rotate(61 179 176)"
+        fill="#000000"
+      />
+    </mask>
+  </defs>
+
+  <g clip-path="url(#tile-clip)">
+    <rect x="8" y="8" width="240" height="240" rx="52" fill="#1769e0"/>
+    <path
+      d="M62 144 C43 144 28 129 28 110 C28 91 43 76 62 76 C68 76 74 78 79 81 C89 55 113 38 142 38 C178 38 207 66 209 102 C226 106 238 120 238 138 C238 159 221 176 200 176 H66 C44 176 27 160 27 140 C27 124 37 111 51 105"
+      fill="#ffffff"
+    />
+
+    <g transform="rotate(-35 159 176)" fill="none" stroke-linejoin="round">
+      <rect x="136" y="164" width="46" height="80" rx="23" stroke="#ffbf3f" stroke-width="17"/>
+      <g mask="url(#upper-link-weave)">
+        <rect x="136" y="108" width="46" height="80" rx="23" stroke="#ffffff" stroke-width="27"/>
+        <rect x="136" y="108" width="46" height="80" rx="23" stroke="#ffbf3f" stroke-width="17"/>
+      </g>
+    </g>
+  </g>
+</svg>

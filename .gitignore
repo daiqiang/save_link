@@ -1,6 +1,9 @@
 node_modules/
 target/
 dist/
+tmp/
+__pycache__/
+*.pyc
 
 *.log
 .savelink-demo-server.*.log

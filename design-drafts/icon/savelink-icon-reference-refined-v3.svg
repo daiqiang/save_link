@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="900" viewBox="0 0 1500 900">
+  <rect width="1500" height="900" fill="#f3f5f7"/>
+
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="10" stdDeviation="18" flood-color="#172033" flood-opacity="0.10"/>
+    </filter>
+
+    <g id="savelink-mark">
+      <!-- Lower link first, so the upper link can visibly pass over it. -->
+      <g transform="rotate(37 109 203)" fill="none" stroke-linejoin="round">
+        <rect x="87" y="161" width="44" height="84" rx="22" stroke="#ffffff" stroke-width="24"/>
+        <rect x="87" y="161" width="44" height="84" rx="22" stroke="#f05b44" stroke-width="14"/>
+      </g>
+      <g transform="rotate(37 149 153)" fill="none" stroke-linejoin="round">
+        <rect x="127" y="111" width="44" height="84" rx="22" stroke="#ffffff" stroke-width="24"/>
+        <rect x="127" y="111" width="44" height="84" rx="22" stroke="#f05b44" stroke-width="14"/>
+      </g>
+
+      <!-- Cloud covers the top of the first link, making the chain emerge from inside it. -->
+      <path d="M62 174 C39 174 21 157 21 135 C21 116 34 100 52 95 C49 89 48 83 48 77 C48 55 66 37 89 37 C99 37 108 40 115 46 C128 27 151 15 177 15 C217 15 249 44 252 82 C272 87 286 104 286 125 C286 149 267 168 243 168 H67"
+            transform="translate(-25 7) scale(.94)"
+            fill="#eaf3ff" stroke="#1e5dbd" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+
+      <!-- A short exposed rail makes the cloud-to-chain transition intentional. -->
+      <path d="M145 166 L132 184" fill="none" stroke="#ffffff" stroke-width="24" stroke-linecap="round"/>
+      <path d="M145 166 L132 184" fill="none" stroke="#f05b44" stroke-width="14" stroke-linecap="round"/>
+    </g>
+
+    <g id="savelink-mark-mono">
+      <g transform="rotate(37 109 203)" fill="none" stroke-linejoin="round">
+        <rect x="87" y="161" width="44" height="84" rx="22" stroke="#ffffff" stroke-width="24"/>
+        <rect x="87" y="161" width="44" height="84" rx="22" stroke="#172033" stroke-width="14"/>
+      </g>
+      <g transform="rotate(37 149 153)" fill="none" stroke-linejoin="round">
+        <rect x="127" y="111" width="44" height="84" rx="22" stroke="#ffffff" stroke-width="24"/>
+        <rect x="127" y="111" width="44" height="84" rx="22" stroke="#172033" stroke-width="14"/>
+      </g>
+      <path d="M62 174 C39 174 21 157 21 135 C21 116 34 100 52 95 C49 89 48 83 48 77 C48 55 66 37 89 37 C99 37 108 40 115 46 C128 27 151 15 177 15 C217 15 249 44 252 82 C272 87 286 104 286 125 C286 149 267 168 243 168 H67"
+            transform="translate(-25 7) scale(.94)"
+            fill="#ffffff" stroke="#172033" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+      <path d="M145 166 L132 184" fill="none" stroke="#ffffff" stroke-width="24" stroke-linecap="round"/>
+      <path d="M145 166 L132 184" fill="none" stroke="#172033" stroke-width="14" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <text x="70" y="69" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="34" font-weight="700" fill="#171a1f">SaveLink · 云链精修草图</text>
+  <text x="70" y="108" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" fill="#68717d">保留参考图“链条从云底垂落”的核心构图，调整为适合桌面软件的小尺寸标记</text>
+
+  <g transform="translate(65 150)">
+    <rect width="700" height="680" rx="8" fill="#ffffff" filter="url(#shadow)"/>
+    <text x="36" y="52" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="23" font-weight="700" fill="#171a1f">主图标</text>
+    <text x="36" y="82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" fill="#68717d">云代表存档上云，链条代表设备与存档之间的连接</text>
+
+    <rect x="102" y="116" width="496" height="438" rx="62" fill="#f7f9fc"/>
+    <g transform="translate(150 130) scale(1.55)"><use href="#savelink-mark"/></g>
+
+    <g transform="translate(181 587)">
+      <circle cx="10" cy="10" r="10" fill="#1e5dbd"/>
+      <text x="30" y="16" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#4d5662">可靠、安静的云存档</text>
+      <circle cx="236" cy="10" r="10" fill="#f05b44"/>
+      <text x="256" y="16" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#4d5662">连接与行动</text>
+    </g>
+  </g>
+
+  <g transform="translate(800 150)">
+    <rect width="635" height="680" rx="8" fill="#ffffff" filter="url(#shadow)"/>
+    <text x="36" y="52" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="23" font-weight="700" fill="#171a1f">缩放与系统环境</text>
+    <text x="36" y="82" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="16" fill="#68717d">重点不是大图细节，而是任务栏和托盘里仍能认出来</text>
+
+    <text x="36" y="132" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#68717d">实际尺寸</text>
+    <g transform="translate(45 162) scale(.5)"><use href="#savelink-mark"/></g>
+    <g transform="translate(227 194) scale(.25)"><use href="#savelink-mark"/></g>
+    <g transform="translate(340 210) scale(.125)"><use href="#savelink-mark"/></g>
+    <g transform="translate(416 218) scale(.0625)"><use href="#savelink-mark"/></g>
+    <text x="45" y="304" font-family="Segoe UI, sans-serif" font-size="13" fill="#7b8490">128 px</text>
+    <text x="227" y="304" font-family="Segoe UI, sans-serif" font-size="13" fill="#7b8490">64 px</text>
+    <text x="340" y="304" font-family="Segoe UI, sans-serif" font-size="13" fill="#7b8490">32 px</text>
+    <text x="416" y="304" font-family="Segoe UI, sans-serif" font-size="13" fill="#7b8490">16 px</text>
+
+    <line x1="36" y1="338" x2="599" y2="338" stroke="#e5e8ec"/>
+    <text x="36" y="379" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#68717d">浅色任务栏</text>
+    <rect x="36" y="400" width="563" height="58" rx="7" fill="#edf0f4"/>
+    <g transform="translate(53 409) scale(.15625)"><use href="#savelink-mark"/></g>
+    <text x="105" y="436" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#313842">SaveLink</text>
+    <circle cx="567" cy="429" r="11" fill="#20a879"/>
+
+    <text x="36" y="501" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#68717d">深色任务栏</text>
+    <rect x="36" y="522" width="563" height="58" rx="7" fill="#20242b"/>
+    <rect x="48" y="529" width="44" height="44" rx="7" fill="#ffffff"/>
+    <g transform="translate(54 535) scale(.125)"><use href="#savelink-mark"/></g>
+    <text x="105" y="558" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#f5f7fa">SaveLink</text>
+    <circle cx="567" cy="551" r="11" fill="#20a879"/>
+
+    <text x="36" y="625" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="15" fill="#68717d">单色备用</text>
+    <g transform="translate(158 604) scale(.25)"><use href="#savelink-mark-mono"/></g>
+  </g>
+</svg>

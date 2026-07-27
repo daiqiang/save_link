@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1120" viewBox="0 0 1600 1120">
+  <rect width="1600" height="1120" fill="#f4f6f8"/>
+  <text x="80" y="76" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="36" font-weight="700" fill="#171a1f">SaveLink icon directions</text>
+  <text x="80" y="116" font-family="Segoe UI, Microsoft YaHei, sans-serif" font-size="18" fill="#69717d">Four original sketches: save checkpoints, rewind, and device-to-device continuity.</text>
+
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="150%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#1f2937" flood-opacity="0.10"/>
+    </filter>
+
+    <g id="concept-a">
+      <rect x="0" y="0" width="256" height="256" rx="54" fill="#eef4ff"/>
+      <path d="M74 67 C103 40 157 39 184 62 C211 85 201 122 170 134 C144 144 112 138 88 151 C56 168 51 204 80 220 C104 233 139 226 157 207"
+            fill="none" stroke="#2563eb" stroke-width="25" stroke-linecap="round"/>
+      <rect x="55" y="48" width="39" height="39" rx="11" fill="#111827"/>
+      <rect x="151" y="188" width="39" height="39" rx="11" fill="#10b981"/>
+      <circle cx="74.5" cy="67.5" r="7" fill="#ffffff"/>
+      <circle cx="170.5" cy="207.5" r="7" fill="#ffffff"/>
+    </g>
+
+    <g id="concept-b">
+      <rect x="0" y="0" width="256" height="256" rx="54" fill="#fff4ef"/>
+      <path d="M66 92 L105 53 H174 L207 86 V174 L174 207 H82 L49 174 V108 Z" fill="#ffffff" stroke="#172033" stroke-width="13" stroke-linejoin="round"/>
+      <path d="M86 123 A53 53 0 1 1 103 181" fill="none" stroke="#f05d3d" stroke-width="18" stroke-linecap="round"/>
+      <path d="M86 123 L67 104 M86 123 L108 111" fill="none" stroke="#f05d3d" stroke-width="18" stroke-linecap="round" stroke-linejoin="round"/>
+      <rect x="111" y="105" width="47" height="47" rx="11" fill="#2563eb"/>
+      <rect x="122" y="116" width="25" height="9" rx="3" fill="#ffffff"/>
+      <circle cx="134.5" cy="139.5" r="6" fill="#ffffff"/>
+    </g>
+
+    <g id="concept-c">
+      <rect x="0" y="0" width="256" height="256" rx="54" fill="#f0faf6"/>
+      <rect x="43" y="67" width="64" height="122" rx="18" fill="#172033"/>
+      <rect x="149" y="67" width="64" height="122" rx="18" fill="#2563eb"/>
+      <rect x="58" y="83" width="34" height="50" rx="9" fill="#ffffff" opacity="0.95"/>
+      <rect x="164" y="83" width="34" height="50" rx="9" fill="#ffffff" opacity="0.95"/>
+      <path d="M76 161 C76 126 104 111 128 111 C152 111 180 126 180 161" fill="none" stroke="#10b981" stroke-width="18" stroke-linecap="round"/>
+      <circle cx="128" cy="111" r="16" fill="#ffffff" stroke="#10b981" stroke-width="10"/>
+      <circle cx="75" cy="166" r="7" fill="#ffffff"/>
+      <circle cx="181" cy="166" r="7" fill="#ffffff"/>
+    </g>
+
+    <g id="concept-d">
+      <rect x="0" y="0" width="256" height="256" rx="54" fill="#f3f1ff"/>
+      <path d="M182 70 C160 45 105 44 78 63 C50 82 56 114 83 125 C107 135 149 122 175 139 C205 159 198 197 168 212 C137 227 88 218 69 194"
+            fill="none" stroke="#635bdb" stroke-width="27" stroke-linecap="round"/>
+      <path d="M66 192 L66 151" fill="none" stroke="#172033" stroke-width="27" stroke-linecap="round"/>
+      <rect x="158" y="48" width="40" height="40" rx="12" fill="#f05d3d"/>
+      <rect x="47" y="177" width="40" height="40" rx="12" fill="#172033"/>
+      <path d="M170 61 L186 76 M186 61 L170 76" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+      <path d="M58 197 H76" stroke="#ffffff" stroke-width="6" stroke-linecap="round"/>
+    </g>
+  </defs>
+
+  <g transform="translate(70 160)">
+    <rect width="700" height="420" rx="10" fill="#ffffff" filter="url(#shadow)"/>
+    <text x="38" y="54" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700" fill="#171a1f">A</text>
+    <text x="76" y="54" font-family="Segoe UI, sans-serif" font-size="20" fill="#4f5865">Linked checkpoints</text>
+    <g transform="translate(54 94)"><use href="#concept-a"/></g>
+    <g transform="translate(409 113) scale(.75)"><use href="#concept-a"/></g>
+    <g transform="translate(610 321) scale(.125)"><use href="#concept-a"/></g>
+    <text x="578" y="377" font-family="Segoe UI, sans-serif" font-size="14" fill="#7b8490">32 px</text>
+  </g>
+
+  <g transform="translate(830 160)">
+    <rect width="700" height="420" rx="10" fill="#ffffff" filter="url(#shadow)"/>
+    <text x="38" y="54" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700" fill="#171a1f">B</text>
+    <text x="76" y="54" font-family="Segoe UI, sans-serif" font-size="20" fill="#4f5865">Time vault</text>
+    <g transform="translate(54 94)"><use href="#concept-b"/></g>
+    <g transform="translate(409 113) scale(.75)"><use href="#concept-b"/></g>
+    <g transform="translate(610 321) scale(.125)"><use href="#concept-b"/></g>
+    <text x="578" y="377" font-family="Segoe UI, sans-serif" font-size="14" fill="#7b8490">32 px</text>
+  </g>
+
+  <g transform="translate(70 630)">
+    <rect width="700" height="420" rx="10" fill="#ffffff" filter="url(#shadow)"/>
+    <text x="38" y="54" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700" fill="#171a1f">C</text>
+    <text x="76" y="54" font-family="Segoe UI, sans-serif" font-size="20" fill="#4f5865">Device bridge</text>
+    <g transform="translate(54 94)"><use href="#concept-c"/></g>
+    <g transform="translate(409 113) scale(.75)"><use href="#concept-c"/></g>
+    <g transform="translate(610 321) scale(.125)"><use href="#concept-c"/></g>
+    <text x="578" y="377" font-family="Segoe UI, sans-serif" font-size="14" fill="#7b8490">32 px</text>
+  </g>
+
+  <g transform="translate(830 630)">
+    <rect width="700" height="420" rx="10" fill="#ffffff" filter="url(#shadow)"/>
+    <text x="38" y="54" font-family="Segoe UI, sans-serif" font-size="24" font-weight="700" fill="#171a1f">D</text>
+    <text x="76" y="54" font-family="Segoe UI, sans-serif" font-size="20" fill="#4f5865">SL ribbon</text>
+    <g transform="translate(54 94)"><use href="#concept-d"/></g>
+    <g transform="translate(409 113) scale(.75)"><use href="#concept-d"/></g>
+    <g transform="translate(610 321) scale(.125)"><use href="#concept-d"/></g>
+    <text x="578" y="377" font-family="Segoe UI, sans-serif" font-size="14" fill="#7b8490">32 px</text>
+  </g>
+</svg>
