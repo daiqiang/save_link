@@ -220,13 +220,12 @@ function SaveLink() {
                       ? "重试"
                       : "上传";
                 return (
-                <div key={s.id} className={`snap ${s.reason === "before_restore" ? "is-backup" : ""}`}
+                <div key={s.id} className="snap"
                   onClick={() => setDrawerSnap(s)}>
                   <div className="snap-main">
                     <div className="snap-time">{s.created_at}</div>
                     <div className="snap-note">
                       {s.note || "未命名快照"}
-                      {s.reason === "before_restore" && <span className="badge backup"><Icon.Shield size={12} /> 恢复前保护点</span>}
                       {s.locked && <span className="badge lock"><Icon.Lock size={12} /> 已锁定</span>}
                     </div>
                     <div className="snap-info">

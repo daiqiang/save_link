@@ -11,6 +11,6 @@ export function formatSize(bytes: number): string {
 
 export const REASON_LABEL: Record<string, string> = {
   manual: "手动创建",
-  before_restore: "恢复前保护点",
+  before_restore: "历史备份",
   auto: "自动快照",
 };

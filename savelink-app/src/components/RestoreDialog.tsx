@@ -15,17 +15,10 @@ type Phase = "confirm" | "running" | "done" | "choose" | "error";
 export function RestoreDialog({ game, target, onClose, onDone }: Props) {
   const [phase, setPhase] = useState<Phase>("confirm");
   const [result, setResult] = useState<RestoreResult | null>(null);
-  const [protection, setProtection] = useState<Snapshot | null>(null);
   const [errMsg, setErrMsg] = useState("");
 
-  async function finishDone(restoreResult: RestoreResult) {
-    let matched: Snapshot | null = null;
-    if (restoreResult.backup_id) {
-      const snaps = await api.listSnapshots(game.id).catch(() => []);
-      matched = snaps.find((s) => s.id === restoreResult.backup_id) ?? null;
-    }
+  function finishDone(restoreResult: RestoreResult) {
     setResult(restoreResult);
-    setProtection(matched);
     setPhase("done");
     onDone();
   }
@@ -34,7 +27,7 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
     setPhase("running");
     try {
       const res = await api.restoreSnapshot(game.id, target.id);
-      await finishDone(res);
+      finishDone(res);
     } catch (e) {
       const msg = String(e);
       setErrMsg(msg);
@@ -48,9 +41,9 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
     setPhase("running");
     try {
       const res = await api.restoreSnapshotWithChoice(game.id, target.id, "create");
-      await finishDone(res);
+      finishDone(res);
     } catch (e) {
-      // 创建并恢复本身也可能失败（如备份失败）；按普通失败页处理。
+      // 创建并恢复本身也可能失败；按普通失败页处理。
       setErrMsg(String(e));
       setPhase("error");
     }
@@ -73,14 +66,12 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
               <div className="kv"><span className="k">目标版本</span>
                 <span className="v">{target.created_at} {target.note}</span></div>
               <div className="callout warn">
-                <span className="ic"><Icon.Shield /></span>
+                <span className="ic"><Icon.Alert /></span>
                 <div>
-                  <div style={{ fontWeight: 600, marginBottom: 2 }}>SaveLink 将执行以下操作</div>
-                  <ol>
-                    <li>先检查当前存档是否已有可靠的快照保护。</li>
-                    <li>只有存在未备份变化时，才创建恢复前保护点。</li>
-                    <li>再把目标版本恢复到游戏存档目录（会覆盖当前文件）。</li>
-                  </ol>
+                  <div style={{ fontWeight: 600, marginBottom: 2 }}>当前存档将被覆盖</div>
+                  <div style={{ fontSize: 13 }}>
+                    当前存档不会自动备份。请确认当前进度已经创建快照，再恢复目标版本。
+                  </div>
                 </div>
               </div>
               <div className="target-box">
@@ -90,7 +81,7 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
             </div>
             <div className="modal-foot">
               <button className="btn" onClick={onClose}>取消</button>
-              <button className="btn primary" onClick={run}><Icon.Shield /> 安全恢复这个版本</button>
+              <button className="btn primary" onClick={run}><Icon.RotateCcw /> 恢复这个版本</button>
             </div>
           </>
         )}
@@ -103,7 +94,7 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
                   不再伪造“已备份/已恢复”的完成态。 */}
               <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
                 <span className="spin"><Icon.RotateCcw /></span>
-                <span>正在恢复：检查当前存档 → 准备保护点 → 恢复目标版本 → 校验结果…请稍候</span>
+                <span>正在恢复：准备目标文件 → 替换存档 → 校验结果…请稍候</span>
               </div>
               <div className="callout info" style={{ marginTop: 16 }}>
                 <span className="ic"><Icon.Alert /></span>
@@ -126,28 +117,7 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
               </div>
               {!result?.restored && (
                 <div style={{ marginTop: 14, fontSize: 13, color: "var(--color-text-2)" }}>
-                  没有覆盖文件，也没有创建重复快照。
-                </div>
-              )}
-              {result?.restored && result.backup_created && (
-                <div style={{ marginTop: 14, fontSize: 13, color: "var(--color-text-2)" }}>
-                  恢复前的当前存档已保存为新的保护点：
-                  <div className="target-box" style={{ marginTop: 6, fontWeight: 600, color: "var(--color-text)" }}>
-                    <Icon.Shield size={14} /> {protection?.created_at ?? "刚刚"} 恢复前保护点
-                  </div>
-                </div>
-              )}
-              {result?.restored && !result.backup_created && result.backup_id && (
-                <div style={{ marginTop: 14, fontSize: 13, color: "var(--color-text-2)" }}>
-                  恢复前状态已经有快照保护，本次没有重复创建：
-                  <div className="target-box" style={{ marginTop: 6, fontWeight: 600, color: "var(--color-text)" }}>
-                    <Icon.Shield size={14} /> {protection?.created_at ?? "已有快照"} {protection?.note}
-                  </div>
-                </div>
-              )}
-              {result?.restored && !result.backup_id && (
-                <div style={{ marginTop: 14, fontSize: 13, color: "var(--color-text-2)" }}>
-                  恢复前存档目录为空，因此没有创建空的保护点。
+                  没有覆盖任何文件。
                 </div>
               )}
             </div>

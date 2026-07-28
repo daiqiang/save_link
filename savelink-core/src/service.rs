@@ -5,7 +5,7 @@
 
 use crate::error::{Result, SaveLinkError};
 use crate::model::{CreateOutcome, RestoreOutcome, RestoreStep};
-use crate::model::{Reason, Snapshot, SnapshotStatus};
+use crate::model::{Snapshot, SnapshotStatus};
 use crate::repo::{Clock, IdGen, Repository};
 use crate::scan;
 use crate::store::SnapshotStore;
@@ -49,18 +49,14 @@ impl SnapshotService {
         note: Option<String>,
         reason: crate::model::Reason,
     ) -> Result<CreateOutcome> {
-        // 公开入口：允许 NoChange 短路（A2）。
-        self.create_internal(game_id, note, reason, true)
+        self.create_internal(game_id, note, reason)
     }
 
-    /// 内部创建。`allow_nochange=false` 时强制创建（用于恢复前备份：
-    /// 回退点必须无条件存在，安全规则 2）。
     fn create_internal(
         &self,
         game_id: &str,
         note: Option<String>,
         reason: crate::model::Reason,
-        allow_nochange: bool,
     ) -> Result<CreateOutcome> {
         let game = self
             .repo
@@ -70,13 +66,11 @@ impl SnapshotService {
         // A6：扫描，目录不存在/不可读直接返回错误，不写任何状态。
         let ctx = scan::scan(&game.save_paths)?;
 
-        // A2/A3：与最近一个快照内容比对，一致则不创建（仅在允许时短路）。
-        if allow_nochange {
-            let latest = self.repo.list_snapshots(game_id)?.into_iter().next();
-            if let Some(prev) = &latest {
-                if prev.content_hash == ctx.content_hash {
-                    return Ok(CreateOutcome::NoChange);
-                }
+        // A2/A3：与最近一个快照内容比对，一致则不创建。
+        let latest = self.repo.list_snapshots(game_id)?.into_iter().next();
+        if let Some(prev) = &latest {
+            if prev.content_hash == ctx.content_hash {
+                return Ok(CreateOutcome::NoChange);
             }
         }
 
@@ -130,22 +124,6 @@ impl SnapshotService {
         };
         self.repo.update_snapshot(complete.clone())?;
         Ok(CreateOutcome::Created(complete))
-    }
-
-    /// 强制创建快照（不走 NoChange 短路）。供恢复前备份使用。
-    /// 返回创建出的快照（绝不会是 NoChange）。
-    pub fn create_forced(
-        &self,
-        game_id: &str,
-        note: Option<String>,
-        reason: crate::model::Reason,
-    ) -> Result<Snapshot> {
-        match self.create_internal(game_id, note, reason, false)? {
-            CreateOutcome::Created(s) => Ok(s),
-            CreateOutcome::NoChange => {
-                Err(SaveLinkError::Io("forced create unexpectedly returned NoChange".into()))
-            }
-        }
     }
 
     /// 修改快照元数据（仅 note / locked 可变，安全规则 3 / C4）。
@@ -209,7 +187,7 @@ impl SnapshotService {
 pub struct RestoreService {
     pub repo: Arc<dyn Repository>,
     pub store: Arc<dyn SnapshotStore>,
-    pub snapshots: SnapshotService,
+    clock: Arc<dyn Clock>,
 }
 
 impl RestoreService {
@@ -217,28 +195,21 @@ impl RestoreService {
         repo: Arc<dyn Repository>,
         store: Arc<dyn SnapshotStore>,
         clock: Arc<dyn Clock>,
-        ids: Arc<dyn IdGen>,
+        _ids: Arc<dyn IdGen>,
     ) -> Self {
-        let snapshots = SnapshotService::new(repo.clone(), store.clone(), clock, ids);
-        Self { repo, store, snapshots }
+        Self { repo, store, clock }
     }
 
     /// 恢复快照——产品生命线（对应 B 组全部用例）。
     ///
     /// 必守顺序与契约：
     /// 1. 前置：目标快照存在且 `store.verify` 通过；否则 SnapshotCorrupt，不动真实存档（B4）。
-    ///    （规格要求 verify 在保护当前状态之前，避免为注定失败的恢复制造无谓保护点。）
     /// 2. 真实存档目录不存在 → 返回 SaveDirMissingNeedsChoice，未确认前不写入（B7）。
-    /// 3. 第一步 保护当前：当前已等于目标则直接返回；空目录无需保护；
-    ///    已有可验证的同内容快照则复用；否则新建 reason=BeforeRestore 的保护点。
-    ///    需要新建但失败 → BackupFailed，真实存档一字节不动（B2）。
-    /// 4. 第二步 覆盖恢复：用"旁路 + 同盘原子 rename 替换"，
-    ///    解包到 target.tmp → 校验 → rename 真实目录为 .old → rename .tmp 为真实目录 → 删 .old。
-    ///    任一步失败：用 .old 回滚；中途崩溃也只能是完整旧态或完整新态（B5）。
-    /// 5. 失败时返回 RestoreFailed{rolled_back}，语义必须准确（B6）。
-    /// 6. 第三步 校验：恢复后目录指纹 == 目标快照指纹；不残留旧文件（B3）。
-    /// 7. 进度事件顺序：BackupCurrent → RestoreTarget → Verify（B9）。
-    /// 8. 成功后可恢复新建或复用的保护点回到原状（B8，由组合行为保证）。
+    /// 3. 当前已经等于目标时直接返回，不执行覆盖（B11）。
+    /// 4. 覆盖恢复使用"旁路 + 同盘 rename 替换"：目标先恢复到临时目录并校验，
+    ///    当前目录暂存为 .old，目标目录通过最终校验后才删除 .old（B3/B5）。
+    /// 5. 替换或最终校验失败时立即换回 .old，准确返回 RestoreFailed{rolled_back}（B6/B13）。
+    /// 6. 当前版本不会自动创建恢复前快照；成功恢复后如需回到原状态，必须事先手动创建快照（B1）。
     pub fn restore_snapshot(
         &self,
         game_id: &str,
@@ -259,7 +230,7 @@ impl RestoreService {
             .ok_or_else(|| SaveLinkError::Io("game has no save path".into()))?
             .clone();
 
-        // 步骤 1（前置）：目标快照必须完好。verify 在备份之前，避免为注定失败的恢复制造无谓备份（B4）。
+        // 步骤 1（前置）：目标快照必须完好（B4）。
         if !self.store.verify(&target.storage_key)? {
             return Err(SaveLinkError::SnapshotCorrupt);
         }
@@ -269,53 +240,32 @@ impl RestoreService {
             return Err(SaveLinkError::SaveDirMissingNeedsChoice);
         }
 
-        self.do_restore(game_id, &target, &save_dir, progress)
+        self.do_restore(&target, &save_dir, progress)
     }
 
     /// 真正执行恢复的内部流程。前置检查已在调用方完成。
     fn do_restore(
         &self,
-        game_id: &str,
         target: &Snapshot,
         save_dir: &Path,
         progress: &ProgressSink<'_>,
     ) -> Result<RestoreOutcome> {
-        let current = scan::fingerprint_dir(save_dir).map_err(|_| SaveLinkError::BackupFailed)?;
+        let current = scan::fingerprint_dir(save_dir).map_err(|_| SaveLinkError::SaveDirUnreadable)?;
 
-        // 已经是目标版本：不覆盖、不创建重复快照，也不发出虚假的恢复进度。
+        // 已经是目标版本：不覆盖，也不发出虚假的恢复进度。
         if snapshot_matches_scan(target, &current) {
             return Ok(RestoreOutcome {
                 target_id: target.id.clone(),
-                backup_id: None,
-                backup_created: false,
                 restored: false,
             });
         }
 
-        // 步骤 3：为当前状态准备可靠回退点。空目录无需备份；已有完整快照则直接复用。
-        progress(RestoreStep::BackupCurrent);
-        let (backup_id, backup_created) = if current.file_count == 0 {
-            (None, false)
-        } else if let Some(existing) = self
-            .find_reusable_protection(game_id, &current)
-            .map_err(|_| SaveLinkError::BackupFailed)?
-        {
-            (Some(existing.id), false)
-        } else {
-            let backup = self
-                .snapshots
-                .create_forced(game_id, Some("恢复前保护点".into()), Reason::BeforeRestore)
-                .map_err(|_| SaveLinkError::BackupFailed)?;
-            (Some(backup.id), true)
-        };
-
-        // 步骤 4：覆盖恢复，采用"旁路 + 同盘原子 rename 替换"。
-        // 任一步失败都用已 rename 的 .old 回滚；崩溃也只能是完整旧态或完整新态（B5）。
+        // 覆盖恢复采用"旁路 + 同盘 rename 替换"。
         progress(RestoreStep::RestoreTarget);
         let parent = save_dir
             .parent()
             .ok_or_else(|| SaveLinkError::Io("save dir has no parent".into()))?;
-        let stamp = self.snapshots.clock.now_stamp().replace([' ', ':'], "");
+        let stamp = self.clock.now_stamp().replace([' ', ':'], "");
         let tmp_dir = parent.join(format!(".savelink_tmp_{stamp}"));
         let old_dir = parent.join(format!(".savelink_old_{stamp}"));
 
@@ -344,48 +294,24 @@ impl RestoreService {
         }
         if let Err(e) = fs::rename(&tmp_dir, save_dir) {
             // 第二个 rename 失败：把 .old 换回去，恢复原状。
-            let _ = fs::rename(&old_dir, save_dir);
+            let rolled_back = rollback_old_dir(save_dir, &old_dir, &current);
             let _ = fs::remove_dir_all(&tmp_dir);
-            return Err(restore_failed_io(e, true));
+            return Err(restore_failed_io(e, rolled_back));
         }
-        // 4c. 替换成功，清理 .old。
-        let _ = fs::remove_dir_all(&old_dir);
-
-        // 步骤 5：校验恢复结果（B3：内容等于目标，且不残留旧文件——rename 替换天然保证不残留）。
+        // 最终校验通过前保留 .old；失败时立即恢复原目录。
         progress(RestoreStep::Verify);
-        match scan::fingerprint_dir(save_dir) {
-            Ok(r)
-                if r.content_hash == target.content_hash
-                    && r.file_count == target.file_count
-                    && r.total_size == target.total_size => {}
-            _ => return Err(SaveLinkError::RestoreFailed { rolled_back: false }),
+        if !matches!(scan::fingerprint_dir(save_dir), Ok(ref r) if snapshot_matches_scan(target, r)) {
+            let rolled_back = rollback_old_dir(save_dir, &old_dir, &current);
+            return Err(SaveLinkError::RestoreFailed { rolled_back });
         }
+
+        // 新目录已经确认完整，旧目录到这里才可以清理。
+        let _ = fs::remove_dir_all(&old_dir);
 
         Ok(RestoreOutcome {
             target_id: target.id.clone(),
-            backup_id,
-            backup_created,
             restored: true,
         })
-    }
-
-    /// 找到与当前真实存档完全一致且物理内容仍可验证的最新快照。
-    fn find_reusable_protection(
-        &self,
-        game_id: &str,
-        current: &crate::model::ScanResult,
-    ) -> Result<Option<Snapshot>> {
-        for snapshot in self.repo.list_snapshots(game_id)? {
-            if snapshot.status != SnapshotStatus::Complete
-                || !snapshot_matches_scan(&snapshot, current)
-            {
-                continue;
-            }
-            if matches!(self.store.verify(&snapshot.storage_key), Ok(true)) {
-                return Ok(Some(snapshot));
-            }
-        }
-        Ok(None)
     }
 
     /// 恢复时真实存档目录不存在，用户已做出选择后的续走入口（B7）。
@@ -422,7 +348,7 @@ impl RestoreService {
             }
             MissingDirChoice::CreateAndRestore => {
                 fs::create_dir_all(&save_dir).map_err(|e| SaveLinkError::Io(e.to_string()))?;
-                self.do_restore(game_id, &target, &save_dir, progress)
+                self.do_restore(&target, &save_dir, progress)
             }
         }
     }
@@ -432,6 +358,15 @@ fn snapshot_matches_scan(snapshot: &Snapshot, scan: &crate::model::ScanResult) -
     snapshot.content_hash == scan.content_hash
         && snapshot.file_count == scan.file_count
         && snapshot.total_size == scan.total_size
+}
+
+fn rollback_old_dir(save_dir: &Path, old_dir: &Path, expected: &crate::model::ScanResult) -> bool {
+    if (save_dir.exists() && fs::remove_dir_all(save_dir).is_err())
+        || fs::rename(old_dir, save_dir).is_err()
+    {
+        return false;
+    }
+    matches!(scan::fingerprint_dir(save_dir), Ok(ref r) if r == expected)
 }
 
 /// 把任意错误归一为 RestoreFailed，携带回滚语义（B6）。

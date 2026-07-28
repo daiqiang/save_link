@@ -8,8 +8,6 @@ pub enum SaveLinkError {
     SaveDirMissing,
     /// 存档目录无法访问（权限/IO）。
     SaveDirUnreadable,
-    /// 恢复前保护点创建失败 → 恢复必须中止（安全规则 2）。
-    BackupFailed,
     /// 恢复失败。`rolled_back` 告诉前端真实存档是否已被安全回滚，
     /// 直接对应视觉文档「恢复失败必须说清是否已开始覆盖」。
     RestoreFailed { rolled_back: bool },
@@ -28,7 +26,6 @@ impl fmt::Display for SaveLinkError {
         match self {
             SaveLinkError::SaveDirMissing => write!(f, "存档目录不存在"),
             SaveLinkError::SaveDirUnreadable => write!(f, "无法访问该存档目录"),
-            SaveLinkError::BackupFailed => write!(f, "恢复前保护点创建失败，恢复已中止"),
             SaveLinkError::RestoreFailed { rolled_back } => {
                 write!(f, "恢复失败（已回滚: {rolled_back}）")
             }
