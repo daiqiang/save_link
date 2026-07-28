@@ -9,7 +9,7 @@ use std::path::PathBuf;
 pub enum Reason {
     /// 用户手动创建。
     Manual,
-    /// 恢复前自动备份（安全规则 2 的回退点）。
+    /// 恢复前保护点（安全规则 2 的回退点）。
     BeforeRestore,
     /// 阶段 2 自动快照（MVP 暂不产生）。
     Auto,
@@ -87,8 +87,13 @@ pub enum CreateOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RestoreOutcome {
     pub target_id: String,
-    /// 恢复前自动生成的备份快照 id（安全规则 2 的回退点）。
-    pub backup_id: String,
+    /// 覆盖前用于回退的快照 id。可能是新建保护点，也可能是复用已有快照。
+    /// 当前目录为空或已经等于目标版本时为 None。
+    pub backup_id: Option<String>,
+    /// true 表示本次恢复新建了 before_restore 保护点；false 表示复用或无需创建。
+    pub backup_created: bool,
+    /// false 表示当前真实存档已经等于目标版本，本次没有执行覆盖。
+    pub restored: bool,
 }
 
 /// 真实存档目录不存在时，需要用户决策（安全规则 5）。

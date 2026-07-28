@@ -791,7 +791,9 @@ pub fn delete_game(state: State<'_, AppState>, game_id: String) -> Result<(), St
 #[derive(Serialize)]
 pub struct RestoreResultDto {
     pub target_id: String,
-    pub backup_id: String,
+    pub backup_id: Option<String>,
+    pub backup_created: bool,
+    pub restored: bool,
 }
 
 #[tauri::command]
@@ -808,6 +810,8 @@ pub fn restore_snapshot(
     Ok(RestoreResultDto {
         target_id: out.target_id,
         backup_id: out.backup_id,
+        backup_created: out.backup_created,
+        restored: out.restored,
     })
 }
 
@@ -832,5 +836,7 @@ pub fn restore_snapshot_with_choice(
     Ok(RestoreResultDto {
         target_id: out.target_id,
         backup_id: out.backup_id,
+        backup_created: out.backup_created,
+        restored: out.restored,
     })
 }

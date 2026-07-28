@@ -33,7 +33,9 @@ export interface ScanResult {
 
 export interface RestoreResult {
   target_id: string;
-  backup_id: string;
+  backup_id: string | null;
+  backup_created: boolean;
+  restored: boolean;
 }
 
 export interface AppInfo {

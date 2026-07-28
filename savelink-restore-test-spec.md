@@ -8,9 +8,10 @@
 | 1.1 | Codex | 2026-07-01 | 同步当前可执行测试：34 个全绿；补充删除游戏、游戏更新持久化、缺失目录创建恢复的实现状态 |
 | 1.2 | Codex | 2026-07-02 | 基线收口：同步当前已实现状态，保留本规格作为后续回归验收基准 |
 | 1.3 | 代强 | 2026-07-14 | 同步当前 50 个 core 测试；G/H 组云同步测试不改变既有恢复验收基准 |
+| 1.4 | 代强 | 2026-07-28 | 恢复保护点改为按需新建或复用；补充空目录、目标相同和损坏快照验收规则；同步 67 个默认测试 |
 
-> **实现状态（2026-07-14）**：本规格已落成 `savelink-core/tests/` 下的可执行 Rust 测试并**全部转绿**。
-> A-F 组继续保护创建、恢复、删除、存储、自检和 SQLite 持久化；G/H 组保护云同步基础设施和 Fake 双设备闭环。当前共 50 个测试。
+> **实现状态（2026-07-28）**：本规格已落成 `savelink-core/tests/` 下的可执行 Rust 测试并**全部转绿**。
+> A-F 组继续保护创建、恢复、删除、存储、自检和 SQLite 持久化；G-L 组及内部单元测试保护云同步基础设施、百度适配和 OAuth。当前共 67 个默认测试，另有 2 个真实百度测试默认忽略。
 > 本文档继续作为**验收基准**：改动 `savelink-core` 后须保持这些断言全绿；
 > 加新功能须按同样标准补测试。详见 `savelink-core/README.md`。
 
@@ -137,24 +138,23 @@ Assert:  不创建记录、不创建文件、不修改时间线
 
 每条都以「真实存档目录的内容」为最终裁判，因为这才是用户真正在乎的东西。
 
-### B1 [P0] 恢复前必须先成功生成 before_restore 备份
+### B1 [P0] 覆盖前必须先准备好可靠回退点
 
 ```text
-Arrange: 时间线有目标快照 T；真实存档当前为状态 S(current)
+Arrange: 时间线有目标快照 T；真实存档当前为尚无快照保护的状态 S(current)
 Act:     restore_snapshot(target=T)
 Assert:
-  · 时间线新增一条 reason=="before_restore" 的快照 B
-  · B 的内容指纹 == 恢复前 S(current) 的指纹（备份的是恢复前的真实状态，不是 T）
-  · B 在时间上位于恢复动作之前
-  · restore_logs 记录 backup_id == B.id
+  · 覆盖前新增一条 reason=="before_restore" 的保护点 B
+  · B 的内容指纹 == 恢复前 S(current) 的指纹（保护的是恢复前的真实状态，不是 T）
+  · 返回 backup_id==B.id、backup_created==true、restored==true
 ```
 
-这是安全规则 2 的核心断言：**回退点在覆盖发生之前就已落盘**。
+这是安全规则 2 的核心断言：**只要当前目录中有未受保护的数据，回退点就必须在覆盖之前成功落盘**。
 
-### B2 [P0] 备份失败 → 恢复必须中止，真实存档原封不动
+### B2 [P0] 新保护点创建失败 → 恢复必须中止，真实存档原封不动
 
 ```text
-Arrange: 注入「before_restore 备份」步骤失败（如仓库磁盘写满）
+Arrange: 当前状态没有可复用快照；注入「before_restore 保护点」创建失败（如仓库磁盘写满）
 Act:     restore_snapshot 预期返回 BackupFailed
 Assert:
   · 真实存档目录指纹 == 操作前指纹（一字节未改）
@@ -191,12 +191,12 @@ Assert:
 ### B5 [P0] 覆盖阶段中途崩溃 → 不留下半残存档
 
 ```text
-Arrange: before_restore 已成功；注入「解包/替换」阶段在中途 panic/被 kill
+Arrange: 新建或复用的恢复保护点已验证成功；注入「解包/替换」阶段在中途 panic/被 kill
 Act:     重新进入应用并触发一致性检查
 Assert:
   · 真实存档目录要么是完整的 S(current)（回滚成功），要么是完整的 T
   · 不允许出现"一半 S 一半 T"的混合态
-  · before_restore 备份 B 始终存在且完整，用户可据此手动回退
+  · 恢复保护点 B 始终存在且完整，用户可据此手动回退
 ```
 
 B5 是 rename 原子替换策略存在的全部理由，必须有用例钉死。
@@ -209,7 +209,7 @@ Act:     restore_snapshot 返回 RestoreFailed
 Assert:
   · 错误携带 rolled_back: bool
   · rolled_back==true  时：真实存档指纹 == 操作前指纹
-  · rolled_back==false 时：必须保证 before_restore 备份完整存在（用户仍有回退点）
+  · rolled_back==false 时：必须保证新建或复用的恢复保护点完整存在（用户仍有回退点）
   · 对应视觉文档：恢复失败必须能告诉用户"是否已开始覆盖、下一步怎么办"
 ```
 
@@ -227,16 +227,17 @@ Assert:
 
 - `restore_snapshot` 返回 `SaveDirMissingNeedsChoice`。
 - 前端已接“创建目录并恢复”和“取消”。
-- 后端 `restore_with_choice(CreateAndRestore)` 会创建目录并恢复。
+- 后端 `restore_with_choice(CreateAndRestore)` 会创建目录并恢复，不创建没有内容的空保护点。
 - “重新选择目录并恢复”后端枚举存在，但 UI 未做完整闭环。
 
-### B8 [P1] 恢复完成后可立刻再恢复 before_restore 回到原状
+### B8 [P1] 恢复完成后可立刻恢复保护点回到原状
 
 ```text
 Arrange: 完成 B3 的恢复（当前 == T，且存在备份 B == 原 S(current)）
 Act:     restore_snapshot(target=B)
 Assert:
-  · 又会生成一条新的 before_restore（内容 == T）
+  · 复用内容等于当前状态的目标快照 T 作为回退点，不生成重复快照
+  · 返回 backup_id==T.id、backup_created==false、restored==true
   · 真实存档指纹 == 原始 S(current) 指纹
   · 对应原型「流程 4：恢复后后悔」——回退链路本身可用
 ```
@@ -246,7 +247,40 @@ Assert:
 ```text
 Act:    restore_snapshot 监听进度
 Assert: 事件依次为 backup_current(done) → restore_target → verify
-        与原型恢复弹窗三步状态一致
+        已经等于目标的无操作恢复不发出虚假进度
+```
+
+### B10 [P0] 已有健康同内容快照时复用，不创建重复保护点
+
+```text
+Arrange: 当前真实存档 S(current) 已有一条 status==complete 且 verify 通过的同内容快照 B
+Act:     restore_snapshot(target=T)
+Assert:
+  · 返回 backup_id==B.id、backup_created==false、restored==true
+  · 时间线条数不增加
+  · 恢复后真实存档 == T
+```
+
+### B11 [P1] 当前已经等于目标版本时不执行恢复
+
+```text
+Arrange: 当前真实存档指纹 == 目标快照 T 的指纹
+Act:     restore_snapshot(target=T)
+Assert:
+  · 返回 backup_id==None、backup_created==false、restored==false
+  · 不调用 store.restore，不创建快照，不发出恢复进度
+  · 真实存档和时间线均不变化
+```
+
+### B12 [P0] 损坏的同内容快照不能作为恢复保护点
+
+```text
+Arrange: 当前状态与已有快照 B 的元数据指纹相同，但 B 的物理内容损坏、verify 不通过
+Act:     restore_snapshot(target=T)
+Assert:
+  · 不复用 B
+  · 覆盖前新建并验证一条可靠保护点
+  · 返回 backup_created==true，且 backup_id!=B.id
 ```
 
 ---
@@ -385,7 +419,8 @@ E2 钉死架构文档的关键假设：rename 原子性依赖同卷。跨卷必�
 
 | 风险 | 用例 |
 | --- | --- |
-| 恢复前无回退点 | B1, B2 |
+| 恢复前无可靠回退点 | B1, B2, B10, B12 |
+| 恢复制造重复或空快照 | B7, B8, B10, B11 |
 | 恢复后存档不等于目标 | B3 |
 | 恢复出"半残/混合"存档 | B5, B6, E2 |
 | 损坏快照污染真实存档 | B4 |

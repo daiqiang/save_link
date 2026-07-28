@@ -31,7 +31,10 @@ fn b1_backup_before_restore_captures_current_state() {
     let out = h.restore().restore_snapshot(&h.game_id, &target_id, &no_progress()).expect("restore ok");
 
     let timeline = h.timeline();
-    let backup = timeline.iter().find(|s| s.id == out.backup_id).expect("B1: 应有 before_restore 备份");
+    let backup_id = out.backup_id.as_deref().expect("B1: 未备份变化应生成保护点");
+    let backup = timeline.iter().find(|s| s.id == backup_id).expect("B1: 应有 before_restore 保护点");
+    assert!(out.backup_created, "B1: 未备份变化应标记为新建保护点");
+    assert!(out.restored, "B1: 当前与目标不同时应实际执行恢复");
     assert_eq!(backup.reason, Reason::BeforeRestore, "B1: 备份 reason 应为 BeforeRestore");
     assert_eq!(backup.content_hash, current_fp, "B1: 备份内容应等于恢复前的真实存档（不是目标）");
 }
@@ -201,6 +204,20 @@ fn b7_missing_save_dir_needs_user_choice() {
     let res2 = h.restore().restore_with_choice(&h.game_id, &target_id, MissingDirChoice::Cancel, &no_progress());
     assert!(res2.is_err());
     assert!(!h.save_dir.exists(), "B7: 取消后仍不写入");
+
+    let out = h
+        .restore()
+        .restore_with_choice(
+            &h.game_id,
+            &target_id,
+            MissingDirChoice::CreateAndRestore,
+            &no_progress(),
+        )
+        .expect("B7: 用户确认后应创建目录并恢复");
+    assert!(out.restored);
+    assert_eq!(out.backup_id, None, "B7: 新建的空目录不应生成空保护点");
+    assert!(!out.backup_created);
+    assert!(!h.timeline().iter().any(|s| s.reason == Reason::BeforeRestore));
 }
 
 #[test]
@@ -211,11 +228,19 @@ fn b8_can_restore_backup_to_return_to_original() {
 
     // 第一次恢复到目标。
     let out = h.restore().restore_snapshot(&h.game_id, &target_id, &no_progress()).expect("restore 1");
+    let backup_id = out.backup_id.as_deref().expect("第一次恢复应创建保护点");
+    let timeline_count = h.timeline().len();
     // 现在再恢复刚生成的 before_restore（内容 == ORIGINAL），应回到原状。
-    let out2 = h.restore().restore_snapshot(&h.game_id, &out.backup_id, &no_progress()).expect("restore 2");
+    let out2 = h.restore().restore_snapshot(&h.game_id, backup_id, &no_progress()).expect("restore 2");
 
     assert_eq!(dir_fingerprint(&h.save_dir), original_fp, "B8: 恢复 before_restore 应回到原始状态");
-    assert_ne!(out2.backup_id, out.backup_id, "B8: 第二次恢复应再生成新的 before_restore");
+    assert_eq!(
+        out2.backup_id.as_deref(),
+        Some(target_id.as_str()),
+        "B8: 第二次恢复应复用内容等于当前状态的目标快照作为保护点"
+    );
+    assert!(!out2.backup_created, "B8: 已有可靠快照时不应重复创建 before_restore");
+    assert_eq!(h.timeline().len(), timeline_count, "B8: 往返恢复不应制造重复快照");
 }
 
 #[test]
@@ -235,4 +260,76 @@ fn b9_progress_events_in_order() {
         vec![RestoreStep::BackupCurrent, RestoreStep::RestoreTarget, RestoreStep::Verify],
         "B9: 进度事件顺序应为 备份→恢复→校验"
     );
+}
+
+#[test]
+fn b10_existing_identical_snapshot_is_reused_as_protection() {
+    let h = Harness::new(&[]);
+    let target_id = setup_target_and_current(&h, &[("s", b"TARGET")], &[("s", b"CURRENT")]);
+    let current = match h
+        .snapshots()
+        .create_snapshot(&h.game_id, Some("当前进度".into()), Reason::Manual)
+        .unwrap()
+    {
+        savelink_core::model::CreateOutcome::Created(snapshot) => snapshot,
+        _ => panic!("B10: 应创建当前状态快照"),
+    };
+    let before_count = h.timeline().len();
+
+    let out = h.restore().restore_snapshot(&h.game_id, &target_id, &no_progress()).expect("restore ok");
+
+    assert!(out.restored);
+    assert_eq!(out.backup_id.as_deref(), Some(current.id.as_str()));
+    assert!(!out.backup_created, "B10: 已有可靠的同内容快照时不应新建保护点");
+    assert_eq!(h.timeline().len(), before_count, "B10: 时间线不应增加重复记录");
+}
+
+#[test]
+fn b11_current_already_equals_target_is_a_noop() {
+    let h = Harness::new(&[("s", b"TARGET")]);
+    let target = match h
+        .snapshots()
+        .create_snapshot(&h.game_id, Some("当前版本".into()), Reason::Manual)
+        .unwrap()
+    {
+        savelink_core::model::CreateOutcome::Created(snapshot) => snapshot,
+        _ => panic!("B11: 应创建目标快照"),
+    };
+    let steps: Arc<Mutex<Vec<RestoreStep>>> = Arc::new(Mutex::new(Vec::new()));
+    let steps_c = steps.clone();
+    let sink = move |step: RestoreStep| steps_c.lock().unwrap().push(step);
+
+    let out = h
+        .restore_failing(FailOp::Restore, FailKind::Error, 0)
+        .restore_snapshot(&h.game_id, &target.id, &sink)
+        .expect("B11: 已是目标版本时不应调用 store.restore");
+
+    assert!(!out.restored);
+    assert_eq!(out.backup_id, None);
+    assert!(!out.backup_created);
+    assert!(steps.lock().unwrap().is_empty(), "B11: 无操作恢复不应发出虚假进度");
+    assert_eq!(h.timeline().len(), 1, "B11: 不应创建重复快照");
+}
+
+#[test]
+fn b12_corrupt_identical_snapshot_is_not_reused() {
+    let h = Harness::new(&[]);
+    let target_id = setup_target_and_current(&h, &[("s", b"TARGET")], &[("s", b"CURRENT")]);
+    let corrupt = match h
+        .snapshots()
+        .create_snapshot(&h.game_id, Some("已损坏的当前快照".into()), Reason::Manual)
+        .unwrap()
+    {
+        savelink_core::model::CreateOutcome::Created(snapshot) => snapshot,
+        _ => panic!("B12: 应创建当前状态快照"),
+    };
+    corrupt_dir(&h.tmp.path().join("repo").join("snapshots").join(&corrupt.id));
+
+    let out = h.restore().restore_snapshot(&h.game_id, &target_id, &no_progress()).expect("restore ok");
+
+    let backup_id = out.backup_id.as_deref().expect("B12: 应新建可靠保护点");
+    assert_ne!(backup_id, corrupt.id, "B12: 损坏快照不能作为恢复保护点");
+    assert!(out.backup_created);
+    let backup = h.timeline().into_iter().find(|s| s.id == backup_id).unwrap();
+    assert_eq!(backup.reason, Reason::BeforeRestore);
 }

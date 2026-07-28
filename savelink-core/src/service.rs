@@ -227,18 +227,18 @@ impl RestoreService {
     ///
     /// 必守顺序与契约：
     /// 1. 前置：目标快照存在且 `store.verify` 通过；否则 SnapshotCorrupt，不动真实存档（B4）。
-    ///    （规格要求 verify 在备份之前，避免为注定失败的恢复制造无谓备份。）
+    ///    （规格要求 verify 在保护当前状态之前，避免为注定失败的恢复制造无谓保护点。）
     /// 2. 真实存档目录不存在 → 返回 SaveDirMissingNeedsChoice，未确认前不写入（B7）。
-    /// 3. 第一步 备份当前：以 reason=BeforeRestore 走创建；
-    ///    失败 → BackupFailed，真实存档一字节不动，restore_logs=aborted（B2）。
-    ///    成功 → 记 backup_id；备份内容指纹 == 恢复前真实存档（B1）。
+    /// 3. 第一步 保护当前：当前已等于目标则直接返回；空目录无需保护；
+    ///    已有可验证的同内容快照则复用；否则新建 reason=BeforeRestore 的保护点。
+    ///    需要新建但失败 → BackupFailed，真实存档一字节不动（B2）。
     /// 4. 第二步 覆盖恢复：用"旁路 + 同盘原子 rename 替换"，
     ///    解包到 target.tmp → 校验 → rename 真实目录为 .old → rename .tmp 为真实目录 → 删 .old。
     ///    任一步失败：用 .old 回滚；中途崩溃也只能是完整旧态或完整新态（B5）。
     /// 5. 失败时返回 RestoreFailed{rolled_back}，语义必须准确（B6）。
     /// 6. 第三步 校验：恢复后目录指纹 == 目标快照指纹；不残留旧文件（B3）。
     /// 7. 进度事件顺序：BackupCurrent → RestoreTarget → Verify（B9）。
-    /// 8. 成功后可立即恢复 before_restore 回到原状（B8，由组合行为保证）。
+    /// 8. 成功后可恢复新建或复用的保护点回到原状（B8，由组合行为保证）。
     pub fn restore_snapshot(
         &self,
         game_id: &str,
@@ -280,12 +280,34 @@ impl RestoreService {
         save_dir: &Path,
         progress: &ProgressSink<'_>,
     ) -> Result<RestoreOutcome> {
-        // 步骤 3：恢复前备份（安全规则 2）。备份失败 → 整个恢复中止，真实存档原封不动（B2）。
+        let current = scan::fingerprint_dir(save_dir).map_err(|_| SaveLinkError::BackupFailed)?;
+
+        // 已经是目标版本：不覆盖、不创建重复快照，也不发出虚假的恢复进度。
+        if snapshot_matches_scan(target, &current) {
+            return Ok(RestoreOutcome {
+                target_id: target.id.clone(),
+                backup_id: None,
+                backup_created: false,
+                restored: false,
+            });
+        }
+
+        // 步骤 3：为当前状态准备可靠回退点。空目录无需备份；已有完整快照则直接复用。
         progress(RestoreStep::BackupCurrent);
-        let backup = self
-            .snapshots
-            .create_forced(game_id, Some("恢复前自动备份".into()), Reason::BeforeRestore)
-            .map_err(|_| SaveLinkError::BackupFailed)?;
+        let (backup_id, backup_created) = if current.file_count == 0 {
+            (None, false)
+        } else if let Some(existing) = self
+            .find_reusable_protection(game_id, &current)
+            .map_err(|_| SaveLinkError::BackupFailed)?
+        {
+            (Some(existing.id), false)
+        } else {
+            let backup = self
+                .snapshots
+                .create_forced(game_id, Some("恢复前保护点".into()), Reason::BeforeRestore)
+                .map_err(|_| SaveLinkError::BackupFailed)?;
+            (Some(backup.id), true)
+        };
 
         // 步骤 4：覆盖恢复，采用"旁路 + 同盘原子 rename 替换"。
         // 任一步失败都用已 rename 的 .old 回滚；崩溃也只能是完整旧态或完整新态（B5）。
@@ -341,8 +363,29 @@ impl RestoreService {
 
         Ok(RestoreOutcome {
             target_id: target.id.clone(),
-            backup_id: backup.id,
+            backup_id,
+            backup_created,
+            restored: true,
         })
+    }
+
+    /// 找到与当前真实存档完全一致且物理内容仍可验证的最新快照。
+    fn find_reusable_protection(
+        &self,
+        game_id: &str,
+        current: &crate::model::ScanResult,
+    ) -> Result<Option<Snapshot>> {
+        for snapshot in self.repo.list_snapshots(game_id)? {
+            if snapshot.status != SnapshotStatus::Complete
+                || !snapshot_matches_scan(&snapshot, current)
+            {
+                continue;
+            }
+            if matches!(self.store.verify(&snapshot.storage_key), Ok(true)) {
+                return Ok(Some(snapshot));
+            }
+        }
+        Ok(None)
     }
 
     /// 恢复时真实存档目录不存在，用户已做出选择后的续走入口（B7）。
@@ -383,6 +426,12 @@ impl RestoreService {
             }
         }
     }
+}
+
+fn snapshot_matches_scan(snapshot: &Snapshot, scan: &crate::model::ScanResult) -> bool {
+    snapshot.content_hash == scan.content_hash
+        && snapshot.file_count == scan.file_count
+        && snapshot.total_size == scan.total_size
 }
 
 /// 把任意错误归一为 RestoreFailed，携带回滚语义（B6）。

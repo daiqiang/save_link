@@ -12,6 +12,7 @@
 | 1.5 | 代强 | 2026-07-14 | 同步百度 POC、协议 v1、云基础设施和 Fake 双设备闭环；明确百度适配器下一步 |
 | 1.6 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机连接层、真实百度验证、62 个默认测试和真实上传下一步 |
 | 1.7 | 代强 | 2026-07-16 | 同步百度真实双设备上传、接收、目录绑定和安全恢复完整闭环 |
+| 1.8 | 代强 | 2026-07-28 | 恢复链路改为智能保护点策略；同步 RestoreOutcome 契约、B 组 13 个用例和 67 个默认测试 |
 
 ## 文档用途
 
@@ -41,7 +42,7 @@ save_link_workspace/
 
 - 添加游戏、编辑游戏、移除游戏。
 - 创建快照、备注、锁定、删除快照。
-- 恢复快照，恢复前自动备份。
+- 恢复快照，覆盖前按需新建或复用可靠保护点。
 - 存档目录缺失时支持“创建目录并恢复”。
 - 设置页展示并打开/复制数据目录、仓库目录、数据库文件。
 - Windows 绿色版 exe、NSIS、MSI 打包。
@@ -53,17 +54,17 @@ save_link_workspace/
 
 当前验证状态：
 
-- `savelink-core`：64 个默认测试全绿，其中 G/H/I/K 组 27 个保护云同步基础设施、Fake 双设备闭环、百度 HTTP 契约、OAuth 和 Token 刷新；J/L 两个真实百度测试均已按需执行通过。
+- `savelink-core`：67 个默认测试全绿，其中 B 组 13 个保护恢复事务与智能保护点策略，G/H/I/K 组 27 个保护云同步基础设施、Fake 双设备闭环、百度 HTTP 契约、OAuth 和 Token 刷新；J/L 两个真实百度测试均已按需执行通过。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
 - 绿色版实机验证过设置页“打开”目录。
-- 设备 B 已完成云端接收、绑定假存档目录和手动安全恢复；恢复前自动备份生成，恢复文件与仓库目标快照 SHA-256 一致。
+- 设备 B 已完成云端接收、绑定假存档目录和手动安全恢复；恢复文件与仓库目标快照 SHA-256 一致。
 
 ## 第一性原则
 
 SaveLink 的核心承诺是“不丢用户存档”。所有技术选择服从这几条：
 
-1. 任何覆盖真实存档的操作，前面必须有一个已成功落盘的回退点。
+1. 任何覆盖非空真实存档的操作，前面必须有一个已成功落盘并通过校验的回退点；空目录无需制造空保护点。
 2. 写操作要么完整成功，要么完整回滚，不允许半残态。
 3. 快照内容一旦写入即不可变；可变的只有备注、锁定等元数据。
 4. 存储格式与上层逻辑解耦，未来可从目录复制换成 zip/restic。
@@ -264,8 +265,11 @@ pub trait SnapshotStore: Send + Sync {
    - 损坏：返回 SnapshotCorrupt，不碰真实存档。
 3. 检查真实存档目录是否存在。
    - 不存在：返回 SaveDirMissingNeedsChoice，不自动写入。
-4. 强制创建 before_restore 快照。
-   - 失败：返回 BackupFailed，不覆盖真实存档。
+4. 扫描当前真实存档，比较 `content_hash + file_count + total_size`。
+   - 已经等于目标：返回 `restored=false`，不覆盖、不创建快照、不发恢复进度。
+   - 当前为空：无需创建保护点。
+   - 有同内容 `Complete` 快照且 `store.verify` 通过：复用该快照作为回退点。
+   - 没有可靠同内容快照：强制创建 `before_restore` 保护点；失败则返回 BackupFailed，不覆盖真实存档。
 5. 将目标快照恢复到同盘临时目录。
 6. 校验临时目录内容 hash、文件数和总大小。
 7. rename 真实目录 -> .old。
@@ -273,6 +277,8 @@ pub trait SnapshotStore: Send + Sync {
 9. 删除 .old。
 10. 校验恢复后真实目录 hash、文件数和总大小。
 ```
+
+`RestoreOutcome` 返回 `backup_id: Option<String>`、`backup_created: bool` 和 `restored: bool`，让 UI 能区分新建保护点、复用已有快照、空目录恢复和目标相同无操作。
 
 缺失目录续走：
 
@@ -287,7 +293,7 @@ pub trait SnapshotStore: Send + Sync {
 与用户安全强相关的错误：
 
 - `SnapshotCorrupt`：目标快照损坏，恢复未触碰真实存档。
-- `BackupFailed`：恢复前备份失败，恢复中止，真实存档未被覆盖。
+- `BackupFailed`：需要创建恢复前保护点但创建失败，或准备可靠回退点时发生错误；恢复中止，真实存档未被覆盖。
 - `RestoreFailed { rolled_back }`
   - `rolled_back=true`：真实存档应已回到操作前状态。
   - `rolled_back=false`：极端情况下可能已经改动真实存档，UI 必须提醒用户核对。
