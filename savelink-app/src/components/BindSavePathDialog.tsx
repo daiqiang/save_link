@@ -119,7 +119,7 @@ export function BindSavePathDialog({ game, onClose, onBound }: Props) {
             <div className={`callout ${scan.result.file_count > 0 ? "warn" : "info"}`}>
               <span className="ic">{scan.result.file_count > 0 ? <Icon.Shield /> : <Icon.Folder />}</span>
               <div>{scan.result.file_count > 0
-                ? "绑定不会修改目录中的文件。以后恢复云端快照前，SaveLink 会先自动备份当前存档。"
+                ? "绑定不会修改目录中的文件。以后恢复云端快照时，当前存档不会自动备份；如需保留当前进度，请先手动创建快照。"
                 : "绑定后不会自动恢复。你可以回到时间线，另行选择需要恢复的云端快照。"}</div>
             </div>
           )}
