@@ -137,7 +137,14 @@ function SaveLink() {
           <span className={`sub ${profileLabel ? "test-profile" : ""}`}>{profileLabel ?? "本地存档时间线"}</span>
         </div>
         <div className="spacer" />
-        <button className="iconbtn" title="云端存档" onClick={() => setShowCloud(true)}><Icon.CloudUpload /></button>
+        <button
+          className="iconbtn"
+          title="下载云端存档"
+          aria-label="下载云端存档"
+          onClick={() => setShowCloud(true)}
+        >
+          <Icon.Download />
+        </button>
         <button className="iconbtn" title="设置" onClick={() => toast("设置功能：后续补充", "warn")}><Icon.Settings /></button>
         <button className="iconbtn" title="帮助" onClick={() => toast("帮助文档：后续补充", "warn")}><Icon.Help /></button>
       </div>
