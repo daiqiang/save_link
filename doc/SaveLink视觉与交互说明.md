@@ -8,6 +8,7 @@
 | 1.1 | 代强 | 2026-07-08 | 同步当前实现：快照存储为 FsStore 目录复制，zip/restic 后置 |
 | 1.2 | 代强 | 2026-07-14 | 同步云端格式决策：本地目录快照与百度单快照 zip + `.ok` 分层；统一存储术语 |
 | 1.3 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点，同步直接恢复警告和历史备份普通样式 |
+| 1.4 | 代强 | 2026-07-29 | 迁入 doc 目录并改为中文文件名；同步文档引用 |
 
 ## 文档用途
 
@@ -15,8 +16,8 @@
 
 配套文档：
 
-- `savelink-mvp-product-prototype.md`：定义产品流程和功能范围。
-- `savelink-low-fidelity-wireframe.md`：定义低保真页面结构。
+- `SaveLink-MVP产品原型草案.md`：定义产品流程和功能范围。
+- `SaveLink低保真原型图.md`：定义低保真页面结构。
 
 本文档不重复功能需求，只规定界面应该呈现出的产品气质、视觉密度、交互层级和安全感。
 
@@ -431,9 +432,9 @@ SaveLink 的关键体验不是“快”，而是“放心”。
 后续实现时，建议把以下三份文档一起交给 coding agent：
 
 ```text
-savelink-mvp-product-prototype.md
-savelink-low-fidelity-wireframe.md
-savelink-visual-interaction-guidelines.md
+SaveLink-MVP产品原型草案.md
+SaveLink低保真原型图.md
+SaveLink视觉与交互说明.md
 ```
 
 三份文档分别回答：

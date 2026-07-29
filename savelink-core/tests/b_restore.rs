@@ -1,4 +1,4 @@
-//! B 组：恢复（产品生命线）。对应 savelink-restore-test-spec.md B1–B13。
+//! B 组：恢复（产品生命线）。对应 doc/SaveLink恢复与存储测试规格.md B1-B14。
 //!
 //! 每条都以「真实存档目录的内容指纹」为最终裁判。全部红灯，实现 RestoreService 后转绿。
 

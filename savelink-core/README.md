@@ -8,6 +8,7 @@
 | 1.1 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 客户端与本机回调、I/J/K 组测试、真实百度验证和 62 个默认测试 |
 | 1.2 | 代强 | 2026-07-16 | 接入 Token 自动刷新、真实上传及设备 B 发现/下载/接收；新增 L 组，默认测试保持 64 个 |
 | 1.3 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点，强化最终校验失败回滚；B 组增至 14 个，默认测试增至 68 个 |
+| 1.4 | 代强 | 2026-07-29 | 同步 doc 目录及中文文档名引用 |
 
 SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核心逻辑。不依赖 Tauri，可独立 `cargo test`。`savelink-app` 的 Tauri 命令层只做 DTO 和调用包装。
 
@@ -79,7 +80,7 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 1. 不要改测试来迁就实现。允许新增测试，不允许削弱既有断言。
 2. 不要绕过故障注入。`FailingStore` 是事务/回滚逻辑的验收工具。
 3. 存储抽象不可破。换 zip/restic 时实现新的 `SnapshotStore`，不要让 service 理解 zip 文件名。
-4. 恢复链路是命脉。动 `RestoreService` 前先读 `../savelink-restore-test-spec.md` 的 B/E 组。
+4. 恢复链路是命脉。动 `RestoreService` 前先读 `../doc/SaveLink恢复与存储测试规格.md` 的 B/E 组。
 5. 改完必须跑：
 
 ```bash
@@ -104,7 +105,7 @@ cargo test --test l_baidu_sync_live -- --ignored
 
 ## 与文档的对应
 
-- 做什么：`../savelink-mvp-product-prototype.md`
-- 怎么实现：`../savelink-tech-architecture.md`
-- 验收基准：`../savelink-restore-test-spec.md`
-- 整体进度与交接：`../PROGRESS.md`、`../HANDOFF-codex.md`
+- 做什么：`../doc/SaveLink-MVP产品原型草案.md`
+- 怎么实现：`../doc/SaveLink技术架构.md`
+- 验收基准：`../doc/SaveLink恢复与存储测试规格.md`
+- 整体进度与交接：`../doc/PROGRESS.md`、`../doc/HANDOFF-codex.md`

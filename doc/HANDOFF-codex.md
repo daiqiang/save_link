@@ -12,6 +12,7 @@
 | 1.5 | 代强 | 2026-07-17 | 将下一阶段切换为 v0.1 长期自用与对外试用发布收口，并指向权威待办清单 |
 | 1.6 | 代强 | 2026-07-23 | 同步真实用户反馈与上传入口优化；将低频百度账号切换移出 P0 |
 | 1.7 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点并强化失败回滚；同步绿色版说明、设置入口、自定义图标状态和 68 个默认测试 |
+| 1.8 | 代强 | 2026-07-29 | 迁入 doc 目录；同步中文文档名和引用 |
 
 > 角色约定：总规划会话负责方向、范围和验收判断；本地开发会话负责按文档实现、验证、打包。
 > 开工前先读完本文档 + `PROGRESS.md`，再动代码。
@@ -70,16 +71,16 @@ MVP 后第一轮补齐也已完成：
 ## 二、必须先读的文档（按顺序）
 
 1. `PROGRESS.md`：当前进度、已完成能力、产物位置、后续候选项。
-2. `SaveLink-current-status-for-planning-20260630.md`：给总规划会话看的当前状态摘要。
-3. `savelink-tech-architecture.md`：架构、数据模型、恢复事务设计、实现现状与偏差。
-4. `savelink-restore-test-spec.md`：恢复/存储的验收基准。
+2. `SaveLink当前功能完成情况.md`：给总规划会话看的当前状态摘要。
+3. `SaveLink技术架构.md`：架构、数据模型、恢复事务设计、实现现状与偏差。
+4. `SaveLink恢复与存储测试规格.md`：恢复/存储的验收基准。
 5. `savelink-core/README.md` + `savelink-app/README.md`：两个模块的结构与铁律。
 6. 产品三件套：
-   - `savelink-mvp-product-prototype.md`
-   - `savelink-low-fidelity-wireframe.md`
-   - `savelink-visual-interaction-guidelines.md`
-7. `savelink-cloud-sync-protocol-v1.md`：已定稿的云端目录、对象格式、发现、上传、下载、冲突和失败恢复协议。
-8. `baidu-netdisk-api-poc-report-20260714.md`：OAuth/文件 API 实测、2MiB 基准数据和单快照 zip 决策证据。
+   - `SaveLink-MVP产品原型草案.md`
+   - `SaveLink低保真原型图.md`
+   - `SaveLink视觉与交互说明.md`
+7. `SaveLink云端快照协议V1.md`：已定稿的云端目录、对象格式、发现、上传、下载、冲突和失败恢复协议。
+8. `百度网盘API-POC报告-20260714.md`：OAuth/文件 API 实测、2MiB 基准数据和单快照 zip 决策证据。
 
 ## 三、不可触碰的红线
 
@@ -137,7 +138,7 @@ MVP 后第一轮补齐也已完成：
 - 完成后更新：
   - `PROGRESS.md`
   - 必要时更新 `savelink-app/手动测试计划.md`
-  - 如果影响架构或安全边界，更新 `savelink-tech-architecture.md` / `savelink-restore-test-spec.md`
+  - 如果影响架构或安全边界，更新 `SaveLink技术架构.md` / `SaveLink恢复与存储测试规格.md`
 
 ## 五、当前后续候选项（总规划会话重排后）
 

@@ -1,4 +1,4 @@
-//! A 组：创建快照。对应 savelink-restore-test-spec.md A1–A6。
+//! A 组：创建快照。对应 doc/SaveLink恢复与存储测试规格.md A1-A6。
 //!
 //! 当前全部红灯（service 为 todo!）。实现 SnapshotService::create_snapshot 后转绿。
 

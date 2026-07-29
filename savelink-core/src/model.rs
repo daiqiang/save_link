@@ -1,6 +1,6 @@
 //! SaveLink 核心领域类型。
 //!
-//! 字段与 `savelink-tech-architecture.md` 的数据模型、以及前端原型 mock 一致。
+//! 字段与 `doc/SaveLink技术架构.md` 的数据模型、以及前端原型 mock 一致。
 
 use std::path::PathBuf;
 

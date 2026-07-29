@@ -1,7 +1,7 @@
 //! 已实现的业务服务层。
 //!
 //! 服务不感知 Tauri。依赖通过构造注入：Repository + SnapshotStore + Clock + IdGen。
-//! 每个方法的契约注释直接对应 `savelink-restore-test-spec.md` 的用例编号。
+//! 每个方法的契约注释直接对应 `doc/SaveLink恢复与存储测试规格.md` 的用例编号。
 
 use crate::error::{Result, SaveLinkError};
 use crate::model::{CreateOutcome, RestoreOutcome, RestoreStep};

@@ -9,6 +9,7 @@
 | 1.2 | 代强 | 2026-07-14 | 同步百度 POC、2MiB 基准、协议 v1 和 Fake 双设备云同步闭环 |
 | 1.3 | 代强 | 2026-07-15 | 同步正式 BaiduNetdiskStore、桌面端 OAuth/Token 持久化、真实百度验证和下一步真实上传路线 |
 | 1.4 | 代强 | 2026-07-16 | 同步正式客户端真实上传及设备 B 发现、下载、双重校验和接收落地结果 |
+| 1.5 | 代强 | 2026-07-29 | 迁入 doc 目录并改为中文文件名；同步文档引用 |
 
 ## 背景
 
@@ -92,7 +93,7 @@ SaveLink 本地生成历史快照
 
 第二轮调研目标不是做完整产品，而是验证百度网盘能否作为第一个云存储后端。
 
-该 POC 已完成。完整证据见 `baidu-netdisk-api-poc-report-20260714.md`。
+该 POC 已完成。完整证据见 `百度网盘API-POC报告-20260714.md`。
 
 最小 POC 链路：
 
@@ -201,7 +202,7 @@ statObject(path)
 
 它更像一个容量大、用户熟悉、但受平台规则约束的云对象存储后端。OAuth、基础文件 API 和快照数据完整性 POC 已经通过，可以进入 SaveLink 正式云同步最小闭环开发。
 
-云同步传输格式以 `savelink-cloud-sync-protocol-v1.md` 为准：不把整个 `latest.zip` 覆盖上传作为主线；本地快照仍由 `FsStore` 以目录形式保存在 `repository` 中，上云时将每条快照单独打包为 `{snapshot_id}.zip`，上传成功后再生成并上传不可变云端 `{snapshot_id}.ok`。
+云同步传输格式以 `SaveLink云端快照协议V1.md` 为准：不把整个 `latest.zip` 覆盖上传作为主线；本地快照仍由 `FsStore` 以目录形式保存在 `repository` 中，上云时将每条快照单独打包为 `{snapshot_id}.zip`，上传成功后再生成并上传不可变云端 `{snapshot_id}.ok`。
 
 Fake 双设备已完成“本机上传一条快照 -> 另一套本地数据目录发现并下载 -> 双重校验 -> 通过 `FsStore` 写入本机 `repository` -> 登记 SQLite”的无网络闭环。正式 `BaiduNetdiskStore` 也已完成，并通过真实百度对象上传、列表、下载和删除冒烟。
 

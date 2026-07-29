@@ -13,6 +13,7 @@
 | 1.6 | 代强 | 2026-07-15 | 同步 BaiduNetdiskStore、OAuth 本机连接层、真实百度验证、62 个默认测试和真实上传下一步 |
 | 1.7 | 代强 | 2026-07-16 | 同步百度真实双设备上传、接收、目录绑定和安全恢复完整闭环 |
 | 1.8 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点并强化失败回滚；同步设置入口、自定义图标状态和 68 个默认测试 |
+| 1.9 | 代强 | 2026-07-29 | 补充 doc 文档目录；同步中文文档名和引用 |
 
 ## 文档用途
 
@@ -22,20 +23,22 @@
 
 - `PROGRESS.md`：当前进度与下一步候选项。
 - `HANDOFF-codex.md`：后续开发交接。
-- `savelink-restore-test-spec.md`：恢复/存储关键路径验收基准。
-- `savelink-cloud-sync-protocol-v1.md`：已定稿的云端目录、对象格式、同步流程和失败处理协议。
-- `baidu-netdisk-api-poc-report-20260714.md`：百度 OAuth/文件 API POC、2MiB 基准数据和云端物理格式决策证据。
+- `SaveLink恢复与存储测试规格.md`：恢复/存储关键路径验收基准。
+- `SaveLink云端快照协议V1.md`：已定稿的云端目录、对象格式、同步流程和失败处理协议。
+- `百度网盘API-POC报告-20260714.md`：百度 OAuth/文件 API POC、2MiB 基准数据和云端物理格式决策证据。
 - `savelink-app/手动测试计划.md`：人工验收步骤。
-- `savelink-mvp-product-prototype.md`、`savelink-low-fidelity-wireframe.md`、`savelink-visual-interaction-guidelines.md`：产品、页面、视觉气质。
+- `SaveLink-MVP产品原型草案.md`、`SaveLink低保真原型图.md`、`SaveLink视觉与交互说明.md`：产品、页面、视觉气质。
 
 ## 当前实现概览
 
 ```text
-save_link_workspace/
+save_link/
+├── doc/              项目文档与阅读索引
 ├── savelink-core/    纯 Rust 核心逻辑，不依赖 Tauri
 ├── savelink-app/     Tauri 桌面应用：React 前端 + Rust 命令层
 ├── demo-front-1/     早期高保真 mock 原型，仅作参考
-└── acceptance-data/  手动验收用假存档数据
+├── acceptance-data/  手动验收用假存档数据
+└── design-drafts/    图标等视觉设计过程文件
 ```
 
 当前能力：
@@ -316,7 +319,7 @@ pub trait SnapshotStore: Send + Sync {
 云端目录结构 + 增量上传/下载 + 快照不可变约束
 ```
 
-正式协议见 `savelink-cloud-sync-protocol-v1.md`。v1 按游戏目录列出 `.ok` 发现快照，不维护全局 `games.json`、`snapshots.json` 或 `tombstones.json`，避免多设备同时覆盖同一索引文件。
+正式协议见 `SaveLink云端快照协议V1.md`。v1 按游戏目录列出 `.ok` 发现快照，不维护全局 `games.json`、`snapshots.json` 或 `tombstones.json`，避免多设备同时覆盖同一索引文件。
 
 当前已实现的本机云同步基础：
 

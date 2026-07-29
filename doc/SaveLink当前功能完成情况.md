@@ -3,7 +3,7 @@
 更新时间：2026-07-28
 用途：给总规划会话快速判断 SaveLink 当前阶段、已完成功能、已验收点和下一阶段优先级。
 
-> 备注：`PROGRESS.md`、`HANDOFF-codex.md`、`savelink-tech-architecture.md`、`savelink-restore-test-spec.md`、`savelink-app/README.md`、`savelink-app/BUILD.md`、`savelink-app/手动测试计划.md` 已同步到当前实现状态。
+> 备注：`PROGRESS.md`、`HANDOFF-codex.md`、`SaveLink技术架构.md`、`SaveLink恢复与存储测试规格.md`、`savelink-app/README.md`、`savelink-app/BUILD.md`、`savelink-app/手动测试计划.md` 已同步到当前实现状态。
 
 ## 版本历史
 
@@ -16,6 +16,7 @@
 | 1.4 | 代强 | 2026-07-16 | 同步百度真实双设备上传、接收、目录绑定和安全恢复完整闭环 |
 | 1.5 | 代强 | 2026-07-23 | 同步真实用户反馈与上传入口优化；将低频百度账号切换移出 v0.1 P0 |
 | 1.6 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点并强化失败回滚；同步绿色版说明、设置入口、自定义图标状态和 68 个默认测试 |
+| 1.7 | 代强 | 2026-07-29 | 迁入 doc 目录并改为中文文件名；同步文档引用 |
 
 ## 一句话结论
 
@@ -34,7 +35,7 @@ MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `
 - 数据持久化：SQLite，数据库位于用户 AppData 下。
 - 快照仓库：当前由 `FsStore` 以目录形式管理，实际数据位于用户 AppData 下的 `repository/`。
 - 前后端调用：React 组件通过 `src/lib/api.ts` 统一调用 Tauri `invoke`，组件内不直接散落 invoke。
-- 云同步路线：不再以 `latest.zip` 或整库 `savelink.db` 原样同步作为主线；百度网盘 POC 已通过，云端快照协议 v1 已定稿为按游戏目录发现的单快照 zip + `.ok`；详见 `savelink-cloud-sync-protocol-v1.md`。
+- 云同步路线：不再以 `latest.zip` 或整库 `savelink.db` 原样同步作为主线；百度网盘 POC 已通过，云端快照协议 v1 已定稿为按游戏目录发现的单快照 zip + `.ok`；详见 `SaveLink云端快照协议V1.md`。
 - 云存储适配：`SqliteRepo` 已实现 `CloudStateRepository`；`FakeCloudObjectStore` 保护无网络同步测试；`BaiduNetdiskStore` 将逻辑路径映射到 `/apps/savelink/v1/`，实现真实 HTTP 对象操作。
 - 百度账号连接：Tauri 已提供连接状态和发起授权命令；Token 独立保存在 AppData `credentials/baidu-oauth.json`，SQLite `cloud_accounts` 只保存 `token_ref`。
 

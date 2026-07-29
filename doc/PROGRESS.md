@@ -14,6 +14,7 @@
 | 1.7 | 代强 | 2026-07-17 | 确认 v0.1 MVP 功能完成；新增长期自用与对外试用的 6 项发布收口待办 |
 | 1.8 | 代强 | 2026-07-23 | 记录真实用户反馈并优化上传入口；将低频百度账号切换移出 v0.1 P0 |
 | 1.9 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点并强化失败回滚；同步绑定/绿色版说明、设置入口和自定义图标状态；默认测试增至 68 个 |
+| 1.10 | 代强 | 2026-07-29 | 迁入 doc 目录；同步中文文档名和引用 |
 
 > 持久化的路线图与当前位置。上下文压缩不影响此文件——以它为准。
 > 最后更新：2026-07-28（第一版恢复流程完成简化，继续长期自用与发布收口）
@@ -231,9 +232,9 @@ cargo test --no-fail-fast
 - 核心 crate：`savelink-core/`
 - 桌面应用：`savelink-app/`
 - 高保真 mock 原型：`demo-front-1/index.html`
-- 当前正式状态总结：`SaveLink-current-status-for-planning-20260630.md`
+- 当前正式状态总结：`SaveLink当前功能完成情况.md`
 - 交接文档：`HANDOFF-codex.md`
-- 云端快照协议 v1：`savelink-cloud-sync-protocol-v1.md`
-- 百度网盘 POC 正式报告：`baidu-netdisk-api-poc-report-20260714.md`
+- 云端快照协议 v1：`SaveLink云端快照协议V1.md`
+- 百度网盘 POC 正式报告：`百度网盘API-POC报告-20260714.md`
 - 百度网盘 POC 外部实验工程（不属于主仓库）：`D:\door\codex_workspace\save_link_poc\baidu-netdisk-poc\`
 - 手动测试计划：`savelink-app/手动测试计划.md`
