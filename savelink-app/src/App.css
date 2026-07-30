@@ -73,6 +73,16 @@ button {
 .topbar .brand .sub { font-weight: 400; font-size: 12px; color: var(--color-text-3); }
 .topbar .brand .sub.test-profile { color: var(--color-warn); font-weight: 600; }
 .topbar .spacer { flex: 1; }
+.btn.cloud-entry {
+  color: var(--color-accent);
+  background: #f7faff;
+  border-color: #d7e3f8;
+  white-space: nowrap;
+}
+.btn.cloud-entry:hover {
+  background: var(--color-accent-soft);
+  border-color: #b9cef3;
+}
 
 .sidebar {
   grid-area: sidebar;
@@ -174,6 +184,7 @@ button {
 .empty .ic { color: var(--color-border-strong); margin-bottom: 6px; }
 .empty h2 { margin: 0; font-size: 17px; color: var(--color-text); font-weight: 600; }
 .empty p { margin: 0 0 14px; font-size: 13px; max-width: 320px; }
+.empty-actions { display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap; }
 
 /* ---------- 详情页头部 ---------- */
 .ghead { display: flex; gap: 14px; align-items: flex-start; }

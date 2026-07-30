@@ -138,12 +138,13 @@ function SaveLink() {
         </div>
         <div className="spacer" />
         <button
-          className="iconbtn"
-          title="下载云端存档"
-          aria-label="下载云端存档"
+          className="btn sm cloud-entry"
+          title="云端存档"
+          aria-label="云端存档"
           onClick={() => setShowCloud(true)}
         >
           <Icon.Download />
+          <span>云端存档</span>
         </button>
         <button className="iconbtn" title="设置" onClick={() => toast("设置功能：后续补充", "warn")}><Icon.Settings /></button>
         <button className="iconbtn" title="帮助" onClick={() => toast("帮助文档：后续补充", "warn")}><Icon.Help /></button>
@@ -172,7 +173,10 @@ function SaveLink() {
 
       <main className="detail">
         {!selected ? (
-          <EmptyState onAdd={() => setShowAdd(true)} />
+          <EmptyState
+            onAdd={() => setShowAdd(true)}
+            onCloud={() => setShowCloud(true)}
+          />
         ) : (
           <div>
             <div className="ghead">
@@ -361,13 +365,16 @@ function SaveLink() {
   );
 }
 
-function EmptyState({ onAdd }: { onAdd: () => void }) {
+function EmptyState({ onAdd, onCloud }: { onAdd: () => void; onCloud: () => void }) {
   return (
     <div className="empty">
       <span className="ic"><Icon.History size={48} /></span>
       <h2>还没有添加游戏</h2>
       <p>添加一个游戏后，就可以为它创建存档快照和时间线。</p>
-      <button className="btn primary" onClick={onAdd}><Icon.Plus /> 添加游戏</button>
+      <div className="empty-actions">
+        <button className="btn primary" onClick={onAdd}><Icon.Plus /> 添加游戏</button>
+        <button className="btn cloud-entry" onClick={onCloud}><Icon.Download /> 下载云存档</button>
+      </div>
     </div>
   );
 }
