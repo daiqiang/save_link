@@ -1,6 +1,6 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{App, AppHandle, Manager, Window, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
@@ -19,7 +19,8 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
 
     let open_item = MenuItem::with_id(app, OPEN_MENU_ID, "打开 SaveLink", true, None::<&str>)?;
     let quit_item = MenuItem::with_id(app, QUIT_MENU_ID, "退出 SaveLink", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_item, &quit_item])?;
+    let separator = PredefinedMenuItem::separator(app)?;
+    let menu = Menu::with_items(app, &[&open_item, &separator, &quit_item])?;
 
     let mut tray = TrayIconBuilder::new()
         .tooltip("SaveLink")
