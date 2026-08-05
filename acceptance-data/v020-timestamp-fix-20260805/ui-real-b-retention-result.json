@@ -1,0 +1,9 @@
+{
+  "phase": "real-baidu-profile-b-retention-continuation",
+  "passed": true,
+  "observations": [
+    "constructed 31 mixed-source snapshots without duplicate creation",
+    "real cloud-aware retention pruned 31 mixed-source snapshots to 30",
+    "auto backup disabled after destructive verification"
+  ]
+}

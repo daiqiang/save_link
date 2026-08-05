@@ -1,0 +1,8 @@
+{
+  "phase": "real-baidu-profile-a-upload",
+  "passed": true,
+  "observations": [
+    "profile A created a canonical timestamp snapshot and uploaded it through real OAuth",
+    "displayed timestamp: 2026-08-06 00:00"
+  ]
+}

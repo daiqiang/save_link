@@ -1,0 +1,8 @@
+{
+  "phase": "legacy-profile-migration-ui",
+  "passed": true,
+  "observations": [
+    "30 legacy snapshots rendered in one local display format",
+    "latest snapshot display remained 2026-08-05 21:36"
+  ]
+}

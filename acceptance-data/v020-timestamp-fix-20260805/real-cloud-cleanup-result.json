@@ -1,0 +1,13 @@
+{
+  "passed": true,
+  "local_snapshot_count": 30,
+  "all_local_timestamps_utc_rfc3339": true,
+  "all_remaining_snapshots_newer_than_cloud_baseline": true,
+  "deleted_cloud_snapshot_id": "snap_1785945624932275500_1",
+  "remote_snapshot_names_after_retention": [],
+  "test_game_cloud_rows_after_retention": 0,
+  "unrelated_remote_only_rows_preserved": 7,
+  "auto_backup_enabled_after_test": false,
+  "deleted_remote_game_dir": "/apps/savelink/v1/games/game_1785945624886047500_0",
+  "verified_absent_from_parent": true
+}
