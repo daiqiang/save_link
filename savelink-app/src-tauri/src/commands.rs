@@ -5,7 +5,7 @@
 //!
 //! 对照 Java BS：这一层相当于 Spring Controller，core 相当于 Service 层。
 
-use crate::oauth_config::baidu_oauth_config;
+use crate::{auto_backup, oauth_config::baidu_oauth_config};
 use savelink_core::baidu_oauth::{
     new_oauth_state, BaiduOAuthClient, FileBaiduTokenStore, OAuthCallbackListener,
     RefreshingBaiduTokenProvider,
@@ -25,12 +25,12 @@ use savelink_core::store::{FsStore, SnapshotStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri_plugin_opener::OpenerExt;
 
-const BAIDU_ACCOUNT_ID: &str = "baidu-netdisk";
+pub(crate) const BAIDU_ACCOUNT_ID: &str = "baidu-netdisk";
 const BAIDU_PROVIDER: &str = "baidu_netdisk";
 const BAIDU_TOKEN_REF: &str = "credentials/baidu-oauth.json";
 const BAIDU_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
@@ -78,6 +78,7 @@ pub struct AppState {
     pub repository_dir: PathBuf,
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdGen>,
+    pub snapshot_operation_lock: Arc<Mutex<()>>,
 }
 
 impl AppState {
@@ -100,6 +101,7 @@ impl AppState {
         let cloud_repo: Arc<dyn CloudStateRepository> = sqlite_repo.clone();
         let repository_dir = data_dir.join("repository");
         let store = FsStore::new(repository_dir.clone());
+        auto_backup::ensure_default(&cloud_repo)?;
         Ok(Self {
             sqlite_repo,
             repo,
@@ -117,10 +119,11 @@ impl AppState {
             ids: Arc::new(TimeIdGen {
                 counter: std::sync::atomic::AtomicU64::new(0),
             }),
+            snapshot_operation_lock: Arc::new(Mutex::new(())),
         })
     }
 
-    fn snapshots(&self) -> SnapshotService {
+    pub(crate) fn snapshots(&self) -> SnapshotService {
         SnapshotService::new(
             self.repo.clone(),
             self.store.clone(),
@@ -137,6 +140,13 @@ impl AppState {
             self.ids.clone(),
         )
     }
+}
+
+fn acquire_snapshot_operation_guard(state: &AppState) -> Result<MutexGuard<'_, ()>, String> {
+    state
+        .snapshot_operation_lock
+        .lock()
+        .map_err(|_| "快照操作锁已损坏".to_string())
 }
 
 fn ensure_local_cloud_id(repo: &SqliteRepo, setting: &str, prefix: &str) -> Result<String, String> {
@@ -188,6 +198,12 @@ pub struct AppInfoDto {
     pub repository_dir: String,
     pub database_path: String,
     pub profile_label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct AutoBackupSettingsDto {
+    pub enabled: bool,
+    pub interval_minutes: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -288,7 +304,7 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
     }
 }
 
-fn baidu_connection_status(
+pub(crate) fn baidu_connection_status(
     cloud_repo: &Arc<dyn CloudStateRepository>,
     token_store: &FileBaiduTokenStore,
 ) -> Result<BaiduConnectionDto, String> {
@@ -312,7 +328,7 @@ fn baidu_connection_status(
     })
 }
 
-struct AuthBusyGuard(Arc<AtomicBool>);
+pub(crate) struct AuthBusyGuard(Arc<AtomicBool>);
 
 impl Drop for AuthBusyGuard {
     fn drop(&mut self) {
@@ -320,7 +336,7 @@ impl Drop for AuthBusyGuard {
     }
 }
 
-struct BaiduCloudRuntime {
+pub(crate) struct BaiduCloudRuntime {
     sqlite_repo: Arc<SqliteRepo>,
     snapshot_store: Arc<dyn SnapshotStore>,
     token_store: FileBaiduTokenStore,
@@ -331,7 +347,7 @@ struct BaiduCloudRuntime {
 }
 
 impl BaiduCloudRuntime {
-    fn from_state(state: &AppState) -> Self {
+    pub(crate) fn from_state(state: &AppState) -> Self {
         Self {
             sqlite_repo: state.sqlite_repo.clone(),
             snapshot_store: state.store.clone(),
@@ -343,7 +359,7 @@ impl BaiduCloudRuntime {
         }
     }
 
-    fn build(self) -> Result<CloudSyncService<SqliteRepo>, String> {
+    pub(crate) fn build(self) -> Result<CloudSyncService<SqliteRepo>, String> {
         let config = baidu_oauth_config().map_err(|error| error.to_string())?;
         let oauth_client = BaiduOAuthClient::new(config).map_err(|error| error.to_string())?;
         let token_provider = Arc::new(RefreshingBaiduTokenProvider::new(
@@ -367,7 +383,7 @@ impl BaiduCloudRuntime {
     }
 }
 
-fn acquire_cloud_sync_guard(state: &AppState) -> Result<AuthBusyGuard, String> {
+pub(crate) fn acquire_cloud_sync_guard(state: &AppState) -> Result<AuthBusyGuard, String> {
     let busy = state.baidu_sync_in_progress.clone();
     if busy
         .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
@@ -405,6 +421,32 @@ pub fn get_app_info(state: State<'_, AppState>) -> Result<AppInfoDto, String> {
             .to_string_lossy()
             .to_string(),
         profile_label: state.profile_label.clone(),
+    })
+}
+
+#[tauri::command]
+pub fn get_auto_backup_settings(
+    state: State<'_, AppState>,
+) -> Result<AutoBackupSettingsDto, String> {
+    Ok(AutoBackupSettingsDto {
+        enabled: auto_backup::enabled(&state.cloud_repo)?,
+        interval_minutes: auto_backup::AUTO_BACKUP_INTERVAL_MINUTES,
+    })
+}
+
+#[tauri::command]
+pub fn set_auto_backup_enabled(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<AutoBackupSettingsDto, String> {
+    auto_backup::set_enabled(&state.cloud_repo, enabled)?;
+    if enabled {
+        auto_backup::trigger(app);
+    }
+    Ok(AutoBackupSettingsDto {
+        enabled,
+        interval_minutes: auto_backup::AUTO_BACKUP_INTERVAL_MINUTES,
     })
 }
 
@@ -560,8 +602,12 @@ pub async fn receive_baidu_snapshot(
     let runtime = BaiduCloudRuntime::from_state(&state);
     let repo = runtime.sqlite_repo.clone();
     let token_store_on_error = state.baidu_token_store.clone();
+    let snapshot_operation_lock = state.snapshot_operation_lock.clone();
 
     tauri::async_runtime::spawn_blocking(move || {
+        let _operation = snapshot_operation_lock
+            .lock()
+            .map_err(|_| "快照操作锁已损坏".to_string())?;
         let cloud_game_id = repo
             .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot_id)
             .map_err(|error| error.to_string())?
@@ -683,6 +729,7 @@ pub fn add_game(
     if save_paths.is_empty() {
         return Err("请至少选择一个存档目录".into());
     }
+    let _operation = acquire_snapshot_operation_guard(&state)?;
     let now = state.clock.now_stamp();
     let game = Game {
         id: state.ids.new_id("game"),
@@ -724,6 +771,7 @@ pub fn update_game(
     if trimmed_paths.is_empty() {
         return Err("请至少选择一个存档目录".into());
     }
+    let _operation = acquire_snapshot_operation_guard(&state)?;
 
     let mut game = state
         .repo
@@ -749,6 +797,7 @@ pub fn create_snapshot(
     game_id: String,
     note: Option<String>,
 ) -> Result<Option<SnapshotDto>, String> {
+    let _operation = acquire_snapshot_operation_guard(&state)?;
     match state
         .snapshots()
         .create_snapshot(&game_id, note, Reason::Manual)
@@ -766,6 +815,7 @@ pub fn update_snapshot_meta(
     note: Option<String>,
     locked: Option<bool>,
 ) -> Result<(), String> {
+    let _operation = acquire_snapshot_operation_guard(&state)?;
     state
         .snapshots()
         .update_meta(&snapshot_id, note, locked)
@@ -774,6 +824,7 @@ pub fn update_snapshot_meta(
 
 #[tauri::command]
 pub fn delete_snapshot(state: State<'_, AppState>, snapshot_id: String) -> Result<(), String> {
+    let _operation = acquire_snapshot_operation_guard(&state)?;
     state
         .snapshots()
         .delete_snapshot(&snapshot_id)
@@ -782,6 +833,7 @@ pub fn delete_snapshot(state: State<'_, AppState>, snapshot_id: String) -> Resul
 
 #[tauri::command]
 pub fn delete_game(state: State<'_, AppState>, game_id: String) -> Result<(), String> {
+    let _operation = acquire_snapshot_operation_guard(&state)?;
     state
         .snapshots()
         .delete_game(&game_id)
@@ -800,6 +852,7 @@ pub fn restore_snapshot(
     game_id: String,
     snapshot_id: String,
 ) -> Result<RestoreResultDto, String> {
+    let _operation = acquire_snapshot_operation_guard(&state)?;
     // 进度事件第 4 步接前端时再接 emit；这里先用空回调，保证链路可调。
     let out = state
         .restorer()
@@ -820,6 +873,7 @@ pub fn restore_snapshot_with_choice(
     snapshot_id: String,
     choice: String,
 ) -> Result<RestoreResultDto, String> {
+    let _operation = acquire_snapshot_operation_guard(&state)?;
     let c = match choice.as_str() {
         "create" => MissingDirChoice::CreateAndRestore,
         "reselect" => MissingDirChoice::Reselect,

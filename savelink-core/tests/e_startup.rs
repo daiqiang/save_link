@@ -61,6 +61,27 @@ fn e2_same_volume_detection_drives_atomic_strategy() {
     }
 }
 
+#[test]
+fn e3_startup_finishes_interrupted_local_deletion() {
+    let h = Harness::new(&[("s", b"x")]);
+    let created = match h
+        .snapshots()
+        .create_snapshot(&h.game_id, None, Reason::Manual)
+        .unwrap()
+    {
+        savelink_core::model::CreateOutcome::Created(snapshot) => snapshot,
+        _ => panic!("应创建测试快照"),
+    };
+    let mut deleting = created.clone();
+    deleting.status = SnapshotStatus::Deleting;
+    h.repo.update_snapshot(deleting).unwrap();
+
+    startup_self_check(&h.repo, &h.store).expect("启动自检应续做删除");
+
+    assert!(h.repo.get_snapshot(&created.id).unwrap().is_none());
+    assert!(!h.store.verify(&created.storage_key).unwrap());
+}
+
 // 保持 Arc 导入被使用。
 #[allow(dead_code)]
 fn _types(_s: Arc<dyn SnapshotStore>) {}

@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from "react";
+import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { Icon } from "./lib/icons";
 import { formatSize, REASON_LABEL } from "./lib/format";
@@ -11,6 +12,7 @@ import { RestoreDialog } from "./components/RestoreDialog";
 import { SnapshotDrawer } from "./components/SnapshotDrawer";
 import { CloudSnapshotsDialog } from "./components/CloudSnapshotsDialog";
 import { BindSavePathDialog } from "./components/BindSavePathDialog";
+import { SettingsDialog } from "./components/SettingsDialog";
 
 function SaveLink() {
   const toast = useToast();
@@ -25,6 +27,7 @@ function SaveLink() {
   // 弹窗 / 抽屉 / 菜单状态
   const [showAdd, setShowAdd] = useState(false);
   const [showCloud, setShowCloud] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const [editingGame, setEditingGame] = useState<Game | null>(null);
   const [bindingGame, setBindingGame] = useState<Game | null>(null);
   const [drawerSnap, setDrawerSnap] = useState<Snapshot | null>(null);
@@ -70,6 +73,15 @@ function SaveLink() {
     await loadGames();
     if (selectedId) await loadSnapshots(selectedId);
   }, [loadGames, loadSnapshots, selectedId]);
+
+  useEffect(() => {
+    const unlisten = listen("auto-backup-changed", () => {
+      void refresh();
+    });
+    return () => {
+      void unlisten.then((dispose) => dispose());
+    };
+  }, [refresh]);
 
   async function createSnapshot() {
     if (!selected) return;
@@ -146,7 +158,7 @@ function SaveLink() {
           <Icon.Download />
           <span>云端存档</span>
         </button>
-        <button className="iconbtn" title="设置" onClick={() => toast("设置功能：后续补充", "warn")}><Icon.Settings /></button>
+        <button className="iconbtn" title="设置" onClick={() => setShowSettings(true)}><Icon.Settings /></button>
         <button className="iconbtn" title="帮助" onClick={() => toast("帮助文档：后续补充", "warn")}><Icon.Help /></button>
       </div>
 
@@ -302,6 +314,8 @@ function SaveLink() {
           setSelectedId(gameId);
           await loadSnapshots(gameId);
         }} />}
+
+      {showSettings && <SettingsDialog onClose={() => setShowSettings(false)} />}
 
       {editingGame && <EditGameDialog game={editingGame}
         onClose={() => setEditingGame(null)}

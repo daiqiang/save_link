@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
-import { openPath } from "@tauri-apps/plugin-opener";
 import { Icon } from "../lib/icons";
 import * as api from "../lib/api";
 import { useToast } from "./Toast";
-import type { AppInfo } from "../lib/types";
+import type { AutoBackupSettings } from "../lib/types";
 
 interface Props {
   onClose: () => void;
@@ -11,92 +10,69 @@ interface Props {
 
 export function SettingsDialog({ onClose }: Props) {
   const toast = useToast();
-  const [info, setInfo] = useState<AppInfo | null>(null);
+  const [settings, setSettings] = useState<AutoBackupSettings | null>(null);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     let alive = true;
-    api.getAppInfo()
+    api.getAutoBackupSettings()
       .then((value) => {
-        if (alive) setInfo(value);
+        if (alive) setSettings(value);
       })
-      .catch((e) => toast(String(e), "err"));
+      .catch((error) => toast(String(error), "err"));
     return () => {
       alive = false;
     };
   }, [toast]);
 
-  async function copy(text: string) {
+  async function toggleAutoBackup() {
+    if (!settings || saving) return;
+    const next = !settings.enabled;
+    setSaving(true);
     try {
-      await navigator.clipboard.writeText(text);
-      toast("路径已复制", "ok");
-    } catch {
-      toast("复制失败", "err");
-    }
-  }
-
-  async function reveal(path: string) {
-    try {
-      await openPath(path);
-    } catch (e) {
-      toast(String(e), "err");
+      const updated = await api.setAutoBackupEnabled(next);
+      setSettings(updated);
+      toast(next ? "自动备份已开启" : "自动备份已关闭", "ok");
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setSaving(false);
     }
   }
 
   return (
-    <div className="overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
-      <div className="modal settings-modal">
+    <div className="overlay" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <div className="modal narrow">
         <div className="modal-head">
           <h3>设置</h3>
-          <button className="iconbtn" onClick={onClose}><Icon.Close /></button>
+          <button className="iconbtn" title="关闭" onClick={onClose}><Icon.Close /></button>
         </div>
-        <div className="modal-body">
-          {!info ? (
-            <div className="hint muted"><span className="spin"><Icon.RotateCcw /></span> 正在读取应用信息…</div>
+        <div className="modal-body settings-body">
+          {!settings ? (
+            <div className="settings-loading"><span className="spin"><Icon.RotateCcw /></span></div>
           ) : (
-            <div className="settings-list">
-              <InfoRow label="运行方式" value="绿色版和安装版共用同一个用户数据目录" />
-              <PathRow label="数据目录" value={info.data_dir} onCopy={copy} onOpen={reveal} />
-              <PathRow label="快照仓库" value={info.repository_dir} onCopy={copy} onOpen={reveal} />
-              <PathRow label="数据库文件" value={info.database_path} onCopy={copy} />
+            <div className="setting-control-row">
+              <div className="setting-control-copy">
+                <strong>自动备份</strong>
+                <span>每 {settings.interval_minutes} 分钟检查一次</span>
+              </div>
+              <button
+                className={`switch ${settings.enabled ? "on" : ""}`}
+                type="button"
+                role="switch"
+                aria-checked={settings.enabled}
+                aria-label="自动备份"
+                title={settings.enabled ? "关闭自动备份" : "开启自动备份"}
+                disabled={saving}
+                onClick={toggleAutoBackup}
+              >
+                <span />
+              </button>
             </div>
           )}
         </div>
         <div className="modal-foot">
           <button className="btn primary" onClick={onClose}>完成</button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function InfoRow({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="settings-row">
-      <div className="settings-label">{label}</div>
-      <div className="settings-value">{value}</div>
-    </div>
-  );
-}
-
-function PathRow({
-  label,
-  value,
-  onCopy,
-  onOpen,
-}: {
-  label: string;
-  value: string;
-  onCopy: (value: string) => void;
-  onOpen?: (value: string) => void;
-}) {
-  return (
-    <div className="settings-row">
-      <div className="settings-label">{label}</div>
-      <div className="settings-path-line">
-        <div className="target-box path-mono">{value}</div>
-        <div className="settings-actions">
-          {onOpen && <button className="btn sm" onClick={() => onOpen(value)}><Icon.Folder /> 打开</button>}
-          <button className="btn sm" onClick={() => onCopy(value)}><Icon.Copy /> 复制</button>
         </div>
       </div>
     </div>

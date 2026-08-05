@@ -9,14 +9,15 @@
 | 1.2 | 代强 | 2026-07-16 | 接入 Token 自动刷新、真实上传及设备 B 发现/下载/接收；新增 L 组，默认测试保持 64 个 |
 | 1.3 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点，强化最终校验失败回滚；B 组增至 14 个，默认测试增至 68 个 |
 | 1.4 | 代强 | 2026-07-29 | 同步 doc 目录及中文文档名引用 |
+| 1.5 | 代强 | 2026-08-05 | 增加自动检查、30 条保留候选、云端联合删除、旧库状态迁移和 Deleting 中断续做；默认测试增至 75 个 |
 
 SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核心逻辑。不依赖 Tauri，可独立 `cargo test`。`savelink-app` 的 Tauri 命令层只做 DTO 和调用包装。
 
-> 历史：本 crate 最初是测试先行骨架，用作客观验收尺。现已实现，并由 A-L 组测试保护；J/L 组真实联网测试默认忽略。
+> 历史：本 crate 最初是测试先行骨架，用作客观验收尺。现已实现，并由 A-M 组测试保护；J/L 组真实联网测试默认忽略。
 
 ## 当前状态
 
-- 测试：**68 个默认测试全绿**（`cargo test --no-fail-fast`），另有 J/L 两个真实百度测试默认忽略、均已按需执行通过。
+- 测试：**75 个默认测试全绿**（`cargo test --no-fail-fast`），另有 J/L 两个真实百度测试默认忽略、均已按需执行通过。
 - 主要依赖：`rusqlite 0.32`、`serde/serde_json`、`zip 2`、`sha2`、`chrono`、`reqwest 0.12`；SQLite 使用 `bundled`，用户无需单独安装。
 - 生产 repo：`SqliteRepo`。
 - 生产 store：`FsStore`，即目录复制实现；zip/restic 是后续优化。
@@ -30,15 +31,16 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 | B 恢复 | 14 | 直接恢复不创建快照、目标相同跳过、替换恢复、最终校验失败回滚、历史备份兼容和进度顺序 |
 | C 删除/锁定/游戏删除 | 6 | 锁定不可删、删除回滚、元数据可变、移除游戏 |
 | D 存储/扫描 | 6 | create/restore 往返、verify、content_hash、storage_key 不透明 |
-| E 启动自检/同盘检测 | 2 | writing 残留清理、同卷判断 |
+| E 启动自检/同盘检测 | 3 | writing 残留清理、deleting 删除续做、同卷判断 |
 | F SQLite 持久化 | 3 | 数据重开仍在、枚举往返、游戏更新持久化 |
-| G 云同步基础 | 7 | 云状态持久化、状态转换、旧库补表、Fake 云对象操作和路径安全 |
-| H Fake 云同步闭环 | 8 | 协议 JSON、zip 安全、A/B 双设备往返、幂等、孤儿与损坏拒绝 |
+| G 云同步基础 | 8 | 云状态持久化、状态转换、旧库补表/状态约束迁移、Fake 云对象操作和路径安全 |
+| H Fake 云同步闭环 | 10 | 协议 JSON、zip 安全、A/B 双设备往返、幂等、孤儿/损坏拒绝、联合删除和失败重试 |
 | 百度适配器内部单元 | 2 | 逻辑/物理路径映射、稳定错误分类和敏感信息边界 |
 | I 百度 HTTP 契约 | 4 | CreateOnly、路径映射、列表/stat、dlink 下载、幂等删除、缺失目录 |
 | J 真实百度冒烟 | 1（默认忽略） | 环境变量注入 Token，真实上传、列表、下载、校验和清理 |
 | K 百度 OAuth | 8 | URL、换/刷新 Token、随机 state、Token 文件仓库、本机回调、错误 state 拒绝和刷新持久化 |
 | L 真实百度设备 B 接收 | 1（默认忽略） | 只读发现、下载、双重校验、接收落地及设备 A 路径隔离 |
+| M 自动备份 | 3 | 全游戏检查、单游戏失败隔离、30 条未锁定保留候选与锁定排除 |
 
 ## 模块地图
 
@@ -57,8 +59,8 @@ SaveLink 最高风险路径——**存档创建与恢复**——的纯 Rust 核�
 | `baidu_oauth.rs` | 已实现 | OAuth URL/换 Token、自动刷新提供者、随机 state、本机回调监听和 Token 文件仓库 |
 | `cloud_protocol.rs` | 已实现 | v1 JSON 契约、逻辑路径、ID/hash/时间校验 |
 | `cloud_archive.rs` | 已实现 | 单快照 zip、SHA-256 和安全解压 |
-| `cloud_service.rs` | 已实现 | Fake/真实云后端共用的上传、发现、下载和接收落地编排 |
-| `service.rs` | 已实现 | `SnapshotService`、`RestoreService`、`startup_self_check`、`same_volume` |
+| `cloud_service.rs` | 已实现 | Fake/真实云后端共用的上传、发现、下载、接收落地和云端优先联合删除编排 |
+| `service.rs` | 已实现 | `SnapshotService`、`AutoBackupService`、`RestoreService`、`startup_self_check`、`same_volume` |
 | `testkit.rs` | 已实现 | 故障注入、临时目录、指纹裁判、损坏模拟 |
 
 ## 核心安全契约

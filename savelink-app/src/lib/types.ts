@@ -2,7 +2,18 @@
 // 第 5 步接线时，invoke 的返回值就是这些类型。
 
 export type SnapshotReason = "manual" | "before_restore" | "auto";
-export type CloudSyncStatus = "uploading" | "uploaded" | "remote_only" | "downloading" | "downloaded" | "ignored" | "error";
+export type CloudSyncStatus =
+  | "uploading"
+  | "uploaded"
+  | "remote_only"
+  | "downloading"
+  | "downloaded"
+  | "ignored"
+  | "error"
+  | "delete_pending"
+  | "deleting"
+  | "delete_failed"
+  | "remote_deleted";
 
 export interface Game {
   id: string;
@@ -42,6 +53,11 @@ export interface AppInfo {
   repository_dir: string;
   database_path: string;
   profile_label: string | null;
+}
+
+export interface AutoBackupSettings {
+  enabled: boolean;
+  interval_minutes: number;
 }
 
 export interface BaiduConnection {

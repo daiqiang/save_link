@@ -25,6 +25,8 @@ pub trait Repository: Send + Sync {
 
     /// 启动自检：返回所有 status==Writing 的残留快照（上次中断的半成品）。
     fn list_writing(&self) -> Result<Vec<Snapshot>>;
+    /// 启动自检：返回所有 status==Deleting 的残留快照（上次中断的删除任务）。
+    fn list_deleting(&self) -> Result<Vec<Snapshot>>;
 }
 
 /// 可注入时钟，便于断言 created_at。
@@ -162,6 +164,17 @@ impl Repository for InMemoryRepo {
             .unwrap()
             .iter()
             .filter(|s| s.status == SnapshotStatus::Writing)
+            .cloned()
+            .collect())
+    }
+    fn list_deleting(&self) -> Result<Vec<Snapshot>> {
+        use crate::model::SnapshotStatus;
+        Ok(self
+            .snaps
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|s| s.status == SnapshotStatus::Deleting)
             .cloned()
             .collect())
     }

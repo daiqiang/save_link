@@ -11,7 +11,10 @@ use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::cloud_service::{
     CloudSyncError, CloudSyncService, ReceiveOutcome, UploadOutcome,
 };
-use savelink_core::cloud_store::{CloudObjectStore, FakeCloudObjectStore, PutMode};
+use savelink_core::cloud_store::{
+    CloudEntry, CloudFile, CloudObjectStore, CloudStoreError, CloudStoreResult,
+    FakeCloudObjectStore, PutMode,
+};
 use savelink_core::model::{Game, Reason, Snapshot, SnapshotStatus};
 use savelink_core::repo::{Clock, Repository};
 use savelink_core::scan;
@@ -38,6 +41,37 @@ struct Device {
     store: Arc<FsStore>,
     service: CloudSyncService<SqliteRepo>,
     root: PathBuf,
+}
+
+struct DeleteFailingCloudStore {
+    inner: Arc<dyn CloudObjectStore>,
+}
+
+impl CloudObjectStore for DeleteFailingCloudStore {
+    fn put_file(
+        &self,
+        remote_path: &str,
+        local_file: &Path,
+        mode: PutMode,
+    ) -> CloudStoreResult<CloudFile> {
+        self.inner.put_file(remote_path, local_file, mode)
+    }
+
+    fn get_file(&self, remote_path: &str, local_file: &Path) -> CloudStoreResult<()> {
+        self.inner.get_file(remote_path, local_file)
+    }
+
+    fn list_directory(&self, remote_path: &str) -> CloudStoreResult<Vec<CloudEntry>> {
+        self.inner.list_directory(remote_path)
+    }
+
+    fn stat_file(&self, remote_path: &str) -> CloudStoreResult<Option<CloudFile>> {
+        self.inner.stat_file(remote_path)
+    }
+
+    fn delete_file(&self, _remote_path: &str) -> CloudStoreResult<()> {
+        Err(CloudStoreError::NetworkUnavailable)
+    }
 }
 
 fn create_device(
@@ -144,6 +178,30 @@ fn setup() -> (
         codec.clone(),
     );
     (tmp, cloud, codec, device_a, device_b)
+}
+
+fn service_for_device(
+    device: &Device,
+    cloud: Arc<dyn CloudObjectStore>,
+) -> CloudSyncService<SqliteRepo> {
+    CloudSyncService::new(
+        device.repo.clone(),
+        device.store.clone(),
+        cloud,
+        Arc::new(ZipCloudArchiveCodec::new()),
+        Arc::new(FixedClock("2026-07-14T18:30:00+08:00")),
+        device.root.join("cloud-work-delete"),
+        "account_1",
+        "device_a",
+        "repo_a",
+    )
+    .unwrap()
+}
+
+fn unlock_snapshot(device: &Device, snapshot_id: &str) {
+    let mut snapshot = device.repo.get_snapshot(snapshot_id).unwrap().unwrap();
+    snapshot.locked = false;
+    device.repo.update_snapshot(snapshot).unwrap();
 }
 
 #[test]
@@ -447,6 +505,80 @@ fn h8_same_snapshot_id_with_different_local_content_is_a_hard_conflict() {
         fs::read(restored.join("ER0000.sl2")).unwrap(),
         b"device-b-different"
     );
+}
+
+#[test]
+fn h9_retention_delete_removes_remote_objects_before_local_snapshot() {
+    let (_tmp, cloud, _codec, device_a, _) = setup();
+    seed_device_a(&device_a, &[("ER0000.sl2", b"save-v1")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    unlock_snapshot(&device_a, "snap_1");
+
+    device_a
+        .service
+        .delete_snapshot_everywhere("snap_1")
+        .unwrap();
+
+    assert!(cloud
+        .stat_file(&snapshot_ok_path("game_1", "snap_1").unwrap())
+        .unwrap()
+        .is_none());
+    assert!(cloud
+        .stat_file(&snapshot_zip_path("game_1", "snap_1").unwrap())
+        .unwrap()
+        .is_none());
+    assert!(device_a.repo.get_snapshot("snap_1").unwrap().is_none());
+    assert!(device_a
+        .repo
+        .get_cloud_snapshot("account_1", "snap_1")
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn h10_remote_delete_failure_keeps_local_data_and_can_be_retried() {
+    let (_tmp, cloud, _codec, device_a, _) = setup();
+    seed_device_a(&device_a, &[("ER0000.sl2", b"save-v1")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    unlock_snapshot(&device_a, "snap_1");
+    let failing_cloud: Arc<dyn CloudObjectStore> = Arc::new(DeleteFailingCloudStore {
+        inner: cloud.clone(),
+    });
+    let failing_service = service_for_device(&device_a, failing_cloud);
+
+    let error = failing_service
+        .delete_snapshot_everywhere("snap_1")
+        .unwrap_err();
+    assert_eq!(error.code(), "network_unavailable");
+    let local = device_a.repo.get_snapshot("snap_1").unwrap().unwrap();
+    assert_eq!(local.status, SnapshotStatus::Complete);
+    assert!(device_a.store.verify(&local.storage_key).unwrap());
+    let cloud_record = device_a
+        .repo
+        .get_cloud_snapshot("account_1", "snap_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(cloud_record.sync_status, CloudSyncStatus::DeleteFailed);
+    assert_eq!(
+        cloud_record.last_error_code.as_deref(),
+        Some("network_unavailable")
+    );
+
+    service_for_device(&device_a, cloud)
+        .delete_snapshot_everywhere("snap_1")
+        .expect("网络恢复后应可幂等重试删除");
+    assert!(device_a.repo.get_snapshot("snap_1").unwrap().is_none());
+    assert!(device_a
+        .repo
+        .get_cloud_snapshot("account_1", "snap_1")
+        .unwrap()
+        .is_none());
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

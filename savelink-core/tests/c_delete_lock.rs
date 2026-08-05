@@ -62,6 +62,11 @@ fn c3_delete_failure_rolls_back_no_dangling() {
     assert!(res.is_err(), "C3: 删文件失败应报错");
     assert!(h.repo.get_snapshot(&snap.id).unwrap().is_some(),
         "C3: 删文件失败时记录应保留（避免有记录无文件的反向悬挂）");
+    assert_eq!(
+        h.repo.get_snapshot(&snap.id).unwrap().unwrap().status,
+        savelink_core::model::SnapshotStatus::Complete,
+        "C3: 可恢复失败不应把快照永久留在 Deleting"
+    );
 }
 
 #[test]

@@ -310,13 +310,19 @@ textarea.input { resize: vertical; min-height: 60px; }
   padding: 10px 12px; }
 
 /* 设置 */
-.settings-list { display: flex; flex-direction: column; gap: 16px; }
-.settings-row { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 12px; align-items: start; }
-.settings-label { color: var(--color-text-3); font-size: 12.5px; font-weight: 600; padding-top: 9px; }
-.settings-value { color: var(--color-text); font-size: 13.5px; padding-top: 8px; }
-.settings-path-line { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
-.settings-path-line .target-box { overflow-wrap: anywhere; line-height: 1.45; }
-.settings-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.settings-body { min-height: 92px; }
+.settings-loading { min-height: 60px; display: flex; align-items: center; justify-content: center; color: var(--color-text-3); }
+.setting-control-row { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.setting-control-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.setting-control-copy strong { font-size: 14px; }
+.setting-control-copy span { color: var(--color-text-3); font-size: 12.5px; }
+.switch { width: 40px; height: 22px; flex: none; padding: 2px; border: 0; border-radius: 11px;
+  background: #c8cdd4; transition: background var(--duration); }
+.switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.22); transition: transform var(--duration); }
+.switch.on { background: var(--color-accent); }
+.switch.on span { transform: translateX(18px); }
+.switch:disabled { opacity: 0.6; cursor: wait; }
 
 /* 恢复进度步骤 */
 .steps { display: flex; flex-direction: column; gap: 12px; }

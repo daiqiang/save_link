@@ -32,6 +32,10 @@ pub enum CloudSyncStatus {
     Downloaded,
     Ignored,
     Error,
+    DeletePending,
+    Deleting,
+    DeleteFailed,
+    RemoteDeleted,
 }
 
 impl CloudSyncStatus {
@@ -44,6 +48,10 @@ impl CloudSyncStatus {
             Self::Downloaded => "downloaded",
             Self::Ignored => "ignored",
             Self::Error => "error",
+            Self::DeletePending => "delete_pending",
+            Self::Deleting => "deleting",
+            Self::DeleteFailed => "delete_failed",
+            Self::RemoteDeleted => "remote_deleted",
         }
     }
 
@@ -55,6 +63,10 @@ impl CloudSyncStatus {
             "downloading" => Self::Downloading,
             "downloaded" => Self::Downloaded,
             "ignored" => Self::Ignored,
+            "delete_pending" => Self::DeletePending,
+            "deleting" => Self::Deleting,
+            "delete_failed" => Self::DeleteFailed,
+            "remote_deleted" => Self::RemoteDeleted,
             _ => Self::Error,
         }
     }

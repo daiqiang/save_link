@@ -38,12 +38,14 @@ fn status_to_str(s: SnapshotStatus) -> &'static str {
         SnapshotStatus::Writing => "writing",
         SnapshotStatus::Complete => "complete",
         SnapshotStatus::Corrupt => "corrupt",
+        SnapshotStatus::Deleting => "deleting",
     }
 }
 fn status_from_str(s: &str) -> SnapshotStatus {
     match s {
         "writing" => SnapshotStatus::Writing,
         "corrupt" => SnapshotStatus::Corrupt,
+        "deleting" => SnapshotStatus::Deleting,
         _ => SnapshotStatus::Complete,
     }
 }
@@ -134,7 +136,8 @@ impl SqliteRepo {
                 sync_status TEXT NOT NULL CHECK (
                     sync_status IN (
                         'uploading', 'uploaded', 'remote_only', 'downloading',
-                        'downloaded', 'ignored', 'error'
+                        'downloaded', 'ignored', 'error', 'delete_pending',
+                        'deleting', 'delete_failed', 'remote_deleted'
                     )
                 ),
                 last_synced_at TEXT,
@@ -143,6 +146,69 @@ impl SqliteRepo {
              );
              CREATE INDEX IF NOT EXISTS idx_cloud_snapshot_game
                 ON cloud_snapshot_sync(account_id, cloud_game_id, created_at DESC);",
+        )
+        .map_err(map_err)?;
+        Self::migrate_cloud_snapshot_sync_status(conn)
+    }
+
+    /// v0.1.0 的云同步表带有枚举 CHECK，新增删除生命周期状态时必须重建表。
+    fn migrate_cloud_snapshot_sync_status(conn: &Connection) -> Result<()> {
+        let table_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cloud_snapshot_sync'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(map_err)?;
+        if table_sql.contains("'delete_pending'") {
+            return Ok(());
+        }
+
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             ALTER TABLE cloud_snapshot_sync RENAME TO cloud_snapshot_sync_v010;
+             CREATE TABLE cloud_snapshot_sync (
+                account_id TEXT NOT NULL,
+                cloud_game_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                note TEXT,
+                locked INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL,
+                total_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                archive_size INTEGER NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                published_at TEXT NOT NULL,
+                created_by_device_id TEXT NOT NULL,
+                sync_status TEXT NOT NULL CHECK (
+                    sync_status IN (
+                        'uploading', 'uploaded', 'remote_only', 'downloading',
+                        'downloaded', 'ignored', 'error', 'delete_pending',
+                        'deleting', 'delete_failed', 'remote_deleted'
+                    )
+                ),
+                last_synced_at TEXT,
+                last_error_code TEXT,
+                PRIMARY KEY (account_id, snapshot_id)
+             );
+             INSERT INTO cloud_snapshot_sync (
+                account_id, cloud_game_id, snapshot_id, created_at, reason, note,
+                locked, file_count, total_size, content_hash, archive_size,
+                archive_sha256, published_at, created_by_device_id, sync_status,
+                last_synced_at, last_error_code
+             )
+             SELECT
+                account_id, cloud_game_id, snapshot_id, created_at, reason, note,
+                locked, file_count, total_size, content_hash, archive_size,
+                archive_sha256, published_at, created_by_device_id, sync_status,
+                last_synced_at, last_error_code
+             FROM cloud_snapshot_sync_v010;
+             DROP TABLE cloud_snapshot_sync_v010;
+             CREATE INDEX idx_cloud_snapshot_game
+                ON cloud_snapshot_sync(account_id, cloud_game_id, created_at DESC);
+             COMMIT;",
         )
         .map_err(map_err)
     }
@@ -404,6 +470,18 @@ impl Repository for SqliteRepo {
         let mut out = Vec::new();
         for r in rows {
             out.push(r.map_err(map_err)?);
+        }
+        Ok(out)
+    }
+
+    fn list_deleting(&self) -> Result<Vec<Snapshot>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!("SELECT {SNAP_COLS} FROM snapshots WHERE status = 'deleting'");
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+        let rows = stmt.query_map([], row_to_snapshot).map_err(map_err)?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(map_err)?);
         }
         Ok(out)
     }
@@ -721,6 +799,16 @@ impl CloudStateRepository for SqliteRepo {
                 "云端快照状态不存在: {account_id}/{snapshot_id}"
             )));
         }
+        Ok(())
+    }
+
+    fn delete_cloud_snapshot(&self, account_id: &str, snapshot_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM cloud_snapshot_sync WHERE account_id = ?1 AND snapshot_id = ?2",
+            params![account_id, snapshot_id],
+        )
+        .map_err(map_err)?;
         Ok(())
     }
 }

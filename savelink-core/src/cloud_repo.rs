@@ -43,4 +43,5 @@ pub trait CloudStateRepository: Send + Sync {
         last_synced_at: Option<&str>,
         last_error_code: Option<&str>,
     ) -> Result<()>;
+    fn delete_cloud_snapshot(&self, account_id: &str, snapshot_id: &str) -> Result<()>;
 }

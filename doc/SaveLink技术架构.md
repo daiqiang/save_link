@@ -14,11 +14,11 @@
 | 1.7 | 代强 | 2026-07-16 | 同步百度真实双设备上传、接收、目录绑定和安全恢复完整闭环 |
 | 1.8 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点并强化失败回滚；同步设置入口、自定义图标状态和 68 个默认测试 |
 | 1.9 | 代强 | 2026-07-29 | 补充 doc 文档目录；同步中文文档名和引用 |
-| 1.10 | 代强 | 2026-08-05 | 同步 v0.1.0 发布状态、绿色版 ZIP 产物和发布后 Token 安全项 |
+| 1.10 | 代强 | 2026-08-05 | 同步 v0.1.0 发布；补充 v0.2.0 自动调度、自动上云、云删除状态迁移及 30 条联合清理架构 |
 
 ## 文档用途
 
-本文档描述 SaveLink v0.1.0 的真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
+本文档描述 SaveLink v0.1.0 及正在开发的 v0.2.0 真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
 
 配套文档：
 
@@ -48,7 +48,7 @@ save_link/
 - 创建快照、备注、锁定、删除快照。
 - 恢复快照，当前已等于目标时跳过；其余情况直接恢复，不自动创建快照。
 - 存档目录缺失时支持“创建目录并恢复”。
-- 首页展示当前版本；设置齿轮目前为占位提示，旧设置组件和 AppData 路径命令保留但不向用户开放。
+- 首页展示当前版本；设置齿轮打开全局自动备份开关，AppData 路径命令保留但当前设置页不展示。
 - SaveLink 云链 V9 已接入网页、窗口、任务栏、托盘和安装包图标。
 - Windows 绿色版 exe、绿色版 ZIP/SHA-256、NSIS、MSI 打包。
 - 百度 OAuth、本机 Token 持久化与过期前自动刷新。
@@ -56,13 +56,15 @@ save_link/
 - 顶栏云端存档窗口可发现并下载真实百度快照；接收成功后创建未绑定的本机游戏。
 - 未绑定本机存档目录时禁止创建快照和恢复，下载与恢复保持为两个独立动作。
 - 独立绑定弹窗复用 `scan_path` 做只读检测，扫描成功后复用 `update_game` 保存路径；绑定本身不触发快照、恢复或上传。
+- v0.2.0 启动立即检查、10 分钟轮询、自动快照上云和 30 条未锁定记录联合清理已接入，待绿色版实机与真实百度故障验收。
 
 当前验证状态：
 
-- `savelink-core`：68 个默认测试全绿，其中 B 组 14 个保护直接恢复、无自动快照、最终校验失败回滚和历史数据兼容，G/H/I/K 组 27 个保护云同步基础设施、Fake 双设备闭环、百度 HTTP 契约、OAuth 和 Token 刷新；J/L 两个真实百度测试均已按需执行通过。
+- `savelink-core`：75 个默认测试全绿，其中 B 组 14 个保护直接恢复、无恢复前自动快照、最终校验失败回滚和历史数据兼容；G/H/M 组新增保护旧库迁移、联合删除失败重试、自动检查和保留候选。J/L 两个真实百度测试均已按需执行通过。
+- Tauri：自动上传状态选择测试 2 个全绿。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
-- 旧设置对话框的“打开”目录代码路径曾通过绿色版实机验证；当前齿轮入口已隐藏该对话框。
+- 旧设置对话框的“打开”目录代码路径曾通过绿色版实机验证；当前齿轮入口展示新的自动备份设置页。
 - 设备 B 已完成云端接收、绑定假存档目录和手动安全恢复；恢复文件与仓库目标快照 SHA-256 一致。
 
 ## 第一性原则
@@ -326,14 +328,14 @@ pub trait SnapshotStore: Send + Sync {
 
 - `cloud_model.rs`：云账号、游戏绑定、远端 `.ok` 缓存和同步状态模型。
 - `cloud_repo.rs`：独立 `CloudStateRepository`，不污染现有本地 `Repository` 契约。
-- `SqliteRepo`：新增 `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync`，旧数据库打开时自动补表。
+- `SqliteRepo`：包含 `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync`；旧数据库打开时自动补表，并在事务中无损升级云删除状态 CHECK 约束。
 - `cloud_store.rs`：通用 `CloudObjectStore`、上传覆盖策略、云端条目模型和文件系统 `FakeCloudObjectStore`。
 - `baidu_store.rs`：正式 `BaiduNetdiskStore`、逻辑/物理路径映射、Token 提供者边界、流式单步上传、分页列表、filemetas/dlink 下载、幂等删除和百度错误分类。
-- G 组 7 个测试：持久化、状态转换、目录排序、ignored 保留、CreateOnly/Overwrite、路径穿越防护和旧库补表。
+- G 组 8 个测试：持久化、状态转换、目录排序、ignored 保留、CreateOnly/Overwrite、路径穿越防护、旧库补表和 v0.1.0 状态约束迁移。
 - `cloud_protocol.rs`：manifest、game、云端 `.ok` JSON 和逻辑路径的序列化、解析与严格校验。
 - `cloud_archive.rs`：单快照 zip、SHA-256、路径安全、防 zip slip 和解压后内容指纹校验。
-- `cloud_service.rs`：上传、发现、下载、冲突、幂等和接收落地编排。
-- H 组 8 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配和硬冲突。
+- `cloud_service.rs`：上传、发现、下载、冲突、幂等、接收落地和“云端优先、本地最后”的联合删除编排。
+- H 组 10 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配、硬冲突，以及联合删除成功/失败重试。
 - 百度适配器内部单元测试 2 个，I 组本地 HTTP 契约测试 4 个；J 组真实百度对象存取冒烟默认忽略，2026-07-15 已使用环境变量注入 Token 执行通过。
 - `baidu_oauth.rs`：OAuth URL、授权码换 Token、刷新方法、随机 `state`、本机回调监听和 Token 文件仓库；K 组 8 个测试保护。
 - L 组真实百度设备 B 测试默认忽略，保护只读发现不创建游戏、下载后双重校验、接收落地及设备路径隔离；2026-07-16 已按需执行通过。
@@ -359,7 +361,36 @@ OAuth、凭据持久化、自动刷新、真实上云和设备 B 发现/下载/�
 - 快照校验信息。
 - 发布快照时的备注和锁定状态。
 
-v1 上传后的备注/锁定修改只保存在本机，云端删除和删除墓碑后置。
+v1 上传后的备注/锁定修改只保存在本机。v0.2.0 保留策略直接删除不可变快照对象，不引入墓碑文件：先删除远端 `.ok` 撤销发布，再幂等删除 `.zip`。云端删除失败时保留本地快照，并在 `cloud_snapshot_sync.sync_status` 写入 `delete_failed`。
+
+## v0.2.0 自动备份与联合清理
+
+桌面层新增 `auto_backup.rs`，职责是全局设置、启动即时检查、10 分钟调度、待上传自动快照重试和保留策略编排。核心层新增 `AutoBackupService`，只负责一次全游戏检查和计算超过 30 条的未锁定候选，不直接感知 Tauri 或百度网盘。
+
+自动任务与手动创建、恢复、删除、编辑路径及云端接收共享 `snapshot_operation_lock`，防止后台扫描和用户写操作同时修改同一快照状态。云任务另使用 `baidu_sync_in_progress`，避免手动上传/下载与后台上传并发执行。
+
+自动上传只处理 `reason=auto` 且状态为完整的快照。这样升级 v0.2.0 后不会把用户历史手动本地快照静默批量上传。未授权时后台不发起 OAuth；`uploading` 或 `error` 的自动快照在后续周期重试。
+
+每个游戏的手动、自动、云端接收未锁定快照统一计入 30 条。锁定快照不计入且数量不限。删除状态分层如下：
+
+- `snapshots.status`：`writing / complete / corrupt / deleting`，只描述本机物理生命周期。
+- `cloud_snapshot_sync.sync_status`：原上传/下载状态之外，增加 `delete_pending / deleting / delete_failed / remote_deleted`。
+
+联合清理顺序：
+
+```text
+delete_pending
+-> deleting
+-> 删除云端 .ok
+-> 删除云端 .zip
+-> remote_deleted
+-> snapshots.status=deleting
+-> 删除本机快照文件
+-> 删除 snapshots 记录
+-> 删除 cloud_snapshot_sync 缓存记录
+```
+
+云删除失败时不得进入本地删除。显式本地删除失败会恢复快照原状态；进程在本地删除中断时留下 `snapshots.status=deleting`，下次启动由 `startup_self_check` 幂等续做。
 
 本机私有数据不应被云端覆盖：
 
@@ -374,14 +405,16 @@ v1 上传后的备注/锁定修改只保存在本机，云端删除和删除墓�
 
 ## 设置组件与 Tauri 权限
 
-`SettingsDialog` 及其 `get_app_info` 命令仍保留，但当前齿轮入口只显示占位提示，不渲染该组件。组件通过 `get_app_info` 获取：
+当前齿轮入口渲染 `SettingsDialog`，通过 `get_auto_backup_settings` / `set_auto_backup_enabled` 读取和修改全局自动备份开关。默认值由 Tauri 初始化时写入 `app_settings.auto_backup_enabled=true`，设置页同时展示固定的 10 分钟检查间隔。
+
+旧 `get_app_info` 命令仍保留，可返回：
 
 - version
 - data_dir
 - repository_dir
 - database_path
 
-路径复制使用浏览器 Clipboard API。路径打开使用 `@tauri-apps/plugin-opener` 的 `openPath()`。
+内部路径当前不在设置页展示。若以后重新开放，路径复制使用浏览器 Clipboard API，路径打开使用 `@tauri-apps/plugin-opener` 的 `openPath()`。
 
 Tauri 2 capability 需要：
 
@@ -403,7 +436,7 @@ Tauri 2 capability 需要：
 - 多存档目录尚未完成；模型支持数组，但 UI/恢复按第一个目录运行。
 - 真实恢复进度事件未接入前端；当前 Tauri 命令传空 progress 回调。
 - `startup_self_check` 已在 Tauri setup 中显式调用；真实窗口残留清理场景可在正式回归时补验收。
-- 设置和帮助入口仍是占位；旧 `SettingsDialog` 代码保留但不向用户开放。
+- 设置入口已提供自动备份开关；帮助入口仍是占位。
 - 百度首次授权、过期前自动刷新和授权失效后重新连接已实现；解绑和凭据加密尚未接入。
 - 真实百度上传、发现、下载、接收、独立目录绑定和绑定后的安全恢复均已通过设备 B 实机验收。
 - 百度适配器当前只实现不超过 2 GiB 的单步上传；断点续传和分片上传后置。

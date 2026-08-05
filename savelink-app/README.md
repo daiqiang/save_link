@@ -8,7 +8,7 @@
 | 1.1 | 代强 | 2026-07-23 | 根据真实用户反馈，将快照上传按钮改为图标加文字并明确各状态 |
 | 1.2 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点；同步首页版本号、设置占位入口和自定义应用图标状态 |
 | 1.3 | 代强 | 2026-07-29 | 同步 doc 目录及中文文档名引用 |
-| 1.4 | 代强 | 2026-08-05 | 同步 v0.1.0 发布、绿色版 ZIP 打包入口和双仓库信息 |
+| 1.4 | 代强 | 2026-08-05 | 同步 v0.1.0 发布；补充 v0.2.0 自动备份设置、后台调度、自动上云和 30 条联合清理 |
 
 SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
 
@@ -21,7 +21,7 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - 存档目录缺失时支持“创建目录并恢复”或取消。
 - 编辑游戏名称和存档路径。
 - 移除游戏（删除 SaveLink 内部记录与仓库快照，不删除真实存档目录）。
-- 首页标题旁显示当前版本；齿轮入口目前只显示设置功能占位提示，旧设置对话框代码保留但不向用户开放。
+- 首页标题旁显示当前版本；齿轮入口打开设置页，第一个正式设置项是默认开启的全局自动备份开关。
 - SaveLink 云链 V9 已用于网页 favicon、窗口、任务栏、托盘和安装包图标。
 - 快照可通过带云图标和文字的 `上传` 按钮手动保存到百度网盘；按钮会显示 `上传中`、`已上云` 或 `重试`，未授权时授权后自动续传。
 - access token 临近过期时自动通过 refresh token 刷新。
@@ -31,6 +31,8 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - `run-device-b-test.bat` 可用独立 AppData 目录启动“设备 B 隔离测试”profile。
 - 可通过 `build-portable.bat` 生成绿色版目录、ZIP 和 SHA-256，通过 `build-installer.bat` 生成绿色 exe、NSIS、MSI。
 - v0.1.0 已发布到 GitHub Releases；GitHub 为主仓库，Gitee 为国内镜像。
+- 启动时立即检查存档变化，之后每 10 分钟检查；自动快照校验成功后立即尝试上传，未授权时后台不会弹浏览器。
+- 每个游戏保留 30 条未锁定记录，所有来源统一计数；锁定记录不限量。淘汰时云端删除成功后才删除本地快照。
 
 ## 结构
 
@@ -56,6 +58,7 @@ savelink-app/
 └── src-tauri/
     ├── src/
     │   ├── lib.rs               Tauri 入口：注册插件、初始化 AppState、注册命令
+    │   ├── auto_backup.rs       全局设置、10 分钟调度、自动上传重试与 30 条清理编排
     │   └── commands.rs          命令层（薄壳）：DTO + AppState + #[tauri::command]
     ├── Cargo.toml               依赖 savelink-core、tauri-plugin-dialog/opener、chrono、rusqlite
     ├── tauri.conf.json          productName=SaveLink，identifier=com.daiq.savelink
@@ -71,6 +74,8 @@ savelink-app/
 list_games
 get_repository_path
 get_app_info
+get_auto_backup_settings
+set_auto_backup_enabled
 get_baidu_connection_status
 connect_baidu
 upload_snapshot_to_baidu
@@ -146,7 +151,7 @@ src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 
 ## 权限注意
 
-保留的 `SettingsDialog` 使用 `@tauri-apps/plugin-opener` 的 `openPath()` 打开数据目录。当前齿轮入口不展示该对话框，但权限仍按最小范围保留，供后续重新设计设置项时复用。
+当前 `SettingsDialog` 展示自动备份开关，不展示内部数据路径。旧路径打开能力仍按最小范围保留，供后续明确需要时复用。
 
 Tauri 2 需要同时满足：
 

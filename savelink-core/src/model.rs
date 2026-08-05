@@ -24,6 +24,8 @@ pub enum SnapshotStatus {
     Writing,
     Complete,
     Corrupt,
+    /// 云端已安全清理，正在删除本机物理快照；启动自检会续做未完成删除。
+    Deleting,
 }
 
 /// 游戏（用户管理存档的基本单位）。

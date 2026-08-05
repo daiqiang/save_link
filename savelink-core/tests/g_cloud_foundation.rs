@@ -348,3 +348,71 @@ fn g7_existing_local_database_gets_cloud_tables_on_open() {
         Some("device_after_upgrade")
     );
 }
+
+#[test]
+fn g8_v010_cloud_status_table_is_migrated_without_losing_records() {
+    let tmp = TempDir::new();
+    let db_path = tmp.path().join("v010-savelink.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cloud_snapshot_sync (
+                account_id TEXT NOT NULL,
+                cloud_game_id TEXT NOT NULL,
+                snapshot_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                note TEXT,
+                locked INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL,
+                total_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                archive_size INTEGER NOT NULL,
+                archive_sha256 TEXT NOT NULL,
+                published_at TEXT NOT NULL,
+                created_by_device_id TEXT NOT NULL,
+                sync_status TEXT NOT NULL CHECK (
+                    sync_status IN (
+                        'uploading', 'uploaded', 'remote_only', 'downloading',
+                        'downloaded', 'ignored', 'error'
+                    )
+                ),
+                last_synced_at TEXT,
+                last_error_code TEXT,
+                PRIMARY KEY (account_id, snapshot_id)
+             );
+             CREATE INDEX idx_cloud_snapshot_game
+                ON cloud_snapshot_sync(account_id, cloud_game_id, created_at DESC);
+             INSERT INTO cloud_snapshot_sync VALUES (
+                'account_1', 'game_1', 'snap_1', '2026-07-14T18:10:00+08:00',
+                'auto', NULL, 0, 1, 7, 'content-hash', 99, 'archive-hash',
+                '2026-07-14T18:11:00+08:00', 'device_a', 'uploaded',
+                '2026-07-14T18:12:00+08:00', NULL
+             );",
+        )
+        .unwrap();
+    }
+
+    let repo = SqliteRepo::open(&db_path).unwrap();
+    let migrated = repo
+        .get_cloud_snapshot("account_1", "snap_1")
+        .unwrap()
+        .expect("旧云同步记录应保留");
+    assert_eq!(migrated.sync_status, CloudSyncStatus::Uploaded);
+
+    repo.update_cloud_snapshot_status(
+        "account_1",
+        "snap_1",
+        CloudSyncStatus::DeletePending,
+        None,
+        None,
+    )
+    .expect("迁移后应允许写入新删除状态");
+    assert_eq!(
+        repo.get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap()
+            .sync_status,
+        CloudSyncStatus::DeletePending
+    );
+}

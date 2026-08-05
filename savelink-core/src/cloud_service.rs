@@ -270,6 +270,83 @@ where
         result
     }
 
+    /// 删除保留策略淘汰的未锁定快照。先撤销云端发布，再删除本机数据。
+    pub fn delete_snapshot_everywhere(&self, snapshot_id: &str) -> CloudSyncResult<()> {
+        let snapshot = self
+            .repo
+            .get_snapshot(snapshot_id)?
+            .ok_or_else(|| CloudSyncError::InvalidState(format!("快照不存在: {snapshot_id}")))?;
+        if snapshot.locked {
+            return Err(SaveLinkError::SnapshotLocked.into());
+        }
+
+        if let Some(cloud) = self
+            .repo
+            .get_cloud_snapshot(&self.account_id, snapshot_id)?
+        {
+            if cloud.sync_status != CloudSyncStatus::RemoteDeleted {
+                self.repo.update_cloud_snapshot_status(
+                    &self.account_id,
+                    snapshot_id,
+                    CloudSyncStatus::DeletePending,
+                    None,
+                    None,
+                )?;
+                self.repo.update_cloud_snapshot_status(
+                    &self.account_id,
+                    snapshot_id,
+                    CloudSyncStatus::Deleting,
+                    None,
+                    None,
+                )?;
+
+                let remote_result = (|| -> CloudSyncResult<()> {
+                    self.cloud_store.delete_file(&snapshot_ok_path(
+                        &cloud.cloud_game_id,
+                        snapshot_id,
+                    )?)?;
+                    self.cloud_store.delete_file(&snapshot_zip_path(
+                        &cloud.cloud_game_id,
+                        snapshot_id,
+                    )?)?;
+                    Ok(())
+                })();
+                if let Err(error) = remote_result {
+                    let _ = self.repo.update_cloud_snapshot_status(
+                        &self.account_id,
+                        snapshot_id,
+                        CloudSyncStatus::DeleteFailed,
+                        None,
+                        Some(error.code()),
+                    );
+                    return Err(error);
+                }
+
+                self.repo.update_cloud_snapshot_status(
+                    &self.account_id,
+                    snapshot_id,
+                    CloudSyncStatus::RemoteDeleted,
+                    Some(&self.now_timestamp()?),
+                    None,
+                )?;
+            }
+        }
+
+        let mut deleting = snapshot;
+        let previous_status = deleting.status;
+        deleting.status = SnapshotStatus::Deleting;
+        self.repo.update_snapshot(deleting.clone())?;
+        if let Err(error) = self.snapshot_store.delete(&deleting.storage_key) {
+            deleting.status = previous_status;
+            let _ = self.repo.update_snapshot(deleting);
+            return Err(error.into());
+        }
+        self.repo.delete_snapshot(snapshot_id)?;
+        self.repo
+            .delete_cloud_snapshot(&self.account_id, snapshot_id)?;
+        Ok(())
+    }
+
     fn upload_snapshot_inner(
         &self,
         game_id: &str,

@@ -1,4 +1,5 @@
 // Tauri 应用入口。命令实现见 commands 模块。
+mod auto_backup;
 mod commands;
 mod desktop;
 mod oauth_config;
@@ -32,6 +33,7 @@ pub fn run() {
             // 清理上次异常中断留下的 Writing 半成品快照，再开放前端命令。
             startup_self_check(&state.repo, &state.store).expect("启动自检失败");
             app.manage(state);
+            auto_backup::start(app.handle().clone());
             Ok(())
         })
         .on_window_event(desktop::handle_window_event)
@@ -39,6 +41,8 @@ pub fn run() {
             commands::list_games,
             commands::get_repository_path,
             commands::get_app_info,
+            commands::get_auto_backup_settings,
+            commands::set_auto_backup_enabled,
             commands::get_baidu_connection_status,
             commands::connect_baidu,
             commands::upload_snapshot_to_baidu,

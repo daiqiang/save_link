@@ -7,6 +7,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
   AppInfo,
+  AutoBackupSettings,
   BaiduConnection,
   CloudUploadResult,
   CloudReceiveResult,
@@ -27,6 +28,14 @@ export async function getRepositoryPath(): Promise<string> {
 
 export async function getAppInfo(): Promise<AppInfo> {
   return invoke<AppInfo>("get_app_info");
+}
+
+export async function getAutoBackupSettings(): Promise<AutoBackupSettings> {
+  return invoke<AutoBackupSettings>("get_auto_backup_settings");
+}
+
+export async function setAutoBackupEnabled(enabled: boolean): Promise<AutoBackupSettings> {
+  return invoke<AutoBackupSettings>("set_auto_backup_enabled", { enabled });
 }
 
 export async function getBaiduConnectionStatus(): Promise<BaiduConnection> {

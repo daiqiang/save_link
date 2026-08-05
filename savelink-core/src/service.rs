@@ -151,17 +151,24 @@ impl SnapshotService {
     ///
     /// 契约（C 组）：
     /// - C1：locked → SnapshotLocked，记录与文件均保留。
-    /// - C3：先删文件再删记录；删文件失败则回滚，不留悬挂（无"有记录无文件"）。
+    /// - C3：先标记 Deleting，再删文件和记录；删文件失败恢复原状态。
+    ///       进程中断留下的 Deleting 由启动自检幂等续做。
     pub fn delete_snapshot(&self, snapshot_id: &str) -> Result<()> {
-        let snap = self
+        let mut snap = self
             .repo
             .get_snapshot(snapshot_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("snapshot not found: {snapshot_id}")))?;
         if snap.locked {
             return Err(SaveLinkError::SnapshotLocked); // C1
         }
-        // C3：先删文件，失败则不动记录（避免有记录无文件的反向悬挂）。
-        self.store.delete(&snap.storage_key)?;
+        let previous_status = snap.status;
+        snap.status = SnapshotStatus::Deleting;
+        self.repo.update_snapshot(snap.clone())?;
+        if let Err(error) = self.store.delete(&snap.storage_key) {
+            snap.status = previous_status;
+            let _ = self.repo.update_snapshot(snap);
+            return Err(error);
+        }
         self.repo.delete_snapshot(snapshot_id)?;
         Ok(())
     }
@@ -181,6 +188,88 @@ impl SnapshotService {
         }
         self.repo.delete_game(game_id)?;
         Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AutoBackupFailure {
+    pub game_id: String,
+    pub error: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct AutoBackupReport {
+    pub checked_game_ids: Vec<String>,
+    pub created_snapshots: Vec<Snapshot>,
+    pub unchanged_game_ids: Vec<String>,
+    pub skipped_game_ids: Vec<String>,
+    pub failures: Vec<AutoBackupFailure>,
+}
+
+/// 单次自动备份检查。调度间隔和全局开关属于桌面壳职责，核心层只处理一次检查。
+pub struct AutoBackupService {
+    snapshots: SnapshotService,
+}
+
+impl AutoBackupService {
+    pub fn new(snapshots: SnapshotService) -> Self {
+        Self { snapshots }
+    }
+
+    /// 检查所有游戏；单个游戏失败不会阻断其他游戏。
+    pub fn run_once(&self) -> Result<AutoBackupReport> {
+        let games = self.snapshots.repo.list_games()?;
+        let mut report = AutoBackupReport::default();
+
+        for game in games {
+            if game.save_paths.is_empty() {
+                report.skipped_game_ids.push(game.id);
+                continue;
+            }
+
+            report.checked_game_ids.push(game.id.clone());
+            match self.snapshots.create_snapshot(
+                &game.id,
+                None,
+                crate::model::Reason::Auto,
+            ) {
+                Ok(CreateOutcome::Created(snapshot)) => {
+                    report.created_snapshots.push(snapshot);
+                }
+                Ok(CreateOutcome::NoChange) => {
+                    report.unchanged_game_ids.push(game.id);
+                }
+                Err(error) => report.failures.push(AutoBackupFailure {
+                    game_id: game.id,
+                    error: error.to_string(),
+                }),
+            }
+        }
+
+        Ok(report)
+    }
+
+    /// 返回超过上限、需要进入“先删云端，再删本地”流程的快照。
+    ///
+    /// 这里故意不执行删除：生产删除必须由云端感知的保留策略协调器完成。
+    /// 所有来源的完整未锁定快照都计入上限，锁定快照永远不计入。
+    pub fn unlocked_retention_candidates(
+        &self,
+        game_id: &str,
+        max_unlocked: usize,
+    ) -> Result<Vec<Snapshot>> {
+        let mut candidates: Vec<Snapshot> = self
+            .snapshots
+            .repo
+            .list_snapshots(game_id)?
+            .into_iter()
+            .filter(|snapshot| {
+                !snapshot.locked && snapshot.status == SnapshotStatus::Complete
+            })
+            .skip(max_unlocked)
+            .collect();
+        candidates.reverse();
+        Ok(candidates)
     }
 }
 
@@ -391,6 +480,12 @@ pub fn startup_self_check(
     for dangling in repo.list_writing()? {
         let _ = store.delete(&dangling.storage_key); // 半成品文件可能不存在，忽略错误
         repo.delete_snapshot(&dangling.id)?;
+    }
+    // 云端已删除但本机删除中断时，幂等续做本地物理删除。
+    for deleting in repo.list_deleting()? {
+        if store.delete(&deleting.storage_key).is_ok() {
+            repo.delete_snapshot(&deleting.id)?;
+        }
     }
     Ok(())
 }
