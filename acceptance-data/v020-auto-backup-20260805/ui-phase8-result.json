@@ -1,0 +1,8 @@
+{
+  "phase": "R-02-retention-30-unlocked",
+  "passed": true,
+  "observations": [
+    "constructed 32 snapshots from initial count 6",
+    "retention kept 30 unlocked plus one locked snapshot"
+  ]
+}

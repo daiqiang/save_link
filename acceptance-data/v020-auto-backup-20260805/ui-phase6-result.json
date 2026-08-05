@@ -1,0 +1,10 @@
+{
+  "phase": "U-09-G-01-G-02-lock-deduplicate-restore",
+  "passed": true,
+  "observations": [
+    "manual no-change action created no duplicate",
+    "locked visual state and delete protection visible",
+    "oldest snapshot restored by replacement with no automatic pre-restore snapshot",
+    "unconnected local snapshot remained fully restorable"
+  ]
+}

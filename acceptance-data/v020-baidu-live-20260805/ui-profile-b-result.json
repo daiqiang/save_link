@@ -1,0 +1,8 @@
+{
+  "phase": "C-01-profile-b-discover-download-restore",
+  "passed": true,
+  "observations": [
+    "fresh profile discovered and downloaded the uploaded snapshot",
+    "downloaded snapshot restored to an empty bound directory with identical file hashes"
+  ]
+}

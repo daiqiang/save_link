@@ -1,0 +1,8 @@
+{
+  "phase": "U-06-disabled-period",
+  "passed": true,
+  "observations": [
+    "full disabled period created no automatic snapshot",
+    "manual snapshot remained available while automatic backup was disabled"
+  ]
+}

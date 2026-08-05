@@ -1,0 +1,10 @@
+{
+  "phase": "C-04-retention-delete-manual-cloud-snapshot",
+  "passed": true,
+  "deletedSnapshotId": "snap_1785936338554505200_1",
+  "survivingSnapshotId": "snap_1785936680866133900_0",
+  "observations": [
+    "constructed 29 unique manual snapshots; total reached 31",
+    "enabling auto backup pruned the oldest unlocked snapshot; total returned to 30"
+  ]
+}

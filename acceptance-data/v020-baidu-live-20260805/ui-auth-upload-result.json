@@ -1,0 +1,7 @@
+{
+  "phase": "C-01-oauth-manual-upload",
+  "passed": true,
+  "observations": [
+    "OAuth callback completed and the manual snapshot reached uploaded state"
+  ]
+}

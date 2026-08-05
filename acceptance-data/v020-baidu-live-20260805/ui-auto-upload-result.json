@@ -1,0 +1,7 @@
+{
+  "phase": "C-01-real-auto-upload",
+  "passed": true,
+  "observations": [
+    "content change created one auto snapshot and uploaded it without opening OAuth"
+  ]
+}

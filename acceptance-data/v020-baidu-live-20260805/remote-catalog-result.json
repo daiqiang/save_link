@@ -1,0 +1,29 @@
+{
+  "passed": true,
+  "game_id": "game_1785936338508951200_0",
+  "remote_dir": "/apps/savelink/v1/games/game_1785936338508951200_0/snapshots",
+  "verified": [
+    {
+      "snapshot_id": "snap_1785936338554505200_1",
+      "reason": "manual",
+      "file_count": 2,
+      "total_size": 46,
+      "zip_size": 272,
+      "zip_sha256": "52970c10aec3cb66cdf0b2b1f2fa9dc24eee0f6eb22879790648da2adec6fb10"
+    },
+    {
+      "snapshot_id": "snap_1785936680866133900_0",
+      "reason": "auto",
+      "file_count": 3,
+      "total_size": 65,
+      "zip_size": 397,
+      "zip_sha256": "19437db2fa653552e939946a108ccfa185be293fd39db40865dd2970d20b539b"
+    }
+  ],
+  "remote_names": [
+    "snap_1785936338554505200_1.ok",
+    "snap_1785936338554505200_1.zip",
+    "snap_1785936680866133900_0.ok",
+    "snap_1785936680866133900_0.zip"
+  ]
+}

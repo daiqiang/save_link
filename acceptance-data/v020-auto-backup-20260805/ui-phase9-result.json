@@ -1,0 +1,8 @@
+{
+  "phase": "R-03-G-03-U-09-restart-persistence",
+  "passed": true,
+  "observations": [
+    "edited name, 30+1 retention and lock state survived restart",
+    "unchanged startup check left retention set stable"
+  ]
+}

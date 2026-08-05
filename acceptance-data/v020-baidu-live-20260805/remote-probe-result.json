@@ -1,0 +1,20 @@
+{
+  "passed": true,
+  "game_id": "game_1785936338508951200_0",
+  "game_name": "SaveLink百度实测-20260805",
+  "snapshot_id": "snap_1785936338554505200_1",
+  "remote_dir": "/apps/savelink/v1/games/game_1785936338508951200_0/snapshots",
+  "remote_names": [
+    "snap_1785936338554505200_1.ok",
+    "snap_1785936338554505200_1.zip"
+  ],
+  "zip_size": 272,
+  "zip_sha256": "52970c10aec3cb66cdf0b2b1f2fa9dc24eee0f6eb22879790648da2adec6fb10",
+  "ok_size": 763,
+  "archive_files": [
+    "cloud-test.sav",
+    "config.ini"
+  ],
+  "file_count": 2,
+  "uncompressed_size": 46
+}

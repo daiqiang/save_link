@@ -1,0 +1,266 @@
+﻿[
+    {
+        "Path":  "\\cloud-work\\metadata\\game-game_1785337459862032900_0.json",
+        "Length":  333,
+        "LastWriteTimeUtc":  "2026-07-29T16:51:37.5253499Z",
+        "Sha256":  "DC34045E8223C55D5D0B11405E9D11F84C450396808EB76279A2BF4571F588D4"
+    },
+    {
+        "Path":  "\\credentials\\baidu-oauth.json",
+        "Length":  393,
+        "LastWriteTimeUtc":  "2026-07-29T16:51:23.7153264Z",
+        "Sha256":  "CB62AD539687142FCE7854B22ACA9065987738D7F347CE3758A657284FCEF0BB"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637303582753900_1.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T09:01:43.5899298Z",
+        "Sha256":  "019898F924533581274F0A7E83C0709A216247829D45EAA3C756360175B4DFCC"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637303582753900_1\\config.ini",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9341289Z",
+        "Sha256":  "3D2B074EC2868CC27EA971B08ECBE03EF24330E69DBEA82F1279072434789D72"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637303582753900_1\\slot1.sav",
+        "Length":  33,
+        "LastWriteTimeUtc":  "2026-06-28T09:38:18.0392283Z",
+        "Sha256":  "3071EB7ECD48F40E6A2E8AAFD5F6CDF720DB99383CFF85657AF0ADACCD343BD3"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637303582753900_1\\slot2.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9184360Z",
+        "Sha256":  "B7DBB5159F0CB463076A51A242BE91AF69C3316A590ABB119D3CA255B29AE9C6"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637374567757800_2.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T09:02:54.5775446Z",
+        "Sha256":  "83BF93E0242A69F2BDF5493C4ED0D8EAEFE5AC9FDD1F56B31CAE9A9FC758FE52"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637374567757800_2\\config.ini",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9341289Z",
+        "Sha256":  "3D2B074EC2868CC27EA971B08ECBE03EF24330E69DBEA82F1279072434789D72"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637374567757800_2\\slot1.sav",
+        "Length":  20,
+        "LastWriteTimeUtc":  "2026-06-28T09:02:42.5894416Z",
+        "Sha256":  "60C90ADDFCF1A764DF154B1EB537E1B3CAC16682A7878AD81ABCEE91087BE6FF"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782637374567757800_2\\slot2.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9184360Z",
+        "Sha256":  "B7DBB5159F0CB463076A51A242BE91AF69C3316A590ABB119D3CA255B29AE9C6"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638922531537400_0.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T09:28:42.5399535Z",
+        "Sha256":  "223BC5FF89F5555F873B8F98D8DAE1D4CA8D6802E0AA6B5701C26DD0FF9CAEDC"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638922531537400_0\\config.ini",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9341289Z",
+        "Sha256":  "3D2B074EC2868CC27EA971B08ECBE03EF24330E69DBEA82F1279072434789D72"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638922531537400_0\\extra.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T09:27:20.6109865Z",
+        "Sha256":  "888DC1297E43DFC287F91BAC2EE81DCFEF9DAAE64EF468CA3B23D1550734EE91"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638922531537400_0\\slot1.sav",
+        "Length":  20,
+        "LastWriteTimeUtc":  "2026-06-28T09:02:42.5894416Z",
+        "Sha256":  "60C90ADDFCF1A764DF154B1EB537E1B3CAC16682A7878AD81ABCEE91087BE6FF"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638922531537400_0\\slot2.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9184360Z",
+        "Sha256":  "B7DBB5159F0CB463076A51A242BE91AF69C3316A590ABB119D3CA255B29AE9C6"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638972212953100_1.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T09:29:32.2204626Z",
+        "Sha256":  "223BC5FF89F5555F873B8F98D8DAE1D4CA8D6802E0AA6B5701C26DD0FF9CAEDC"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638972212953100_1\\config.ini",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9341289Z",
+        "Sha256":  "3D2B074EC2868CC27EA971B08ECBE03EF24330E69DBEA82F1279072434789D72"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638972212953100_1\\extra.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T09:27:20.6109865Z",
+        "Sha256":  "888DC1297E43DFC287F91BAC2EE81DCFEF9DAAE64EF468CA3B23D1550734EE91"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638972212953100_1\\slot1.sav",
+        "Length":  20,
+        "LastWriteTimeUtc":  "2026-06-28T09:02:42.5894416Z",
+        "Sha256":  "60C90ADDFCF1A764DF154B1EB537E1B3CAC16682A7878AD81ABCEE91087BE6FF"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782638972212953100_1\\slot2.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9184360Z",
+        "Sha256":  "B7DBB5159F0CB463076A51A242BE91AF69C3316A590ABB119D3CA255B29AE9C6"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1782648147672031200_0.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T12:02:27.6769400Z",
+        "Sha256":  "1FB8BC9E2324AE96D4E35FF5C298DEE8C8B787AA37F392AE8F13CF7E581FD442"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1784724769793320200_2.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-07-23T08:47:52.6250847Z",
+        "Sha256":  "E2F0B1E0FB2D114920D0DD389A8BB0EF95DF75D9E4624A93090D79AAC31E917D"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1784724769793320200_2\\1.txt",
+        "Length":  12,
+        "LastWriteTimeUtc":  "2026-07-23T08:47:51.1549758Z",
+        "Sha256":  "F1EA00CAC8082A41720141012D198E2B77A0DFE2BA023E9C3499B7A68008D491"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1784797855619106000_0.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-07-23T09:10:55.6256577Z",
+        "Sha256":  "223BC5FF89F5555F873B8F98D8DAE1D4CA8D6802E0AA6B5701C26DD0FF9CAEDC"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1784797855619106000_0\\config.ini",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9341289Z",
+        "Sha256":  "3D2B074EC2868CC27EA971B08ECBE03EF24330E69DBEA82F1279072434789D72"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1784797855619106000_0\\extra.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T09:27:20.6109865Z",
+        "Sha256":  "888DC1297E43DFC287F91BAC2EE81DCFEF9DAAE64EF468CA3B23D1550734EE91"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1784797855619106000_0\\slot1.sav",
+        "Length":  20,
+        "LastWriteTimeUtc":  "2026-06-28T09:02:42.5894416Z",
+        "Sha256":  "60C90ADDFCF1A764DF154B1EB537E1B3CAC16682A7878AD81ABCEE91087BE6FF"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1784797855619106000_0\\slot2.sav",
+        "Length":  17,
+        "LastWriteTimeUtc":  "2026-06-28T08:55:07.9184360Z",
+        "Sha256":  "B7DBB5159F0CB463076A51A242BE91AF69C3316A590ABB119D3CA255B29AE9C6"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785337520671263800_2.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-07-29T15:05:20.6779408Z",
+        "Sha256":  "B0309E692DC0451359FCA59E57B41390C82F0DAE64AB1E3836AB5EEB4BB28556"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785337520671263800_2\\main1.mm",
+        "Length":  770,
+        "LastWriteTimeUtc":  "2026-07-23T23:40:11.6131241Z",
+        "Sha256":  "9CF5E85D0C1BAA2A96741F9FA9B9C9F92393DD7A6DC2BB0B02777253929279BC"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785337520671263800_2\\main2.mm",
+        "Length":  131,
+        "LastWriteTimeUtc":  "2026-07-21T12:55:11.8569399Z",
+        "Sha256":  "25C5CD8E82EDF9A49C8B2C22C0394296992A1711924965EB443EF909F4F8B218"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785337520671263800_2\\main3.mm",
+        "Length":  1238,
+        "LastWriteTimeUtc":  "2026-07-29T15:03:43.0522331Z",
+        "Sha256":  "E000AC915905328F8A14A52BAAC44C7DB943D3BE0078AEEB21F2BBED9491E2E9"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785337520671263800_2\\main4.mm",
+        "Length":  3559,
+        "LastWriteTimeUtc":  "2026-07-23T23:40:02.6344173Z",
+        "Sha256":  "71AA6652512BD883BAAFB83A3C4A2DF79040BDEA58FA1BF6D74C03D05FF488B2"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785342210743304200_3.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-07-29T16:23:30.7502295Z",
+        "Sha256":  "6682B391F4168D8F738B491D992FDF6B4D936C3C28DD1AA30E5FA43F23C630B3"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785342210743304200_3\\main1.mm",
+        "Length":  770,
+        "LastWriteTimeUtc":  "2026-07-29T16:22:56.6502287Z",
+        "Sha256":  "9CF5E85D0C1BAA2A96741F9FA9B9C9F92393DD7A6DC2BB0B02777253929279BC"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785342210743304200_3\\main2.mm",
+        "Length":  131,
+        "LastWriteTimeUtc":  "2026-07-29T15:08:51.9100662Z",
+        "Sha256":  "90D837D4A54063356C4CE04E4727BFD63FD8D5DA70CCB35F0A31FDC837134B45"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785342210743304200_3\\main3.mm",
+        "Length":  1375,
+        "LastWriteTimeUtc":  "2026-07-29T16:23:08.5095981Z",
+        "Sha256":  "6C660C75D72B8D1F6EB01C29F689E7BD650CF55CBAC8C58401A071FB58AF0950"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785342210743304200_3\\main4.mm",
+        "Length":  3632,
+        "LastWriteTimeUtc":  "2026-07-29T16:22:36.7540187Z",
+        "Sha256":  "6C56C63325B712B7B7F3025FD101374CDE7219CFC47AFE704B7DBDBB8F2E7B64"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785347130449418200_0.ok",
+        "Length":  16,
+        "LastWriteTimeUtc":  "2026-07-29T17:45:30.4572085Z",
+        "Sha256":  "B95A471DBAEF0AD76610F82ED2DDD721037FE8C971C9B5D7D9434B3066F41855"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785347130449418200_0\\main1.mm",
+        "Length":  770,
+        "LastWriteTimeUtc":  "2026-07-29T17:45:12.2834050Z",
+        "Sha256":  "9CF5E85D0C1BAA2A96741F9FA9B9C9F92393DD7A6DC2BB0B02777253929279BC"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785347130449418200_0\\main2.mm",
+        "Length":  131,
+        "LastWriteTimeUtc":  "2026-07-29T15:08:51.9100662Z",
+        "Sha256":  "90D837D4A54063356C4CE04E4727BFD63FD8D5DA70CCB35F0A31FDC837134B45"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785347130449418200_0\\main3.mm",
+        "Length":  1376,
+        "LastWriteTimeUtc":  "2026-07-29T17:45:12.2844019Z",
+        "Sha256":  "9858BDEE6E02E1BF77E9A07B2D6F2481615E14464D02CEDD3BE676350D562C39"
+    },
+    {
+        "Path":  "\\repository\\snapshots\\snap_1785347130449418200_0\\main4.mm",
+        "Length":  3632,
+        "LastWriteTimeUtc":  "2026-07-29T17:45:06.8066442Z",
+        "Sha256":  "6C56C63325B712B7B7F3025FD101374CDE7219CFC47AFE704B7DBDBB8F2E7B64"
+    },
+    {
+        "Path":  "\\savelink.db",
+        "Length":  65536,
+        "LastWriteTimeUtc":  "2026-07-29T17:50:14.9930453Z",
+        "Sha256":  "62E4E79019810B74B0547E11FC45F6CF6D01BF18679AD93D00F6346D9EE49F70"
+    }
+]

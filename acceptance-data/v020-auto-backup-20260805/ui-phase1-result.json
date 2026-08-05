@@ -1,0 +1,9 @@
+{
+  "phase": "U-01-default-and-disable",
+  "passed": true,
+  "observations": [
+    "isolated profile label visible",
+    "default enabled and 10-minute interval visible",
+    "toggle disabled and success toast visible"
+  ]
+}

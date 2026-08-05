@@ -1,0 +1,8 @@
+{
+  "phase": "U-02-U-03-continue",
+  "passed": true,
+  "observations": [
+    "enabling triggered one immediate auto snapshot and timeline refresh",
+    "unchanged immediate recheck created no duplicate"
+  ]
+}

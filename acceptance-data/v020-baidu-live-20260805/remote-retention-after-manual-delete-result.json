@@ -1,0 +1,16 @@
+{
+  "passed": true,
+  "stage": "after-manual-delete",
+  "game_id": "game_1785936338508951200_0",
+  "snapshot_count": 30,
+  "cloud_rows": [
+    [
+      "snap_1785936680866133900_0",
+      "uploaded"
+    ]
+  ],
+  "remote_names": [
+    "snap_1785936680866133900_0.ok",
+    "snap_1785936680866133900_0.zip"
+  ]
+}

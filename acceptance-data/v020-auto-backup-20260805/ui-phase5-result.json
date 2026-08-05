@@ -1,0 +1,9 @@
+{
+  "phase": "U-07-U-08-failure-isolation-no-auth",
+  "passed": true,
+  "observations": [
+    "healthy game created an auto snapshot despite another missing directory",
+    "missing game left no visible snapshot and its path was not recreated",
+    "unconnected profile remained without OAuth token during background backup"
+  ]
+}

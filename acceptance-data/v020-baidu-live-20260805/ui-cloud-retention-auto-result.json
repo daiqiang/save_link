@@ -1,0 +1,10 @@
+{
+  "phase": "C-04-retention-delete-auto-cloud-snapshot",
+  "passed": true,
+  "deletedSnapshotId": "snap_1785936680866133900_0",
+  "observations": [
+    "disabled auto backup and added one unique manual snapshot; total reached 31",
+    "second prune removed the oldest automatic cloud snapshot; total returned to 30",
+    "auto backup disabled after destructive test"
+  ]
+}

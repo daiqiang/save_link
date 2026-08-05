@@ -1,0 +1,8 @@
+{
+  "phase": "U-04-startup-check",
+  "passed": true,
+  "observations": [
+    "modified save was captured immediately after application startup",
+    "no duplicate during short unchanged follow-up"
+  ]
+}
