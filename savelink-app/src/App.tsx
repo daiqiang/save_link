@@ -231,7 +231,7 @@ function SaveLink() {
                       ? "重试"
                       : "上传";
                 return (
-                <div key={s.id} className="snap"
+                <div key={s.id} className={`snap ${s.locked ? "is-locked" : ""}`}
                   onClick={() => setDrawerSnap(s)}>
                   <div className="snap-main">
                     <div className="snap-time">{s.created_at}</div>
