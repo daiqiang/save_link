@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Icon } from "../lib/icons";
-import { formatSize, REASON_LABEL } from "../lib/format";
+import { formatSize, formatTimestamp, REASON_LABEL } from "../lib/format";
 import * as api from "../lib/api";
 import { useToast } from "./Toast";
 import type { Game, Snapshot } from "../lib/types";
@@ -75,7 +75,7 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
         </div>
         <div className="drawer-body">
           <div className="drawer-title">{game.name}</div>
-          <div className="drawer-time">{snapshot.created_at}</div>
+          <div className="drawer-time">{formatTimestamp(snapshot.created_at)}</div>
 
           <div className="field">
             <div className="note-label-row">

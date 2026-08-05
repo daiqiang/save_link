@@ -371,6 +371,10 @@ fn h4_device_a_uploads_and_device_b_discovers_downloads_and_lands_snapshot() {
     );
     let local = device_b.repo.get_snapshot("snap_1").unwrap().unwrap();
     assert_eq!(local.status, SnapshotStatus::Complete);
+    assert_eq!(
+        local.created_at, "2026-07-14T10:10:00Z",
+        "设备 B 落地时应使用统一 UTC 时间"
+    );
     assert!(device_b.store.verify(&local.storage_key).unwrap());
     let landed = device_b.root.join("landed-copy");
     device_b.store.restore(&local.storage_key, &landed).unwrap();
@@ -579,6 +583,37 @@ fn h10_remote_delete_failure_keeps_local_data_and_can_be_retried() {
         .get_cloud_snapshot("account_1", "snap_1")
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn h11_existing_offset_marker_is_idempotent_with_canonical_local_time() {
+    let (tmp, _cloud, _codec, device_a, _) = setup();
+    seed_device_a(&device_a, &[("ER0000.sl2", b"save-v1")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    let marker_path = tmp
+        .path()
+        .join("fake-cloud")
+        .join(snapshot_ok_path("game_1", "snap_1").unwrap());
+    let mut marker = SnapshotCommitDocument::from_json(
+        &fs::read(&marker_path).unwrap(),
+        "game_1",
+        "snap_1",
+    )
+    .unwrap();
+    marker.created_at = "2026-07-14T18:10:00+08:00".into();
+    fs::write(&marker_path, marker.to_json().unwrap()).unwrap();
+
+    assert_eq!(
+        device_a
+            .service
+            .upload_snapshot("game_1", "snap_1")
+            .expect("同一时间点的旧云端标记不得产生 ID 冲突"),
+        UploadOutcome::AlreadyPresent
+    );
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

@@ -39,7 +39,7 @@ pub trait IdGen: Send + Sync {
     fn new_id(&self, prefix: &str) -> String;
 }
 
-/// 测试用：单调递增的假时钟（每次调用 +1 分钟），输出 "2026-06-23 00:00" 形式。
+/// 测试用：单调递增的假时钟（每次调用 +1 分钟），输出固定 UTC RFC 3339。
 pub struct FakeClock {
     minute: Mutex<u32>,
 }
@@ -60,7 +60,7 @@ impl Clock for FakeClock {
         *m += 1;
         let hh = cur / 60;
         let mm = cur % 60;
-        format!("2026-06-23 {hh:02}:{mm:02}")
+        format!("2026-06-23T{hh:02}:{mm:02}:00Z")
     }
 }
 
@@ -141,8 +141,11 @@ impl Repository for InMemoryRepo {
             .filter(|s| s.game_id == game_id)
             .cloned()
             .collect();
-        // created_at 倒序（FakeClock 单调递增，字符串序即时间序）。
-        v.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+        // 同时兼容旧本地时间和 RFC 3339，避免测试替身掩盖生产排序问题。
+        v.sort_by(|a, b| {
+            crate::timestamp::compare_timestamps(&b.created_at, &a.created_at)
+                .then_with(|| b.id.cmp(&a.id))
+        });
         Ok(v)
     }
     fn update_snapshot(&self, snap: Snapshot) -> Result<()> {

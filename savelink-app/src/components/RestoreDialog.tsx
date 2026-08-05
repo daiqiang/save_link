@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Icon } from "../lib/icons";
+import { formatTimestamp } from "../lib/format";
 import * as api from "../lib/api";
 import type { Game, RestoreResult, Snapshot } from "../lib/types";
 
@@ -64,7 +65,7 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
             <div className="modal-body">
               <div className="kv"><span className="k">游戏</span><span className="v">{game.name}</span></div>
               <div className="kv"><span className="k">目标版本</span>
-                <span className="v">{target.created_at} {target.note}</span></div>
+                <span className="v">{formatTimestamp(target.created_at)} {target.note}</span></div>
               <div className="callout warn">
                 <span className="ic"><Icon.Alert /></span>
                 <div>
@@ -112,7 +113,7 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
                 <span className="ic"><Icon.CheckCircle /></span>
                 <div>
                   {result?.restored ? "已恢复到：" : "当前已经是这个版本："}
-                  <strong>{target.created_at} {target.note}</strong>
+                  <strong>{formatTimestamp(target.created_at)} {target.note}</strong>
                 </div>
               </div>
               {!result?.restored && (

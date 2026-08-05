@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Icon } from "../lib/icons";
-import { formatSize, REASON_LABEL } from "../lib/format";
+import { formatSize, formatTimestamp, REASON_LABEL } from "../lib/format";
 import * as api from "../lib/api";
 import type { CloudSnapshot } from "../lib/types";
 import { useToast } from "./Toast";
@@ -119,7 +119,7 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
                     <div className="cloud-snapshot-row" key={snapshot.snapshot_id}>
                       <div className="cloud-snapshot-main">
                         <strong>{snapshot.note || "未命名快照"}</strong>
-                        <span>{snapshot.created_at} · {snapshot.file_count} 个文件 · {formatSize(snapshot.total_size)} · {REASON_LABEL[snapshot.reason]}</span>
+                        <span>{formatTimestamp(snapshot.created_at)} · {snapshot.file_count} 个文件 · {formatSize(snapshot.total_size)} · {REASON_LABEL[snapshot.reason]}</span>
                       </div>
                       {available ? (
                         <span className="cloud-state ok"><Icon.Check /> 已在本机</span>

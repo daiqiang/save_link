@@ -10,6 +10,7 @@ use crate::cloud_repo::CloudStateRepository;
 use crate::error::{Result, SaveLinkError};
 use crate::model::{Game, Reason, Snapshot, SnapshotStatus};
 use crate::repo::Repository;
+use crate::timestamp::normalize_timestamp;
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -148,7 +149,8 @@ impl SqliteRepo {
                 ON cloud_snapshot_sync(account_id, cloud_game_id, created_at DESC);",
         )
         .map_err(map_err)?;
-        Self::migrate_cloud_snapshot_sync_status(conn)
+        Self::migrate_cloud_snapshot_sync_status(conn)?;
+        Self::migrate_snapshot_timestamps(conn)
     }
 
     /// v0.1.0 的云同步表带有枚举 CHECK，新增删除生命周期状态时必须重建表。
@@ -212,6 +214,87 @@ impl SqliteRepo {
         )
         .map_err(map_err)
     }
+
+    /// v0.1.0 本机时间与云端 RFC 3339 曾混存在同一列；统一成固定 UTC 后才能安全排序。
+    fn migrate_snapshot_timestamps(conn: &Connection) -> Result<()> {
+        let local_rows = {
+            let mut stmt = conn
+                .prepare("SELECT id, created_at FROM snapshots")
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(map_err)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(map_err)?
+        };
+        let cloud_rows = {
+            let mut stmt = conn
+                .prepare("SELECT account_id, snapshot_id, created_at FROM cloud_snapshot_sync")
+                .map_err(map_err)?;
+            let rows = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, String>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
+                })
+                .map_err(map_err)?;
+            rows.collect::<rusqlite::Result<Vec<_>>>()
+                .map_err(map_err)?
+        };
+
+        let mut local_updates = Vec::new();
+        for (id, value) in local_rows {
+            let normalized = normalize_for_storage(&value)?;
+            if normalized != value {
+                local_updates.push((id, normalized));
+            }
+        }
+        let mut cloud_updates = Vec::new();
+        for (account_id, snapshot_id, value) in cloud_rows {
+            let normalized = normalize_for_storage(&value)?;
+            if normalized != value {
+                cloud_updates.push((account_id, snapshot_id, normalized));
+            }
+        }
+        if local_updates.is_empty() && cloud_updates.is_empty() {
+            return Ok(());
+        }
+
+        conn.execute_batch("BEGIN IMMEDIATE;").map_err(map_err)?;
+        let migration = (|| -> Result<()> {
+            for (id, created_at) in local_updates {
+                conn.execute(
+                    "UPDATE snapshots SET created_at = ?2 WHERE id = ?1",
+                    params![id, created_at],
+                )
+                .map_err(map_err)?;
+            }
+            for (account_id, snapshot_id, created_at) in cloud_updates {
+                conn.execute(
+                    "UPDATE cloud_snapshot_sync SET created_at = ?3 WHERE account_id = ?1 AND snapshot_id = ?2",
+                    params![account_id, snapshot_id, created_at],
+                )
+                .map_err(map_err)?;
+            }
+            Ok(())
+        })();
+        match migration {
+            Ok(()) => conn.execute_batch("COMMIT;").map_err(map_err),
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(error)
+            }
+        }
+    }
+}
+
+fn normalize_for_storage(value: &str) -> Result<String> {
+    normalize_timestamp(value)
+        .ok_or_else(|| SaveLinkError::Io(format!("数据库中存在无法识别的时间格式: {value}")))
 }
 
 /// save_paths 序列化：换行分隔（路径不含换行符）。
@@ -384,13 +467,14 @@ impl Repository for SqliteRepo {
 
     fn insert_snapshot(&self, s: Snapshot) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let created_at = normalize_for_storage(&s.created_at)?;
         conn.execute(
             "INSERT INTO snapshots (id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 s.id,
                 s.game_id,
-                s.created_at,
+                created_at,
                 s.note,
                 reason_to_str(s.reason),
                 s.locked as i64,
@@ -418,7 +502,7 @@ impl Repository for SqliteRepo {
 
     fn list_snapshots(&self, game_id: &str) -> Result<Vec<Snapshot>> {
         let conn = self.conn.lock().unwrap();
-        // 时间线倒序（新在前）。created_at 字符串可比，同值时用 rowid 兜底稳定排序。
+        // created_at 已迁移为固定 UTC RFC 3339，同值时用 rowid 兜底稳定排序。
         let sql = format!(
             "SELECT {SNAP_COLS} FROM snapshots WHERE game_id = ?1 ORDER BY created_at DESC, rowid DESC"
         );
@@ -433,6 +517,7 @@ impl Repository for SqliteRepo {
 
     fn update_snapshot(&self, s: Snapshot) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let created_at = normalize_for_storage(&s.created_at)?;
         conn.execute(
             "UPDATE snapshots SET game_id=?2, created_at=?3, note=?4, reason=?5, locked=?6,
                  file_count=?7, total_size=?8, content_hash=?9, storage_key=?10, status=?11
@@ -440,7 +525,7 @@ impl Repository for SqliteRepo {
             params![
                 s.id,
                 s.game_id,
-                s.created_at,
+                created_at,
                 s.note,
                 reason_to_str(s.reason),
                 s.locked as i64,
@@ -669,6 +754,7 @@ impl CloudStateRepository for SqliteRepo {
 
     fn upsert_cloud_snapshot(&self, snapshot: CloudSnapshotRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let created_at = normalize_for_storage(&snapshot.created_at)?;
         conn.execute(
             "INSERT INTO cloud_snapshot_sync
                 (account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked,
@@ -695,7 +781,7 @@ impl CloudStateRepository for SqliteRepo {
                 snapshot.account_id,
                 snapshot.cloud_game_id,
                 snapshot.snapshot_id,
-                snapshot.created_at,
+                created_at,
                 reason_to_str(snapshot.reason),
                 snapshot.note,
                 snapshot.locked as i64,

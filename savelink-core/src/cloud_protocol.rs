@@ -1,7 +1,7 @@
 //! SaveLink 云端快照协议 v1 的 JSON 契约与逻辑路径。
 
 use crate::model::Reason;
-use chrono::{DateTime, Local, NaiveDateTime, TimeZone};
+use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use std::fmt;
@@ -242,7 +242,7 @@ impl SnapshotCommitDocument {
     pub fn same_logical_snapshot(&self, other: &Self) -> bool {
         self.snapshot_id == other.snapshot_id
             && self.cloud_game_id == other.cloud_game_id
-            && self.created_at == other.created_at
+            && crate::timestamp::same_instant(&self.created_at, &other.created_at)
             && self.reason == other.reason
             && self.file_count == other.file_count
             && self.total_size == other.total_size
@@ -318,19 +318,9 @@ pub fn reason_from_protocol(value: &str) -> CloudProtocolResult<Reason> {
 }
 
 pub fn normalize_timestamp(value: &str) -> CloudProtocolResult<String> {
-    if let Ok(timestamp) = DateTime::parse_from_rfc3339(value) {
-        return Ok(timestamp.to_rfc3339());
-    }
-    let parsed = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M")
-        .or_else(|_| NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S"))
-        .map_err(|_| {
-            CloudProtocolError::new("timestamp_invalid", format!("无法识别时间格式: {value}"))
-        })?;
-    let local = Local
-        .from_local_datetime(&parsed)
-        .earliest()
-        .ok_or_else(|| CloudProtocolError::new("timestamp_invalid", "本地时间无效"))?;
-    Ok(local.to_rfc3339())
+    crate::timestamp::normalize_timestamp(value).ok_or_else(|| {
+        CloudProtocolError::new("timestamp_invalid", format!("无法识别时间格式: {value}"))
+    })
 }
 
 pub fn validate_id(value: &str, field: &str) -> CloudProtocolResult<()> {

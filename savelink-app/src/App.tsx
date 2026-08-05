@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback } from "react";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import { Icon } from "./lib/icons";
-import { formatSize, REASON_LABEL } from "./lib/format";
+import { formatSize, formatTimestamp, formatTimestampTime, REASON_LABEL } from "./lib/format";
 import * as api from "./lib/api";
 import type { Game, Snapshot } from "./lib/types";
 import { ToastProvider, useToast } from "./components/Toast";
@@ -176,7 +176,7 @@ function SaveLink() {
               <div className="game-sub">
                 {g.save_paths.length === 0
                   ? `${g.snapshot_count} 个快照 · 尚未绑定存档目录`
-                  : <>{g.snapshot_count} 个快照{g.last_snapshot_at ? ` · 最近 ${g.last_snapshot_at.slice(11) || g.last_snapshot_at}` : ""}</>}
+                  : <>{g.snapshot_count} 个快照{g.last_snapshot_at ? ` · 最近 ${formatTimestampTime(g.last_snapshot_at)}` : ""}</>}
               </div>
             </div>
           </div>
@@ -201,7 +201,7 @@ function SaveLink() {
 
             <div className="gstats">
               <div className="gstat"><div className="k">快照数量</div><div className="v">{shown.length} 个</div></div>
-              <div className="gstat"><div className="k">最近快照</div><div className="v">{shown[0]?.created_at ?? "—"}</div></div>
+              <div className="gstat"><div className="k">最近快照</div><div className="v">{formatTimestamp(shown[0]?.created_at)}</div></div>
               <div className="gstat"><div className="k">仓库占用</div>
                 <div className="v">{formatSize(shown.reduce((a, s) => a + s.total_size, 0))}</div></div>
             </div>
@@ -246,7 +246,7 @@ function SaveLink() {
                 <div key={s.id} className={`snap ${s.locked ? "is-locked" : ""}`}
                   onClick={() => setDrawerSnap(s)}>
                   <div className="snap-main">
-                    <div className="snap-time">{s.created_at}</div>
+                    <div className="snap-time">{formatTimestamp(s.created_at)}</div>
                     <div className="snap-note">
                       {s.note || "未命名快照"}
                       {s.locked && <span className="badge lock"><Icon.Lock size={12} /> 已锁定</span>}
@@ -365,7 +365,7 @@ function SaveLink() {
               <button className="iconbtn" onClick={() => setDeleteSnap(null)}><Icon.Close /></button></div>
             <div className="modal-body">
               <div className="callout warn"><span className="ic"><Icon.Alert /></span>
-                <div>将删除快照「{deleteSnap.note || "未命名快照"}」（{deleteSnap.created_at}）。<br />删除后该版本将无法恢复。</div>
+                <div>将删除快照「{deleteSnap.note || "未命名快照"}」（{formatTimestamp(deleteSnap.created_at)}）。<br />删除后该版本将无法恢复。</div>
               </div>
             </div>
             <div className="modal-foot">

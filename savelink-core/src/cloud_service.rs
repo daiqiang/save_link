@@ -257,7 +257,13 @@ where
                 });
             }
         }
-        discovered.sort_by(|left, right| right.snapshot.created_at.cmp(&left.snapshot.created_at));
+        discovered.sort_by(|left, right| {
+            crate::timestamp::compare_timestamps(
+                &right.snapshot.created_at,
+                &left.snapshot.created_at,
+            )
+            .then_with(|| right.snapshot.snapshot_id.cmp(&left.snapshot.snapshot_id))
+        });
         Ok(discovered)
     }
 
@@ -533,10 +539,11 @@ where
         )?;
 
         let game = self.ensure_local_game_from_cloud(&cached.cloud_game_id)?;
+        let local_created_at = normalize_timestamp(&commit.created_at)?;
         let mut local_snapshot = Snapshot {
             id: commit.snapshot_id.clone(),
             game_id: game.id,
-            created_at: commit.created_at.clone(),
+            created_at: local_created_at,
             note: commit.note.clone(),
             reason: commit.reason()?,
             locked: commit.locked,
@@ -700,6 +707,8 @@ where
     }
 
     fn materialize_cloud_game(&self, document: &CloudGameDocument) -> CloudSyncResult<()> {
+        let created_at = normalize_timestamp(&document.created_at)?;
+        let updated_at = normalize_timestamp(&document.updated_at)?;
         let binding = self
             .repo
             .get_cloud_game_binding(&self.account_id, &document.cloud_game_id)?;
@@ -710,7 +719,7 @@ where
                     .is_none_or(|value| document.revision > value.remote_revision)
                 {
                     game.name = document.name.clone();
-                    game.updated_at = document.updated_at.clone();
+                    game.updated_at = updated_at.clone();
                     self.repo.update_game(game)?;
                 }
             }
@@ -721,8 +730,8 @@ where
                     icon: None,
                     repo_path: PathBuf::new(),
                     save_paths: Vec::new(),
-                    created_at: document.created_at.clone(),
-                    updated_at: document.updated_at.clone(),
+                    created_at,
+                    updated_at,
                 })?;
             }
         }
@@ -842,7 +851,7 @@ fn commit_matches_local(
 ) -> bool {
     commit.snapshot_id == snapshot.id
         && commit.cloud_game_id == snapshot.game_id
-        && commit.created_at == normalized_created_at
+        && crate::timestamp::same_instant(&commit.created_at, normalized_created_at)
         && commit.reason == reason_to_protocol(snapshot.reason)
         && commit.file_count == snapshot.file_count
         && commit.total_size == snapshot.total_size
@@ -855,7 +864,7 @@ fn snapshot_matches_commit(
 ) -> CloudSyncResult<bool> {
     Ok(snapshot.id == commit.snapshot_id
         && snapshot.game_id == commit.cloud_game_id
-        && normalize_timestamp(&snapshot.created_at)? == commit.created_at
+        && crate::timestamp::same_instant(&snapshot.created_at, &commit.created_at)
         && reason_to_protocol(snapshot.reason) == commit.reason
         && snapshot.file_count == commit.file_count
         && snapshot.total_size == commit.total_size
@@ -865,7 +874,7 @@ fn snapshot_matches_commit(
 fn record_matches_commit(record: &CloudSnapshotRecord, commit: &SnapshotCommitDocument) -> bool {
     record.cloud_game_id == commit.cloud_game_id
         && record.snapshot_id == commit.snapshot_id
-        && record.created_at == commit.created_at
+        && crate::timestamp::same_instant(&record.created_at, &commit.created_at)
         && reason_to_protocol(record.reason) == commit.reason
         && record.file_count == commit.file_count
         && record.total_size == commit.total_size

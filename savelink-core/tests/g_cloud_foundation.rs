@@ -10,6 +10,7 @@ use savelink_core::cloud_store::{
 use savelink_core::model::Reason;
 use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::testkit::TempDir;
+use savelink_core::timestamp::normalize_timestamp;
 use std::fs;
 
 fn account() -> CloudAccount {
@@ -61,7 +62,7 @@ fn snapshot(id: &str, created_at: &str, status: CloudSyncStatus) -> CloudSnapsho
 fn g1_cloud_state_survives_database_reopen() {
     let tmp = TempDir::new();
     let db_path = tmp.path().join("savelink.db");
-    let expected_snapshot = snapshot(
+    let mut expected_snapshot = snapshot(
         "snap_1",
         "2026-07-14T18:15:00+08:00",
         CloudSyncStatus::RemoteOnly,
@@ -75,6 +76,9 @@ fn g1_cloud_state_survives_database_reopen() {
         repo.upsert_cloud_snapshot(expected_snapshot.clone())
             .unwrap();
     }
+
+    expected_snapshot.created_at =
+        normalize_timestamp(&expected_snapshot.created_at).expect("测试时间应可规范化");
 
     let repo = SqliteRepo::open(&db_path).unwrap();
     assert_eq!(

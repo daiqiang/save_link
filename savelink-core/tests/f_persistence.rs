@@ -6,6 +6,8 @@
 mod common;
 
 use common::*;
+use chrono::{Duration, Local, TimeZone};
+use rusqlite::{params, Connection};
 use savelink_core::model::Game;
 use savelink_core::model::{CreateOutcome, Reason};
 use savelink_core::repo::Repository;
@@ -101,4 +103,63 @@ fn f3_game_update_survives_reopen() {
         assert_eq!(got.save_paths, vec![PathBuf::from(new_save)], "F3: 存档目录修改应持久化");
         assert_eq!(got.updated_at, "2026-06-23 00:01", "F3: 更新时间应持久化");
     }
+}
+
+#[test]
+fn f4_mixed_snapshot_times_are_migrated_and_sorted_by_real_time() {
+    let tmp = TempDir::new();
+    let db_path = tmp.path().join("mixed-times.db");
+    let latest = Local
+        .with_ymd_and_hms(2026, 8, 5, 22, 0, 0)
+        .earliest()
+        .expect("测试本地时间应有效");
+    let older_rfc3339 = (latest - Duration::minutes(35)).to_rfc3339();
+    let latest_legacy = latest.format("%Y-%m-%d %H:%M").to_string();
+
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE snapshots (
+                id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                note TEXT,
+                reason TEXT NOT NULL,
+                locked INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL,
+                total_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                storage_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'complete'
+            );",
+        )
+        .unwrap();
+        for (id, created_at) in [
+            ("snap_remote_older", older_rfc3339.as_str()),
+            ("snap_local_latest", latest_legacy.as_str()),
+        ] {
+            conn.execute(
+                "INSERT INTO snapshots
+                    (id, game_id, created_at, note, reason, locked, file_count,
+                     total_size, content_hash, storage_key, status)
+                 VALUES (?1, 'game_1', ?2, NULL, 'manual', 0, 1, 1, ?1, ?1, 'complete')",
+                params![id, created_at],
+            )
+            .unwrap();
+        }
+    }
+
+    let repo = SqliteRepo::open(&db_path).expect("打开旧数据库时应自动迁移时间");
+    let timeline = repo.list_snapshots("game_1").unwrap();
+    assert_eq!(
+        timeline.iter().map(|snapshot| snapshot.id.as_str()).collect::<Vec<_>>(),
+        vec!["snap_local_latest", "snap_remote_older"],
+        "混合格式迁移后必须按真实时间倒序"
+    );
+    assert!(
+        timeline
+            .iter()
+            .all(|snapshot| snapshot.created_at.ends_with('Z')),
+        "迁移后 SQLite 时间必须统一为 UTC RFC 3339"
+    );
 }

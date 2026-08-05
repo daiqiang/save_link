@@ -37,12 +37,11 @@ const BAIDU_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const DEVICE_ID_SETTING: &str = "device_id";
 const REPOSITORY_ID_SETTING: &str = "repository_id";
 
-/// 真实时钟：输出本地时间 "YYYY-MM-DD HH:MM"。
-/// 该格式既能按字符串正确排序（时间线倒序依赖此），又便于前端直接展示。
+/// 真实时钟：持久化固定秒精度的 UTC RFC 3339；前端按本地时区展示。
 struct SystemClock;
 impl Clock for SystemClock {
     fn now_stamp(&self) -> String {
-        chrono::Local::now().format("%Y-%m-%d %H:%M").to_string()
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
     }
 }
 
