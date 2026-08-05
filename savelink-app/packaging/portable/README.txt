@@ -5,6 +5,7 @@ SaveLink 免安装版使用说明
 版本 | 修改人 | 时间 | 备注
 1.0 | 代强 | 2026-07-23 | 第一版：说明启动、数据位置、升级、卸载和百度网盘使用方式
 1.1 | 代强 | 2026-07-28 | 同步第一版直接恢复策略：恢复前不会自动备份，提醒用户先手动创建快照
+1.2 | 代强 | 2026-08-05 | 同步 v0.1.0 发布地址和 GitHub/Gitee 双仓库定位
 
 一、开始使用
 
@@ -53,4 +54,6 @@ SaveLink 的数据库、快照仓库和百度授权信息不保存在本程序�
 - Windows 10/11 64 位系统。
 - 需要 Microsoft Edge WebView2 Runtime；大多数较新的 Windows 系统已经自带。
 
-项目地址：https://gitee.com/qigugu/save-link
+GitHub 主仓库：https://github.com/daiqiang/save_link
+国内镜像：https://gitee.com/qigugu/save-link
+版本下载：https://github.com/daiqiang/save_link/releases

@@ -8,6 +8,7 @@
 | 1.1 | 代强 | 2026-07-23 | 根据真实用户反馈，将快照上传按钮改为图标加文字并明确各状态 |
 | 1.2 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点；同步首页版本号、设置占位入口和自定义应用图标状态 |
 | 1.3 | 代强 | 2026-07-29 | 同步 doc 目录及中文文档名引用 |
+| 1.4 | 代强 | 2026-08-05 | 同步 v0.1.0 发布、绿色版 ZIP 打包入口和双仓库信息 |
 
 SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
 
@@ -28,7 +29,8 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - 云端接收的游戏不继承其他设备的存档路径；绑定本机目录前禁止创建快照和恢复。
 - 未绑定游戏提供独立“绑定存档目录”入口；目录扫描成功后才可绑定，绑定不会自动创建快照、恢复或上云。
 - `run-device-b-test.bat` 可用独立 AppData 目录启动“设备 B 隔离测试”profile。
-- 可通过 `build-installer.bat` 生成绿色版 exe、NSIS、MSI。
+- 可通过 `build-portable.bat` 生成绿色版目录、ZIP 和 SHA-256，通过 `build-installer.bat` 生成绿色 exe、NSIS、MSI。
+- v0.1.0 已发布到 GitHub Releases；GitHub 为主仓库，Gitee 为国内镜像。
 
 ## 结构
 
@@ -95,7 +97,20 @@ npm run build          # 前端 tsc + vite 构建
 npm run tauri build    # Tauri 打包
 ```
 
-推荐打包入口：
+面向普通用户发布绿色版：
+
+```bat
+build-portable.bat
+```
+
+生成：
+
+```text
+src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip
+src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip.sha256.txt
+```
+
+生成安装包：
 
 ```bat
 build-installer.bat

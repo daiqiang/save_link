@@ -14,10 +14,11 @@
 | 1.7 | 代强 | 2026-07-16 | 同步百度真实双设备上传、接收、目录绑定和安全恢复完整闭环 |
 | 1.8 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点并强化失败回滚；同步设置入口、自定义图标状态和 68 个默认测试 |
 | 1.9 | 代强 | 2026-07-29 | 补充 doc 文档目录；同步中文文档名和引用 |
+| 1.10 | 代强 | 2026-08-05 | 同步 v0.1.0 发布状态、绿色版 ZIP 产物和发布后 Token 安全项 |
 
 ## 文档用途
 
-本文档描述 SaveLink 当前本地 MVP 的真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
+本文档描述 SaveLink v0.1.0 的真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
 
 配套文档：
 
@@ -49,7 +50,7 @@ save_link/
 - 存档目录缺失时支持“创建目录并恢复”。
 - 首页展示当前版本；设置齿轮目前为占位提示，旧设置组件和 AppData 路径命令保留但不向用户开放。
 - SaveLink 云链 V9 已接入网页、窗口、任务栏、托盘和安装包图标。
-- Windows 绿色版 exe、NSIS、MSI 打包。
+- Windows 绿色版 exe、绿色版 ZIP/SHA-256、NSIS、MSI 打包。
 - 百度 OAuth、本机 Token 持久化与过期前自动刷新。
 - 快照按钮手动上云，成功后持久化状态并显示绿色勾选。
 - 顶栏云端存档窗口可发现并下载真实百度快照；接收成功后创建未绑定的本机游戏。
@@ -367,7 +368,7 @@ v1 上传后的备注/锁定修改只保存在本机，云端删除和删除墓�
 - 百度网盘 token。
 - 本机设置和缓存。
 
-当前账号连接实现把 Token 保存到 `%APPDATA%\com.daiq.savelink\credentials\baidu-oauth.json`，SQLite `cloud_accounts.token_ref` 只保存相对引用。Token 不传 React、不写日志、不上传云端。该文件当前是明文 JSON，正式发布前应迁移到 Windows DPAPI、Credential Manager 或 Tauri Stronghold。
+当前账号连接实现把 Token 保存到 `%APPDATA%\com.daiq.savelink\credentials\baidu-oauth.json`，SQLite `cloud_accounts.token_ref` 只保存相对引用。Token 不传 React、不写日志、不上传云端。v0.1.0 已按明文 JSON 文件状态发布，迁移到 Windows DPAPI、Credential Manager 或 Tauri Stronghold 是 v0.1.x 的优先安全加固项。
 
 手动 zip 导出/导入仍可作为备份迁移工具，但当前优先级低，不作为百度网盘自动云同步的技术主线。
 

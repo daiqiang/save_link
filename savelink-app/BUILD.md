@@ -5,22 +5,31 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-07-14 | 补齐版本历史；同步 core 50 个测试、Fake 云同步闭环和当前 rustfmt 状态 |
+| 1.1 | 代强 | 2026-08-05 | 补充绿色版 ZIP 发布流程、SHA-256 产物和标签一致性检查 |
 
 > 目标读者：熟悉 Java/Maven，但不熟悉 Rust / 前端 / Tauri 这套技术栈的人。
 > 下面用 Java 世界的概念来类比，帮你快速建立心智模型。
 
-## 当前状态（2026-07-14）
+## 当前状态（2026-08-05）
 
-当前推荐打包方式是直接运行本目录下的：
+面向 GitHub/Gitee Release 发布绿色版时，运行：
+
+```bat
+build-portable.bat
+```
+
+需要生成安装器时，运行：
 
 ```bat
 build-installer.bat
 ```
 
-它已经验证可以生成三类产物：
+两个脚本已经验证可以生成以下产物：
 
 ```text
 src-tauri/target/release/savelink-app.exe
+src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip
+src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip.sha256.txt
 src-tauri/target/release/bundle/nsis/SaveLink_0.1.0_x64-setup.exe
 src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
 ```
@@ -96,7 +105,8 @@ Rust 编译成 **本地机器码**（直接是 Windows 的 `.exe`），所以最
 | 文件 | 在哪 | 特点 | 什么时候用 |
 |---|---|---|---|
 | `savelink-app.exe` | `src-tauri/target/release/` | 绿色版，免安装，直接双击运行 | 本机快速验收、临时试用 |
-| `SaveLink_x.y.z_x64-setup.exe` | `bundle/nsis/` | 向导式安装，可免管理员按用户安装，体积小 | **给普通用户分发，首选** |
+| `SaveLink_x.y.z_windows_x64_portable.zip` | `bundle/portable/` | 包含 `SaveLink.exe` 和用户 README，并生成 SHA-256 | **GitHub/Gitee Release 面向普通用户分发，首选** |
+| `SaveLink_x.y.z_x64-setup.exe` | `bundle/nsis/` | 向导式安装，可免管理员按用户安装，体积小 | 需要安装向导时使用 |
 | `SaveLink_x.y.z_x64_en-US.msi` | `bundle/msi/` | 标准 MSI，可 `msiexec` 静默安装、组策略批量部署 | 企业/批量部署 |
 
 注意：绿色版不是“独立数据沙箱”。它和安装版读写同一份 `%APPDATA%\com.daiq.savelink\`。
@@ -127,9 +137,10 @@ Rust 编译成 **本地机器码**（直接是 Windows 的 `.exe`），所以最
 
 ## 以后怎么重新打包
 
-不需要重装任何东西，二选一：
+不需要重装任何东西，根据目标选择：
 
-- **双击** `build-installer.bat`（推荐）。它会：自动定位 MSVC 环境 → 构建前自动关闭正在运行的 SaveLink（否则链接器无法覆盖 exe）→ 对"网络掉线/文件占用"等**瞬时**失败智能重试，但遇到真正的 TypeScript/Rust 编译错误会立即停下并提示 → 打完自动打开产物文件夹
+- **公开发布绿色版**：双击 `build-portable.bat`，生成带 README 的 ZIP 和 SHA-256 文件。
+- **需要安装器**：双击 `build-installer.bat`。它会自动定位 MSVC 环境 → 构建前自动关闭正在运行的 SaveLink（否则链接器无法覆盖 exe）→ 对"网络掉线/文件占用"等**瞬时**失败智能重试，但遇到真正的 TypeScript/Rust 编译错误会立即停下并提示 → 打完自动打开产物文件夹。
 - 或在能找到 MSVC 环境的终端里手动执行：
   ```
   npm run tauri build
@@ -137,6 +148,14 @@ Rust 编译成 **本地机器码**（直接是 Windows 的 `.exe`），所以最
   （若直接跑报链接器找不到，先执行一次
   `"C:\Program Files (x86)\Microsoft Visual Studio\2022\BuildTools\VC\Auxiliary\Build\vcvars64.bat"`
   再跑构建——`build-installer.bat` 已经帮你自动做了这一步。）
+
+## 正式发布前的一致性检查
+
+1. `git status` 必须干净。
+2. 发布标签必须指向准备打包的提交，例如 `git rev-list -n 1 v0.1.0` 与当前 `HEAD` 一致。
+3. 从该提交执行 `build-portable.bat`，不要复用更早生成的 ZIP。
+4. 打开绿色版做启动、托盘、创建快照、恢复和百度授权冒烟。
+5. 上传 ZIP 与 `.sha256.txt` 到同一个 Release，并核对 SHA-256。
 
 ## 开发时怎么跑（不打包，热重载）
 

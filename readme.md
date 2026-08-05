@@ -17,6 +17,10 @@
 
 SaveLink是一款基于windows的游戏存档工具，同时满足存储空间大、数据安全、操作方便3个特点。SaveLink 不提供中转存储服务器，存档直接保存在用户自己的百度网盘中（后续也有可能会加入其他网盘），所以不存在存储不够这样的情况。通常情况下，百度网盘都是2T打底，对于普通的游戏存档来说，2T的空间绰绰有余了。
 
+## 下载
+
+前往 [GitHub Releases](https://github.com/daiqiang/save_link/releases) 下载最新版本。当前正式版本为 [v0.1.0](https://github.com/daiqiang/save_link/releases/tag/v0.1.0)。
+
 ## 快速开始
 
 1. 下载压缩包，解压后双击exe就可以使用了。
@@ -25,14 +29,10 @@ SaveLink是一款基于windows的游戏存档工具，同时满足存储空间�
 4. 首次上传时，默认浏览器会打开百度授权页面。
 5. 在新电脑需要同步存档时，打开云端存档、下载快照、绑定本机目录、恢复
 
-## 页面截图
-
-![SaveLink 页面截图](img/页面截图.png)
-
 ## 后续更新计划
 
 后续会更新自动上传网盘和自动找游戏目录
 
 ## License
 
-SaveLink 源代码采用 Apache License 2.0
+SaveLink 源代码采用 [Apache License 2.0](LICENSE)
