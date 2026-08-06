@@ -9,6 +9,7 @@
 | 1.2 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点；同步首页版本号、设置占位入口和自定义应用图标状态 |
 | 1.3 | 代强 | 2026-07-29 | 同步 doc 目录及中文文档名引用 |
 | 1.4 | 代强 | 2026-08-05 | 同步 v0.1.0 发布；补充 v0.2.0 自动备份设置、后台调度、自动上云和 30 条联合清理 |
+| 1.5 | 代强 | 2026-08-06 | 同步 v0.2.0 当前版本和发布产物名称 |
 
 SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-tauri/`，核心逻辑在隔壁 `../savelink-core`（路径依赖，保持纯净、可独立测试）。
 
@@ -30,7 +31,7 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - 未绑定游戏提供独立“绑定存档目录”入口；目录扫描成功后才可绑定，绑定不会自动创建快照、恢复或上云。
 - `run-device-b-test.bat` 可用独立 AppData 目录启动“设备 B 隔离测试”profile。
 - 可通过 `build-portable.bat` 生成绿色版目录、ZIP 和 SHA-256，通过 `build-installer.bat` 生成绿色 exe、NSIS、MSI。
-- v0.1.0 已发布到 GitHub Releases；GitHub 为主仓库，Gitee 为国内镜像。
+- v0.1.0 已发布到 GitHub Releases；v0.2.0 已完成开发，准备发布；GitHub 为主仓库，Gitee 为国内镜像。
 - 启动时立即检查存档变化，之后每 10 分钟检查；自动快照校验成功后立即尝试上传，未授权时后台不会弹浏览器。
 - 每个游戏保留 30 条未锁定记录，所有来源统一计数；锁定记录不限量。淘汰时云端删除成功后才删除本地快照。
 
@@ -111,8 +112,8 @@ build-portable.bat
 生成：
 
 ```text
-src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip
-src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip.sha256.txt
+src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip
+src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip.sha256.txt
 ```
 
 生成安装包：
@@ -125,8 +126,8 @@ build-installer.bat
 
 ```text
 src-tauri/target/release/savelink-app.exe
-src-tauri/target/release/bundle/nsis/SaveLink_0.1.0_x64-setup.exe
-src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
+src-tauri/target/release/bundle/nsis/SaveLink_0.2.0_x64-setup.exe
+src-tauri/target/release/bundle/msi/SaveLink_0.2.0_x64_en-US.msi
 ```
 
 运行时数据：

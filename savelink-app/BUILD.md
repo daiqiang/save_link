@@ -6,11 +6,12 @@
 | --- | --- | --- | --- |
 | 1.0 | 代强 | 2026-07-14 | 补齐版本历史；同步 core 50 个测试、Fake 云同步闭环和当前 rustfmt 状态 |
 | 1.1 | 代强 | 2026-08-05 | 补充绿色版 ZIP 发布流程、SHA-256 产物和标签一致性检查 |
+| 1.2 | 代强 | 2026-08-06 | 同步 v0.2.0 发布产物、当前构建状态和发布标签示例 |
 
 > 目标读者：熟悉 Java/Maven，但不熟悉 Rust / 前端 / Tauri 这套技术栈的人。
 > 下面用 Java 世界的概念来类比，帮你快速建立心智模型。
 
-## 当前状态（2026-08-05）
+## 当前状态（2026-08-06）
 
 面向 GitHub/Gitee Release 发布绿色版时，运行：
 
@@ -28,10 +29,10 @@ build-installer.bat
 
 ```text
 src-tauri/target/release/savelink-app.exe
-src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip
-src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip.sha256.txt
-src-tauri/target/release/bundle/nsis/SaveLink_0.1.0_x64-setup.exe
-src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
+src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip
+src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip.sha256.txt
+src-tauri/target/release/bundle/nsis/SaveLink_0.2.0_x64-setup.exe
+src-tauri/target/release/bundle/msi/SaveLink_0.2.0_x64_en-US.msi
 ```
 
 绿色版 `savelink-app.exe` 和安装版使用同一个 Tauri identifier：`com.daiq.savelink`，所以共用同一个用户数据目录：
@@ -152,7 +153,7 @@ Rust 编译成 **本地机器码**（直接是 Windows 的 `.exe`），所以最
 ## 正式发布前的一致性检查
 
 1. `git status` 必须干净。
-2. 发布标签必须指向准备打包的提交，例如 `git rev-list -n 1 v0.1.0` 与当前 `HEAD` 一致。
+2. 发布标签必须指向准备打包的提交，例如 `git rev-list -n 1 v0.2.0` 与当前 `HEAD` 一致。
 3. 从该提交执行 `build-portable.bat`，不要复用更早生成的 ZIP。
 4. 打开绿色版做启动、托盘、创建快照、恢复和百度授权冒烟。
 5. 上传 ZIP 与 `.sha256.txt` 到同一个 Release，并核对 SHA-256。

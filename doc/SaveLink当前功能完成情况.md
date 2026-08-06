@@ -1,6 +1,6 @@
 # SaveLink 当前功能完成情况（给总规划会话）
 
-更新时间：2026-08-05
+更新时间：2026-08-06
 用途：给总规划会话快速判断 SaveLink 当前阶段、已完成功能、已验收点和下一阶段优先级。
 
 > 备注：`PROGRESS.md`、`HANDOFF-codex.md`、`SaveLink技术架构.md`、`SaveLink恢复与存储测试规格.md`、`savelink-app/README.md`、`savelink-app/BUILD.md`、`savelink-app/手动测试计划.md` 已同步到当前实现状态。
@@ -18,10 +18,11 @@
 | 1.6 | 代强 | 2026-07-28 | 第一版移除恢复前自动保护点并强化失败回滚；同步绿色版说明、设置入口、自定义图标状态和 68 个默认测试 |
 | 1.7 | 代强 | 2026-07-29 | 迁入 doc 目录并改为中文文件名；同步文档引用 |
 | 1.8 | 代强 | 2026-08-05 | 同步 v0.1.0 发布与 v0.2.0 专项验收；完成自动检查、自动上云、30 条联合清理，并修复跨设备快照时间混存、排序和展示问题 |
+| 1.9 | 代强 | 2026-08-06 | 确认 v0.2.0 功能完成并进入发布准备；统一版本元数据，记录发布后故障验收项 |
 
 ## 一句话结论
 
-SaveLink 已公开发布 Windows 桌面版 v0.1.0。核心闭环已经跑通：添加游戏存档目录 → 创建快照 → 查看时间线 → 修改备注/锁定/删除快照 → 恢复指定版本。项目已跳过 v0.1.1；v0.2.0 自动备份第一阶段代码已完成，待绿色版实机验收和真实百度故障回归。
+SaveLink 已公开发布 Windows 桌面版 v0.1.0，当前 v0.2.0 功能已完成并进入发布准备。除原有手动快照和跨设备恢复外，v0.2.0 已增加默认 10 分钟自动检查、变化后自动快照上云、每游戏 30 条未锁定记录联合清理，以及跨设备时间格式兼容。
 
 MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `TC-41` 启动自检清理残留均已补测通过。恢复链路已增加小文件/中文路径回归测试，并把恢复后校验加强为 `content_hash + file_count + total_size`。
 
@@ -108,10 +109,10 @@ MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `
 
 ```text
 savelink-app/src-tauri/target/release/savelink-app.exe
-savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip
-savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.1.0_windows_x64_portable.zip.sha256.txt
-savelink-app/src-tauri/target/release/bundle/nsis/SaveLink_0.1.0_x64-setup.exe
-savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.1.0_x64_en-US.msi
+savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip
+savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip.sha256.txt
+savelink-app/src-tauri/target/release/bundle/nsis/SaveLink_0.2.0_x64-setup.exe
+savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.2.0_x64_en-US.msi
 ```
 
 ## 本轮已验收通过的重点
@@ -177,7 +178,7 @@ v0.1.0 将 OAuth Token 保存在 `%APPDATA%\com.daiq.savelink\credentials\baidu-
 
 原截图仍展示已删除的“恢复前自动备份”行为，已暂时从 README 隐藏。应运行 v0.1.0 当前构建重新截图，确认不含测试数据和旧功能文案后再恢复展示。
 
-## 当前 v0.2.0 产品方向
+## v0.2.0 完成状态
 
 v0.2.0 的目标是让 SaveLink 定期检测存档变化，自动创建快照并立即上传百度网盘。当前权威方案见 `SaveLink-v0.2.0自动备份方案.md`。
 
@@ -191,6 +192,6 @@ v0.2.0 的目标是让 SaveLink 定期检测存档变化，自动创建快照并
 6. 删除旧记录的最终目标同时覆盖本地仓库和百度网盘，不能只实现本地清理。
 7. 多设备冲突由用户选择，不允许后台自动覆盖。
 
-本地专项以及真实百度上传、跨 profile 下载恢复和联合删除主流程已验收。下一步重新打绿色版，复验设备 B 的本地时间展示、混合来源时间线顺序和无变化去重，再执行真实百度断网、授权失效、限流与云删除失败回归。手动、自动和云端接收的完整未锁定快照已经统一计入 30 条。v0.1.0 发布附件、README 截图和 Token 安全事项保留为并行待办。
+本地专项、真实百度上传、跨 profile 下载恢复、31→30 联合删除、旧库时间迁移和设备 B 本地化显示均已验收。手动、自动和云端接收的完整未锁定快照已经统一计入 30 条。项目已确认这些结果足以发布 v0.2.0。
 
-2026-08-05 已使用 `build-portable.bat --no-open` 成功生成包含本轮代码的 release 绿色版和 ZIP。当前开发包版本号仍是 0.1.0，下一步是人工验收，不应直接替换 v0.1.0 公开附件。
+发布后继续补充但不阻塞本次发布的项目：真实断网重试、Token 失效或限流、真实百度删除中途失败、另一设备提前删除对象，以及多设备冲突选择交互。npm、Cargo、Tauri 和打包元数据已统一为 `0.2.0`，下一步从本次版本提交生成正式绿色版 ZIP 和 SHA-256。
