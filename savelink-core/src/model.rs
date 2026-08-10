@@ -53,6 +53,8 @@ pub struct Snapshot {
     pub locked: bool,
     pub file_count: u64,
     pub total_size: u64,
+    /// 快照包含的独立存档根目录数量。旧快照固定为 1。
+    pub source_count: u32,
     /// 整快照内容指纹，支撑「存档未变化」判断。
     pub content_hash: String,
     /// 不透明存储键：上层不得解析其结构（解耦未来 ResticStore）。

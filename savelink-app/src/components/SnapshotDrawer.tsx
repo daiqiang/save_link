@@ -108,7 +108,11 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
 
           <div style={{ marginTop: 16 }}>
             <label style={{ display: "block", fontSize: 12.5, fontWeight: 600, color: "var(--color-text-2)", marginBottom: 6 }}>存档目录</label>
-            <div className="target-box"><span className="path-mono">{game.save_paths[0]}</span></div>
+            <div className="target-box">
+              <div className="path-stack">
+                {game.save_paths.map((path, index) => <span className="path-mono" key={index}>{path}</span>)}
+              </div>
+            </div>
           </div>
         </div>
         <div className="drawer-foot">

@@ -96,6 +96,7 @@ echo.
 echo [5/5] Creating portable folder and zip...
 set "RELEASE_EXE=%CD%\src-tauri\target\release\savelink-app.exe"
 set "README_SOURCE=%CD%\packaging\portable\README.txt"
+set "RESOURCE_SOURCE=%CD%\src-tauri\resources"
 set "PORTABLE_ROOT=%CD%\src-tauri\target\release\bundle\portable"
 set "PORTABLE_DIR=%PORTABLE_ROOT%\SaveLink"
 set "ZIP_PATH=%PORTABLE_ROOT%\SaveLink_%APP_VERSION%_windows_x64_portable.zip"
@@ -109,6 +110,10 @@ if not exist "%README_SOURCE%" (
   echo     ERROR: portable README not found at "%README_SOURCE%".
   goto fail
 )
+if not exist "%RESOURCE_SOURCE%\manifest.db" (
+  echo     ERROR: Steam manifest database not found at "%RESOURCE_SOURCE%\manifest.db".
+  goto fail
+)
 if not exist "%PORTABLE_DIR%" mkdir "%PORTABLE_DIR%"
 copy /Y "%RELEASE_EXE%" "%PORTABLE_DIR%\SaveLink.exe" >nul
 if errorlevel 1 (
@@ -118,6 +123,11 @@ if errorlevel 1 (
 copy /Y "%README_SOURCE%" "%PORTABLE_DIR%\README.txt" >nul
 if errorlevel 1 (
   echo     ERROR: failed to stage README.txt.
+  goto fail
+)
+xcopy /E /I /Y "%RESOURCE_SOURCE%" "%PORTABLE_DIR%\resources" >nul
+if errorlevel 1 (
+  echo     ERROR: failed to stage Steam discovery resources.
   goto fail
 )
 

@@ -47,6 +47,7 @@ fn snapshot(id: &str, created_at: &str, status: CloudSyncStatus) -> CloudSnapsho
         locked: false,
         file_count: 2,
         total_size: 1024,
+        source_count: 1,
         content_hash: "0123456789abcdef".into(),
         archive_size: 800,
         archive_sha256: "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef".into(),

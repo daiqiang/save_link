@@ -22,6 +22,7 @@ pub mod scan;
 pub mod service;
 pub mod sqlite_repo;
 pub mod store;
+pub mod steam_discovery;
 pub mod timestamp;
 
 pub mod testkit;

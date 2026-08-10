@@ -140,6 +140,13 @@ impl SnapshotStore for FailingStore {
         self.inner.restore(key, target)
     }
 
+    fn restore_sources(&self, key: &str, targets: &[PathBuf]) -> Result<()> {
+        if self.should_fail(FailOp::Restore) {
+            self.trip()?;
+        }
+        self.inner.restore_sources(key, targets)
+    }
+
     fn verify(&self, key: &str) -> Result<bool> {
         if self.should_fail(FailOp::Verify) {
             self.trip()?;

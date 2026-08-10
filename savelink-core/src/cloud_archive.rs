@@ -62,6 +62,7 @@ pub struct SnapshotContentExpectation {
     pub file_count: u64,
     pub total_size: u64,
     pub content_hash: String,
+    pub source_count: u32,
 }
 
 pub trait CloudArchiveCodec: Send + Sync {
@@ -274,7 +275,13 @@ fn extract_inner(
     if file_count != expected.file_count || total_size != expected.total_size {
         return Err(CloudArchiveError::ContentMismatch);
     }
-    let actual = scan::fingerprint_dir(target_dir)
+    if expected.source_count > 1 {
+        for index in 0..expected.source_count {
+            fs::create_dir_all(target_dir.join("sources").join(index.to_string()))
+                .map_err(io_error)?;
+        }
+    }
+    let actual = scan::fingerprint_snapshot_payload(target_dir, expected.source_count)
         .map_err(|error| CloudArchiveError::Io(error.to_string()))?;
     if actual.file_count != expected.file_count
         || actual.total_size != expected.total_size

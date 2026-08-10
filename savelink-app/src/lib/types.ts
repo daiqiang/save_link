@@ -33,6 +33,7 @@ export interface Snapshot {
   locked: boolean;
   file_count: number;
   total_size: number; // 字节
+  source_count: number;
   cloud_status: CloudSyncStatus | null;
   cloud_error_code: string | null;
 }
@@ -40,6 +41,27 @@ export interface Snapshot {
 export interface ScanResult {
   file_count: number;
   total_size: number;
+}
+
+export interface SteamDiscoveredGame {
+  name: string;
+  steam_name: string;
+  app_id: number;
+  install_dir: string;
+  save_paths: string[];
+  config_paths: string[];
+  current_system_unresolved_rules: number;
+  other_environment_rules: number;
+  already_added: boolean;
+  can_add_directly: boolean;
+}
+
+export interface SteamDiscoveryReport {
+  steam_root: string;
+  library_count: number;
+  registered_app_count: number;
+  manifest_match_count: number;
+  games: SteamDiscoveredGame[];
 }
 
 export interface RestoreResult {
@@ -83,6 +105,7 @@ export interface CloudSnapshot {
   locked: boolean;
   file_count: number;
   total_size: number;
+  source_count: number;
   cloud_status: CloudSyncStatus;
   last_error_code: string | null;
 }

@@ -101,8 +101,6 @@ fn collect_files(dir: &Path, out: &mut Vec<PathBuf>) -> std::io::Result<()> {
 /// 生产扫描入口。MVP 直接复用 `fingerprint_dir`。
 /// 实现者后续接入 include/exclude glob 时在此扩展（model 已预留字段）。
 pub fn scan(save_paths: &[PathBuf]) -> Result<ScanResult> {
-    // 多目录：MVP 先支持单目录，结构上预留聚合。
-    // 这里给出可用实现，便于 create_snapshot 的"测试读取"与 NoChange 判断。
     if save_paths.is_empty() {
         return Ok(ScanResult {
             file_count: 0,
@@ -111,6 +109,48 @@ pub fn scan(save_paths: &[PathBuf]) -> Result<ScanResult> {
             readable: true,
         });
     }
-    // 单目录路径：直接指纹。多目录聚合留给实现者（不影响当前测试范围）。
-    fingerprint_dir(&save_paths[0])
+    if save_paths.len() == 1 {
+        return fingerprint_dir(&save_paths[0]);
+    }
+    fingerprint_sources(save_paths)
+}
+
+/// 对多个独立存档根目录生成一个稳定的聚合指纹。
+///
+/// 每个根目录先沿用单目录指纹算法，再把目录序号和子指纹按顺序聚合；因此同名文件
+/// 位于不同存档根时不会冲突，任意一个根目录的增删改都会改变整快照指纹。
+pub fn fingerprint_sources(sources: &[PathBuf]) -> Result<ScanResult> {
+    if sources.len() <= 1 {
+        return scan(sources);
+    }
+    let mut hash = FNV_OFFSET;
+    let mut file_count = 0u64;
+    let mut total_size = 0u64;
+    for (index, source) in sources.iter().enumerate() {
+        let child = fingerprint_dir(source)?;
+        hash = fnv1a(hash, b"source\0");
+        hash = fnv1a(hash, index.to_string().as_bytes());
+        hash = fnv1a(hash, &[0]);
+        hash = fnv1a(hash, child.content_hash.as_bytes());
+        hash = fnv1a(hash, &[0xff]);
+        file_count += child.file_count;
+        total_size += child.total_size;
+    }
+    Ok(ScanResult {
+        file_count,
+        total_size,
+        content_hash: format!("{hash:016x}"),
+        readable: true,
+    })
+}
+
+/// 校验云端/仓库中的标准快照载荷。多目录布局固定为 `sources/{index}/...`。
+pub fn fingerprint_snapshot_payload(root: &Path, source_count: u32) -> Result<ScanResult> {
+    if source_count <= 1 {
+        return fingerprint_dir(root);
+    }
+    let sources = (0..source_count)
+        .map(|index| root.join("sources").join(index.to_string()))
+        .collect::<Vec<_>>();
+    fingerprint_sources(&sources)
 }

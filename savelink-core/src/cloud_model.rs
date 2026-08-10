@@ -84,6 +84,7 @@ pub struct CloudSnapshotRecord {
     pub locked: bool,
     pub file_count: u64,
     pub total_size: u64,
+    pub source_count: u32,
     pub content_hash: String,
     pub archive_size: u64,
     pub archive_sha256: String,

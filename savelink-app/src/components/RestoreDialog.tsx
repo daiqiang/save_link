@@ -76,8 +76,12 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
                 </div>
               </div>
               <div className="target-box">
-                <div style={{ fontSize: 12, color: "var(--color-text-3)", marginBottom: 4 }}>当前存档目录</div>
-                <div className="path-mono">{game.save_paths[0]}</div>
+                <div style={{ fontSize: 12, color: "var(--color-text-3)", marginBottom: 4 }}>
+                  当前存档目录{game.save_paths.length > 1 ? `（${game.save_paths.length} 个）` : ""}
+                </div>
+                <div className="path-stack">
+                  {game.save_paths.map((path, index) => <span className="path-mono" key={index}>{path}</span>)}
+                </div>
               </div>
             </div>
             <div className="modal-foot">
@@ -139,7 +143,9 @@ export function RestoreDialog({ game, target, onClose, onDone }: Props) {
                 <span className="ic"><Icon.Alert /></span>
                 <div>
                   <div style={{ fontWeight: 600, marginBottom: 2 }}>没找到这个游戏的存档目录</div>
-                  <div className="path-mono" style={{ fontSize: 12, margin: "4px 0" }}>{game.save_paths[0]}</div>
+                  <div className="path-stack" style={{ margin: "4px 0" }}>
+                    {game.save_paths.map((path, index) => <span className="path-mono" key={index}>{path}</span>)}
+                  </div>
                   <div style={{ fontSize: 13 }}>可以让 SaveLink 新建这个目录，并把目标版本直接恢复进去。</div>
                   <div style={{ fontSize: 12, color: "var(--color-text-3)", marginTop: 6 }}>到目前为止没有写入任何文件。</div>
                 </div>

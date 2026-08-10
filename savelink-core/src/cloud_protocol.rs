@@ -10,6 +10,7 @@ pub const CLOUD_ROOT: &str = "savelink/v1";
 pub const PROTOCOL_NAME: &str = "savelink-cloud-snapshot";
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const CONTENT_HASH_ALGORITHM: &str = "savelink-fnv1a64-tree-v1";
+pub const MULTI_SOURCE_CONTENT_HASH_ALGORITHM: &str = "savelink-fnv1a64-multi-tree-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudProtocolError {
@@ -153,6 +154,8 @@ pub struct SnapshotCommitDocument {
     pub locked: bool,
     pub file_count: u64,
     pub total_size: u64,
+    #[serde(default = "default_source_count")]
+    pub source_count: u32,
     pub content_hash: ContentHashDocument,
     pub archive: ArchiveDocument,
     pub published_at: String,
@@ -190,7 +193,9 @@ impl SnapshotCommitDocument {
                 "快照备注超过 2000 个字符",
             ));
         }
-        if self.content_hash.algorithm != CONTENT_HASH_ALGORITHM
+        if self.source_count == 0
+            || self.source_count > 64
+            || self.content_hash.algorithm != content_hash_algorithm(self.source_count)
             || !is_lower_hex(&self.content_hash.value, 16)
         {
             return Err(CloudProtocolError::new(
@@ -200,7 +205,7 @@ impl SnapshotCommitDocument {
         }
         if self.archive.file_name != format!("{}.zip", self.snapshot_id)
             || self.archive.format != "zip"
-            || self.archive.layout_version != 1
+            || self.archive.layout_version != archive_layout_version(self.source_count)
             || self.archive.size == 0
             || !is_lower_hex(&self.archive.sha256, 64)
         {
@@ -246,7 +251,24 @@ impl SnapshotCommitDocument {
             && self.reason == other.reason
             && self.file_count == other.file_count
             && self.total_size == other.total_size
+            && self.source_count == other.source_count
             && self.content_hash == other.content_hash
+    }
+}
+
+fn default_source_count() -> u32 {
+    1
+}
+
+pub fn archive_layout_version(source_count: u32) -> u32 {
+    if source_count > 1 { 2 } else { 1 }
+}
+
+pub fn content_hash_algorithm(source_count: u32) -> &'static str {
+    if source_count > 1 {
+        MULTI_SOURCE_CONTENT_HASH_ALGORITHM
+    } else {
+        CONTENT_HASH_ALGORITHM
     }
 }
 

@@ -3,10 +3,11 @@
 use crate::cloud_archive::{CloudArchiveCodec, CloudArchiveError, SnapshotContentExpectation};
 use crate::cloud_model::{CloudGameBinding, CloudSnapshotRecord, CloudSyncStatus};
 use crate::cloud_protocol::{
-    game_path, games_path, manifest_path, normalize_timestamp, reason_to_protocol,
-    snapshot_id_from_ok_name, snapshot_ok_path, snapshot_zip_path, snapshots_path, ArchiveDocument,
-    CloudGameDocument, CloudManifest, CloudProtocolError, ContentHashDocument,
-    SnapshotCommitDocument, CONTENT_HASH_ALGORITHM, PROTOCOL_NAME, PROTOCOL_VERSION,
+    archive_layout_version, content_hash_algorithm, game_path, games_path, manifest_path,
+    normalize_timestamp, reason_to_protocol, snapshot_id_from_ok_name, snapshot_ok_path,
+    snapshot_zip_path, snapshots_path, ArchiveDocument, CloudGameDocument, CloudManifest,
+    CloudProtocolError, ContentHashDocument, SnapshotCommitDocument, PROTOCOL_NAME,
+    PROTOCOL_VERSION,
 };
 use crate::cloud_repo::CloudStateRepository;
 use crate::cloud_store::{CloudEntryKind, CloudObjectStore, CloudStoreError, PutMode};
@@ -398,7 +399,7 @@ where
         let staging_dir = operation_dir.join("snapshot");
         self.snapshot_store
             .restore(&snapshot.storage_key, &staging_dir)?;
-        let scan_result = scan::fingerprint_dir(&staging_dir)?;
+        let scan_result = scan::fingerprint_snapshot_payload(&staging_dir, snapshot.source_count)?;
         ensure_scan_matches_snapshot(&scan_result, &snapshot)?;
 
         let archive_path = operation_dir.join(format!("{snapshot_id}.zip"));
@@ -416,14 +417,15 @@ where
             locked: snapshot.locked,
             file_count: snapshot.file_count,
             total_size: snapshot.total_size,
+            source_count: snapshot.source_count,
             content_hash: ContentHashDocument {
-                algorithm: CONTENT_HASH_ALGORITHM.into(),
+                algorithm: content_hash_algorithm(snapshot.source_count).into(),
                 value: snapshot.content_hash.clone(),
             },
             archive: ArchiveDocument {
                 file_name: format!("{snapshot_id}.zip"),
                 format: "zip".into(),
-                layout_version: 1,
+                layout_version: archive_layout_version(snapshot.source_count),
                 size: archive.size,
                 sha256: archive.sha256,
             },
@@ -535,6 +537,7 @@ where
                 file_count: commit.file_count,
                 total_size: commit.total_size,
                 content_hash: commit.content_hash.value.clone(),
+                source_count: commit.source_count,
             },
         )?;
 
@@ -549,17 +552,17 @@ where
             locked: commit.locked,
             file_count: commit.file_count,
             total_size: commit.total_size,
+            source_count: commit.source_count,
             content_hash: commit.content_hash.value.clone(),
             storage_key: commit.snapshot_id.clone(),
             status: SnapshotStatus::Writing,
         };
         self.repo.insert_snapshot(local_snapshot.clone())?;
 
-        let store_result = self.snapshot_store.create(
-            &commit.snapshot_id,
-            std::slice::from_ref(&extracted_dir),
-            &scan_result,
-        );
+        let extracted_sources = snapshot_payload_sources(&extracted_dir, commit.source_count);
+        let store_result =
+            self.snapshot_store
+                .create(&commit.snapshot_id, &extracted_sources, &scan_result);
         let stored = match store_result {
             Ok(stored) => stored,
             Err(error) => {
@@ -833,6 +836,7 @@ fn record_from_commit(
         locked: commit.locked,
         file_count: commit.file_count,
         total_size: commit.total_size,
+        source_count: commit.source_count,
         content_hash: commit.content_hash.value.clone(),
         archive_size: commit.archive.size,
         archive_sha256: commit.archive.sha256.clone(),
@@ -855,6 +859,7 @@ fn commit_matches_local(
         && commit.reason == reason_to_protocol(snapshot.reason)
         && commit.file_count == snapshot.file_count
         && commit.total_size == snapshot.total_size
+        && commit.source_count == snapshot.source_count
         && commit.content_hash.value == snapshot.content_hash
 }
 
@@ -868,6 +873,7 @@ fn snapshot_matches_commit(
         && reason_to_protocol(snapshot.reason) == commit.reason
         && snapshot.file_count == commit.file_count
         && snapshot.total_size == commit.total_size
+        && snapshot.source_count == commit.source_count
         && snapshot.content_hash == commit.content_hash.value)
 }
 
@@ -878,6 +884,7 @@ fn record_matches_commit(record: &CloudSnapshotRecord, commit: &SnapshotCommitDo
         && reason_to_protocol(record.reason) == commit.reason
         && record.file_count == commit.file_count
         && record.total_size == commit.total_size
+        && record.source_count == commit.source_count
         && record.content_hash == commit.content_hash.value
         && record.archive_size == commit.archive.size
         && record.archive_sha256 == commit.archive.sha256
@@ -891,6 +898,15 @@ fn ensure_scan_matches_snapshot(scan: &ScanResult, snapshot: &Snapshot) -> Cloud
         return Err(SaveLinkError::SnapshotCorrupt.into());
     }
     Ok(())
+}
+
+fn snapshot_payload_sources(root: &Path, source_count: u32) -> Vec<PathBuf> {
+    if source_count <= 1 {
+        return vec![root.to_path_buf()];
+    }
+    (0..source_count)
+        .map(|index| root.join("sources").join(index.to_string()))
+        .collect()
 }
 
 fn write_bytes(path: &Path, bytes: &[u8]) -> CloudSyncResult<()> {

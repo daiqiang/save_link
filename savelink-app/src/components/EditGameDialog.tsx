@@ -16,8 +16,9 @@ interface Props {
 export function EditGameDialog({ game, onClose, onSaved, onDeleted }: Props) {
   const toast = useToast();
   const [name, setName] = useState(game.name);
-  const [path, setPath] = useState(game.save_paths[0] ?? "");
-  const [scan, setScan] = useState<{ state: "idle" | "loading" | "done" | "err"; text: string }>({
+  const [paths, setPaths] = useState(game.save_paths.length > 0 ? game.save_paths : [""]);
+  const [scan, setScan] = useState<{ index: number; state: "idle" | "loading" | "done" | "err"; text: string }>({
+    index: -1,
     state: "idle",
     text: "目录未检测。",
   });
@@ -25,34 +26,36 @@ export function EditGameDialog({ game, onClose, onSaved, onDeleted }: Props) {
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
-  async function pickDir() {
+  async function pickDir(index: number) {
     const picked = await open({ directory: true, multiple: false, title: "选择新的存档目录" });
     if (typeof picked === "string") {
-      setPath(picked);
-      setScan({ state: "idle", text: "目录未检测。" });
+      setPaths((current) => current.map((value, currentIndex) => currentIndex === index ? picked : value));
+      setScan({ index, state: "idle", text: "目录未检测。" });
     }
   }
 
-  async function testRead() {
-    if (!path.trim()) {
-      setScan({ state: "err", text: "请先选择一个存档目录。" });
+  async function testRead(index: number) {
+    const path = paths[index]?.trim() ?? "";
+    if (!path) {
+      setScan({ index, state: "err", text: "请先选择一个存档目录。" });
       return;
     }
-    setScan({ state: "loading", text: "正在读取目录…" });
+    setScan({ index, state: "loading", text: "正在读取目录…" });
     try {
-      const r = await api.scanPath(path.trim());
-      setScan({ state: "done", text: `已检测到：${r.file_count} 个文件，${formatSize(r.total_size)}` });
+      const r = await api.scanPath(path);
+      setScan({ index, state: "done", text: `已检测到：${r.file_count} 个文件，${formatSize(r.total_size)}` });
     } catch {
-      setScan({ state: "err", text: "无法访问该目录，请重新选择。" });
+      setScan({ index, state: "err", text: "无法访问该目录，请重新选择。" });
     }
   }
 
   async function save() {
     if (!name.trim()) return toast("请填写游戏名称", "err");
-    if (!path.trim()) return toast("请至少选择一个存档目录", "err");
+    const savePaths = paths.map((value) => value.trim()).filter(Boolean);
+    if (savePaths.length === 0) return toast("请至少选择一个存档目录", "err");
     setSaving(true);
     try {
-      const updated = await api.updateGame(game.id, name.trim(), [path.trim()]);
+      const updated = await api.updateGame(game.id, name.trim(), savePaths);
       toast("游戏信息已保存", "ok");
       onSaved(updated);
     } catch (e) {
@@ -90,20 +93,40 @@ export function EditGameDialog({ game, onClose, onSaved, onDeleted }: Props) {
           </div>
           <div className="field">
             <label>存档目录</label>
-            <input className="input path-mono" value={path} onChange={(e) => {
-              setPath(e.target.value);
-              setScan({ state: "idle", text: "目录未检测。" });
-            }} />
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button className="btn sm" onClick={pickDir}><Icon.Folder /> 选择目录</button>
-              <button className="btn sm" onClick={testRead}><Icon.Camera /> 测试读取</button>
+            <div className="save-path-editor">
+              {paths.map((path, index) => (
+                <div className="save-path-edit" key={index}>
+                  <div className="save-path-edit-label">目录 {index + 1}</div>
+                  <div className="save-path-edit-row">
+                    <input className="input path-mono" value={path} onChange={(event) => {
+                      setPaths((current) => current.map((value, currentIndex) => currentIndex === index ? event.target.value : value));
+                      setScan({ index, state: "idle", text: "目录未检测。" });
+                    }} />
+                    <button className="iconbtn" title="选择目录" onClick={() => pickDir(index)}><Icon.Folder /></button>
+                    <button className="iconbtn" title="测试读取" onClick={() => testRead(index)}
+                      disabled={scan.index === index && scan.state === "loading"}>
+                      {scan.index === index && scan.state === "loading"
+                        ? <span className="spin"><Icon.RotateCcw /></span>
+                        : <Icon.Camera />}
+                    </button>
+                    <button className="iconbtn danger-text" title="移除目录" disabled={paths.length === 1}
+                      onClick={() => setPaths((current) => current.filter((_, currentIndex) => currentIndex !== index))}>
+                      <Icon.Trash />
+                    </button>
+                  </div>
+                  {scan.index === index && scan.state !== "idle" && (
+                    <div className={`hint ${scan.state === "done" ? "ok" : scan.state === "err" ? "err" : "muted"}`}>
+                      {scan.state === "done" && <Icon.CheckCircle />}
+                      {scan.state === "err" && <Icon.Alert />}
+                      <span>{scan.text}</span>
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
-            <div className={`hint ${scan.state === "done" ? "ok" : scan.state === "err" ? "err" : "muted"}`}>
-              {scan.state === "loading" && <span className="spin"><Icon.RotateCcw /></span>}
-              {scan.state === "done" && <Icon.CheckCircle />}
-              {scan.state === "err" && <Icon.Alert />}
-              <span>{scan.text}</span>
-            </div>
+            <button className="btn sm add-save-path" onClick={() => setPaths((current) => [...current, ""])}>
+              <Icon.Plus /> 添加目录
+            </button>
           </div>
         </div>
         <div className="modal-foot">
@@ -133,7 +156,9 @@ export function EditGameDialog({ game, onClose, onSaved, onDeleted }: Props) {
                 </div>
               </div>
               <div className="target-box">
-                <span className="path-mono">{game.save_paths[0] || "未设置存档目录"}</span>
+                {game.save_paths.length > 0
+                  ? <div className="path-stack">{game.save_paths.map((item, index) => <span className="path-mono" key={index}>{item}</span>)}</div>
+                  : <span className="path-mono">未设置存档目录</span>}
               </div>
             </div>
             <div className="modal-foot">

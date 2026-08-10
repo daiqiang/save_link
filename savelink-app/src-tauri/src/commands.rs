@@ -21,6 +21,7 @@ use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapsh
 use savelink_core::repo::{Clock, IdGen, Repository};
 use savelink_core::service::{RestoreService, SnapshotService};
 use savelink_core::sqlite_repo::SqliteRepo;
+use savelink_core::steam_discovery::{SteamDiscoveredGame, SteamDiscoveryService};
 use savelink_core::store::{FsStore, SnapshotStore};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
@@ -186,6 +187,7 @@ pub struct SnapshotDto {
     pub locked: bool,
     pub file_count: u64,
     pub total_size: u64,
+    pub source_count: u32,
     pub cloud_status: Option<String>,
     pub cloud_error_code: Option<String>,
 }
@@ -231,6 +233,7 @@ pub struct CloudSnapshotDto {
     pub locked: bool,
     pub file_count: u64,
     pub total_size: u64,
+    pub source_count: u32,
     pub cloud_status: String,
     pub last_error_code: Option<String>,
 }
@@ -240,6 +243,30 @@ pub struct CloudReceiveDto {
     pub snapshot_id: String,
     pub game_id: String,
     pub outcome: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SteamDiscoveredGameDto {
+    pub name: String,
+    pub steam_name: String,
+    pub app_id: u32,
+    pub install_dir: String,
+    pub save_paths: Vec<String>,
+    pub config_paths: Vec<String>,
+    pub current_system_unresolved_rules: usize,
+    pub other_environment_rules: usize,
+    pub already_added: bool,
+    /// 至少命中一个真实存档目录时即可直接添加；多目录会作为一个完整游戏共同保护。
+    pub can_add_directly: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SteamDiscoveryReportDto {
+    pub steam_root: String,
+    pub library_count: usize,
+    pub registered_app_count: usize,
+    pub manifest_match_count: usize,
+    pub games: Vec<SteamDiscoveredGameDto>,
 }
 
 fn reason_str(r: Reason) -> String {
@@ -263,6 +290,7 @@ fn cloud_snapshot_to_dto(discovery: CloudSnapshotDiscovery) -> CloudSnapshotDto 
         locked: record.locked,
         file_count: record.file_count,
         total_size: record.total_size,
+        source_count: record.source_count,
         cloud_status: record.sync_status.as_str().into(),
         last_error_code: record.last_error_code,
     }
@@ -282,6 +310,7 @@ fn snapshot_to_dto_with_cloud(s: &Snapshot, cloud: Option<&CloudSnapshotRecord>)
         locked: s.locked,
         file_count: s.file_count,
         total_size: s.total_size,
+        source_count: s.source_count,
         cloud_status: cloud.map(|record| record.sync_status.as_str().to_string()),
         cloud_error_code: cloud.and_then(|record| record.last_error_code.clone()),
     }
@@ -395,7 +424,7 @@ pub(crate) fn acquire_cloud_sync_guard(state: &AppState) -> Result<AuthBusyGuard
 
 /* ---------- Tauri 命令（前端通过 invoke 调用，类似发 HTTP 到 Controller） ---------- */
 
-use tauri::{AppHandle, State};
+use tauri::{path::BaseDirectory, AppHandle, Manager, State};
 
 #[tauri::command]
 pub fn list_games(state: State<'_, AppState>) -> Result<Vec<GameDto>, String> {
@@ -711,9 +740,96 @@ pub fn scan_path(path: String) -> Result<SnapshotDto, String> {
         locked: false,
         file_count: r.file_count,
         total_size: r.total_size,
+        source_count: 1,
         cloud_status: None,
         cloud_error_code: None,
     })
+}
+
+#[tauri::command]
+pub fn scan_steam_games(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    steam_root: Option<String>,
+) -> Result<SteamDiscoveryReportDto, String> {
+    let database = resolve_manifest_database(&app)?;
+    let explicit_root = steam_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let report = SteamDiscoveryService::new(database)
+        .scan(explicit_root.as_deref())
+        .map_err(|error| error.to_string())?;
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    let games = report
+        .games
+        .into_iter()
+        .map(|game| steam_game_to_dto(game, &existing))
+        .collect();
+    Ok(SteamDiscoveryReportDto {
+        steam_root: report.steam_root.to_string_lossy().to_string(),
+        library_count: report.library_count,
+        registered_app_count: report.registered_app_count,
+        manifest_match_count: report.manifest_match_count,
+        games,
+    })
+}
+
+fn resolve_manifest_database(app: &AppHandle) -> Result<PathBuf, String> {
+    let bundled = app
+        .path()
+        .resolve("resources/manifest.db", BaseDirectory::Resource)
+        .map_err(|error| format!("无法定位存档规则库：{error}"))?;
+    if bundled.is_file() {
+        return Ok(bundled);
+    }
+
+    // `cargo run`/部分 IDE 调试方式不会先布置 bundle resources。
+    let source = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("resources/manifest.db");
+    if source.is_file() {
+        return Ok(source);
+    }
+    Err(format!("存档规则库不存在：{}", bundled.display()))
+}
+
+fn steam_game_to_dto(game: SteamDiscoveredGame, existing: &[Game]) -> SteamDiscoveredGameDto {
+    let discovered_paths = game
+        .save_paths
+        .iter()
+        .map(|path| normalized_path(path))
+        .collect::<Vec<_>>();
+    let already_added = existing.iter().any(|saved| {
+        saved
+            .save_paths
+            .iter()
+            .map(|path| normalized_path(path))
+            .any(|path| discovered_paths.contains(&path))
+    });
+    SteamDiscoveredGameDto {
+        name: game.name,
+        steam_name: game.steam_name,
+        app_id: game.app_id,
+        install_dir: game.install_dir.to_string_lossy().to_string(),
+        save_paths: game
+            .save_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        config_paths: game
+            .config_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        current_system_unresolved_rules: game.current_system_unresolved_rules,
+        other_environment_rules: game.other_environment_rules,
+        already_added,
+        can_add_directly: !game.save_paths.is_empty(),
+    }
+}
+
+fn normalized_path(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('/', "\\").to_lowercase()
 }
 
 #[tauri::command]

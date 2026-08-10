@@ -16,6 +16,7 @@ import type {
   RestoreResult,
   ScanResult,
   Snapshot,
+  SteamDiscoveryReport,
 } from "./types";
 
 export async function listGames(): Promise<Game[]> {
@@ -69,6 +70,12 @@ export async function scanPath(path: string): Promise<ScanResult> {
   // Rust scan_path 返回 SnapshotDto，取其中 file_count / total_size。
   const r = await invoke<{ file_count: number; total_size: number }>("scan_path", { path });
   return { file_count: r.file_count, total_size: r.total_size };
+}
+
+export async function scanSteamGames(steamRoot?: string): Promise<SteamDiscoveryReport> {
+  return invoke<SteamDiscoveryReport>("scan_steam_games", {
+    steamRoot: steamRoot?.trim() || null,
+  });
 }
 
 export async function addGame(name: string, savePaths: string[]): Promise<Game> {

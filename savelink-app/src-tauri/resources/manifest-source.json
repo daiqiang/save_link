@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "source": "https://github.com/mtkennerly/ludusavi-manifest",
+  "sourceCommit": "92cb7727bb2cd74823fc3f44bc46fbb22bea015a",
+  "sourceManifestSha256": "83F29DAD4F7CBBB77E02855EFE54CDC7C178A760C71C721FB7DD4EB2A98DDA63",
+  "databaseSha256": "0EED124EDD3D658FDEADC87D0B7C060CF23D526E2A179B12A480C0FEA12CD967",
+  "license": "MIT",
+  "generatedAt": "2026-08-10T10:02:05+08:00"
+}

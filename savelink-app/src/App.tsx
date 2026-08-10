@@ -38,6 +38,7 @@ function SaveLink() {
   const selected = games.find((g) => g.id === selectedId) ?? null;
   // 只渲染/操作属于当前所选游戏的快照，杜绝“看到或误操作到别的游戏快照”的串档风险。
   const shown = selected ? snapshots.filter((s) => s.game_id === selected.id) : [];
+  const requiredBindingSourceCount = Math.max(1, ...shown.map((snapshot) => snapshot.source_count));
 
   const loadGames = useCallback(async () => {
     const gs = await api.listGames();
@@ -195,7 +196,15 @@ function SaveLink() {
               <div className="cover">{selected.name[0] ?? "游"}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h1>{selected.name}</h1>
-                <div className="path"><Icon.Folder size={14} /><span className="mono">{selected.save_paths[0] ?? "尚未绑定本机存档目录"}</span></div>
+                {selected.save_paths.length > 0 ? (
+                  <div className="game-paths">
+                    {selected.save_paths.map((path, index) => (
+                      <div className="path" key={index}><Icon.Folder size={14} /><span className="mono">{path}</span></div>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="path"><Icon.Folder size={14} /><span className="mono">尚未绑定本机存档目录</span></div>
+                )}
               </div>
             </div>
 
@@ -228,6 +237,7 @@ function SaveLink() {
                 const cloudBusy = cloudUploadingId === s.id;
                 const cloudUploaded = s.cloud_status === "uploaded" || s.cloud_status === "downloaded";
                 const cloudFailed = s.cloud_status === "error";
+                const restorePathsReady = selected.save_paths.length >= s.source_count;
                 const cloudTitle = cloudBusy
                   ? "正在上传到百度网盘"
                   : cloudUploaded
@@ -253,12 +263,13 @@ function SaveLink() {
                     </div>
                     <div className="snap-info">
                       {s.file_count} 个文件<span className="sep">·</span>{formatSize(s.total_size)}
+                      {s.source_count > 1 && <><span className="sep">·</span>{s.source_count} 个存档目录</>}
                       <span className="sep">·</span>{REASON_LABEL[s.reason]}
                     </div>
                   </div>
                   <div className="snap-actions" onClick={(e) => e.stopPropagation()}>
-                    <button className="btn sm" title={selected.save_paths.length === 0 ? "请先绑定本机存档目录" : "恢复"}
-                      disabled={selected.save_paths.length === 0} onClick={() => setRestoreSnap(s)}><Icon.RotateCcw /> 恢复</button>
+                    <button className="btn sm" title={restorePathsReady ? "恢复" : `请先绑定 ${s.source_count} 个本机存档目录`}
+                      disabled={!restorePathsReady} onClick={() => setRestoreSnap(s)}><Icon.RotateCcw /> 恢复</button>
                     <button
                       className={`btn sm cloud-upload ${cloudUploaded ? "is-uploaded" : ""} ${cloudFailed ? "is-error" : ""}`}
                       title={cloudTitle}
@@ -337,7 +348,7 @@ function SaveLink() {
           loadGames();
         }} />}
 
-      {bindingGame && <BindSavePathDialog game={bindingGame}
+      {bindingGame && <BindSavePathDialog game={bindingGame} sourceCount={requiredBindingSourceCount}
         onClose={() => setBindingGame(null)}
         onBound={(game) => {
           setBindingGame(null);

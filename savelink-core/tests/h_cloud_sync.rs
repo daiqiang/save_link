@@ -15,7 +15,7 @@ use savelink_core::cloud_store::{
     CloudEntry, CloudFile, CloudObjectStore, CloudStoreError, CloudStoreResult,
     FakeCloudObjectStore, PutMode,
 };
-use savelink_core::model::{Game, Reason, Snapshot, SnapshotStatus};
+use savelink_core::model::{Game, Reason, ScanResult, Snapshot, SnapshotStatus};
 use savelink_core::repo::{Clock, Repository};
 use savelink_core::scan;
 use savelink_core::sqlite_repo::SqliteRepo;
@@ -146,12 +146,63 @@ fn seed_device_a(device: &Device, contents: &[(&str, &[u8])]) -> PathBuf {
             locked: true,
             file_count: scan_result.file_count,
             total_size: scan_result.total_size,
+            source_count: 1,
             content_hash: scan_result.content_hash,
             storage_key: stored.storage_key,
             status: SnapshotStatus::Complete,
         })
         .unwrap();
     save_dir
+}
+
+fn seed_multi_source_device_a(device: &Device) -> (Vec<PathBuf>, ScanResult) {
+    let sources = vec![
+        device.root.join("real-save-0"),
+        device.root.join("real-save-1"),
+    ];
+    write_files(
+        &sources[0],
+        &[("slot/save.dat", b"SAVE-ROOT-0"), ("same.dat", b"ZERO")],
+    );
+    write_files(
+        &sources[1],
+        &[("profile.dat", b"SAVE-ROOT-1"), ("same.dat", b"ONE")],
+    );
+    device
+        .repo
+        .insert_game(Game {
+            id: "game_1".into(),
+            name: "Multi Root Game".into(),
+            icon: None,
+            repo_path: PathBuf::new(),
+            save_paths: sources.clone(),
+            created_at: "2026-07-14T18:00:00+08:00".into(),
+            updated_at: "2026-07-14T18:00:00+08:00".into(),
+        })
+        .unwrap();
+    let scan_result = scan::scan(&sources).unwrap();
+    let stored = device
+        .store
+        .create("snap_1", &sources, &scan_result)
+        .unwrap();
+    device
+        .repo
+        .insert_snapshot(Snapshot {
+            id: "snap_1".into(),
+            game_id: "game_1".into(),
+            created_at: "2026-07-14T18:10:00+08:00".into(),
+            note: Some("multi-source snapshot".into()),
+            reason: Reason::Manual,
+            locked: false,
+            file_count: scan_result.file_count,
+            total_size: scan_result.total_size,
+            source_count: 2,
+            content_hash: scan_result.content_hash.clone(),
+            storage_key: stored.storage_key,
+            status: SnapshotStatus::Complete,
+        })
+        .unwrap();
+    (sources, scan_result)
 }
 
 fn setup() -> (
@@ -260,6 +311,7 @@ fn h2_archive_roundtrip_and_hash_tampering_are_detected() {
                 file_count: expected_scan.file_count,
                 total_size: expected_scan.total_size,
                 content_hash: expected_scan.content_hash.clone(),
+                source_count: 1,
             },
         )
         .unwrap();
@@ -295,6 +347,7 @@ fn h3_unsafe_zip_entry_is_rejected_without_writing_outside_target() {
             file_count: 1,
             total_size: 3,
             content_hash: "0000000000000000".into(),
+            source_count: 1,
         },
     );
     assert!(matches!(result, Err(CloudArchiveError::UnsafeEntry(_))));
@@ -614,6 +667,101 @@ fn h11_existing_offset_marker_is_idempotent_with_canonical_local_time() {
             .expect("同一时间点的旧云端标记不得产生 ID 冲突"),
         UploadOutcome::AlreadyPresent
     );
+}
+
+#[test]
+fn h12_legacy_cloud_marker_without_source_count_remains_readable() {
+    let (_tmp, cloud, _codec, device_a, _) = setup();
+    seed_device_a(&device_a, &[("ER0000.sl2", b"save-v1")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    let marker = device_a.root.join("legacy-marker.ok");
+    cloud
+        .get_file(
+            &snapshot_ok_path("game_1", "snap_1").unwrap(),
+            &marker,
+        )
+        .unwrap();
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(marker).unwrap()).unwrap();
+    value.as_object_mut().unwrap().remove("source_count");
+    let legacy = SnapshotCommitDocument::from_json(
+        &serde_json::to_vec(&value).unwrap(),
+        "game_1",
+        "snap_1",
+    )
+    .unwrap();
+    assert_eq!(legacy.source_count, 1);
+    assert_eq!(legacy.archive.layout_version, 1);
+}
+
+#[test]
+fn h13_multi_source_snapshot_round_trips_through_fake_cloud() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    let (device_a_sources, expected) = seed_multi_source_device_a(&device_a);
+
+    assert_eq!(
+        device_a
+            .service
+            .upload_snapshot("game_1", "snap_1")
+            .unwrap(),
+        UploadOutcome::Uploaded
+    );
+    let marker_path = device_a.root.join("multi-marker.ok");
+    cloud
+        .get_file(
+            &snapshot_ok_path("game_1", "snap_1").unwrap(),
+            &marker_path,
+        )
+        .unwrap();
+    let commit = SnapshotCommitDocument::from_json(
+        &fs::read(marker_path).unwrap(),
+        "game_1",
+        "snap_1",
+    )
+    .unwrap();
+    assert_eq!(commit.source_count, 2);
+    assert_eq!(commit.archive.layout_version, 2);
+    assert_eq!(
+        commit.content_hash.algorithm,
+        "savelink-fnv1a64-multi-tree-v1"
+    );
+    let serialized = String::from_utf8(commit.to_json().unwrap()).unwrap();
+    for source in &device_a_sources {
+        assert!(
+            !serialized.contains(&source.to_string_lossy().to_string()),
+            "云端标记不得携带设备 A 的绝对路径"
+        );
+    }
+
+    let mut wrong_layout = commit.clone();
+    wrong_layout.archive.layout_version = 1;
+    assert!(wrong_layout.validate("game_1", "snap_1").is_err());
+
+    let discovered = device_b.service.discover_remote_catalog().unwrap();
+    assert_eq!(discovered.len(), 1);
+    assert_eq!(discovered[0].snapshot.source_count, 2);
+    assert_eq!(
+        device_b.service.receive_remote_snapshot("snap_1").unwrap(),
+        ReceiveOutcome::Downloaded
+    );
+    let local = device_b.repo.get_snapshot("snap_1").unwrap().unwrap();
+    assert_eq!(local.source_count, 2);
+    assert!(device_b.store.verify(&local.storage_key).unwrap());
+
+    let restored = vec![
+        device_b.root.join("restored-0"),
+        device_b.root.join("restored-1"),
+    ];
+    device_b
+        .store
+        .restore_sources(&local.storage_key, &restored)
+        .unwrap();
+    assert_eq!(scan::scan(&restored).unwrap(), expected);
+    assert_eq!(fs::read(restored[0].join("same.dat")).unwrap(), b"ZERO");
+    assert_eq!(fs::read(restored[1].join("same.dat")).unwrap(), b"ONE");
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

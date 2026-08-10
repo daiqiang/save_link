@@ -22,6 +22,7 @@ fn e1_startup_clears_dangling_writing_snapshots() {
         locked: false,
         file_count: 0,
         total_size: 0,
+        source_count: 1,
         content_hash: "deadbeef".into(),
         storage_key: "snap_dangling".into(),
         status: SnapshotStatus::Writing,

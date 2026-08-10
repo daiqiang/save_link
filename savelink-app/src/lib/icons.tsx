@@ -9,6 +9,9 @@ const base = (size: number) => ({
 });
 
 export const Icon = {
+  Search: ({ size = 16 }: P): JSX.Element => (
+    <svg {...base(size)}><circle cx="11" cy="11" r="8" /><path d="m21 21-4.3-4.3" /></svg>
+  ),
   Plus: ({ size = 16 }: P): JSX.Element => (
     <svg {...base(size)}><path d="M5 12h14M12 5v14" /></svg>
   ),

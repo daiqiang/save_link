@@ -50,6 +50,7 @@ pub fn run() {
             commands::receive_baidu_snapshot,
             commands::list_snapshots,
             commands::scan_path,
+            commands::scan_steam_games,
             commands::add_game,
             commands::update_game,
             commands::create_snapshot,

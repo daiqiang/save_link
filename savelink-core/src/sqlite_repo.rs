@@ -91,6 +91,7 @@ impl SqliteRepo {
                 locked INTEGER NOT NULL DEFAULT 0,
                 file_count INTEGER NOT NULL,
                 total_size INTEGER NOT NULL,
+                source_count INTEGER NOT NULL DEFAULT 1,
                 content_hash TEXT NOT NULL,
                 storage_key TEXT NOT NULL,
                 status TEXT NOT NULL DEFAULT 'complete'
@@ -129,6 +130,7 @@ impl SqliteRepo {
                 locked INTEGER NOT NULL DEFAULT 0,
                 file_count INTEGER NOT NULL,
                 total_size INTEGER NOT NULL,
+                source_count INTEGER NOT NULL DEFAULT 1,
                 content_hash TEXT NOT NULL,
                 archive_size INTEGER NOT NULL,
                 archive_sha256 TEXT NOT NULL,
@@ -150,7 +152,26 @@ impl SqliteRepo {
         )
         .map_err(map_err)?;
         Self::migrate_cloud_snapshot_sync_status(conn)?;
+        Self::migrate_source_count_columns(conn)?;
         Self::migrate_snapshot_timestamps(conn)
+    }
+
+    fn migrate_source_count_columns(conn: &Connection) -> Result<()> {
+        if !table_has_column(conn, "snapshots", "source_count")? {
+            conn.execute(
+                "ALTER TABLE snapshots ADD COLUMN source_count INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "cloud_snapshot_sync", "source_count")? {
+            conn.execute(
+                "ALTER TABLE cloud_snapshot_sync ADD COLUMN source_count INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        Ok(())
     }
 
     /// v0.1.0 的云同步表带有枚举 CHECK，新增删除生命周期状态时必须重建表。
@@ -179,6 +200,7 @@ impl SqliteRepo {
                 locked INTEGER NOT NULL DEFAULT 0,
                 file_count INTEGER NOT NULL,
                 total_size INTEGER NOT NULL,
+                source_count INTEGER NOT NULL DEFAULT 1,
                 content_hash TEXT NOT NULL,
                 archive_size INTEGER NOT NULL,
                 archive_sha256 TEXT NOT NULL,
@@ -312,6 +334,17 @@ fn paths_from_str(s: &str) -> Vec<PathBuf> {
     s.split('\n').map(PathBuf::from).collect()
 }
 
+fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
+    let sql = format!("PRAGMA table_info({table})");
+    let mut statement = conn.prepare(&sql).map_err(map_err)?;
+    let names = statement
+        .query_map([], |row| row.get::<_, String>(1))
+        .map_err(map_err)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(map_err)?;
+    Ok(names.iter().any(|name| name == column))
+}
+
 /// 从一行查询结果构造 Snapshot。列顺序见各查询的 SELECT。
 fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
     let reason: String = row.get(4)?;
@@ -329,18 +362,19 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
         content_hash: row.get(8)?,
         storage_key: row.get(9)?,
         status: status_from_str(&status),
+        source_count: row.get::<_, i64>(11)? as u32,
     })
 }
 
 const SNAP_COLS: &str =
-    "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status";
+    "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count";
 
-const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code";
+const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, source_count, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code";
 
 fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnapshotRecord> {
     let reason: String = row.get(4)?;
     let locked: i64 = row.get(6)?;
-    let status: String = row.get(14)?;
+    let status: String = row.get(15)?;
     Ok(CloudSnapshotRecord {
         account_id: row.get(0)?,
         cloud_game_id: row.get(1)?,
@@ -351,14 +385,15 @@ fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnaps
         locked: locked != 0,
         file_count: row.get::<_, i64>(7)? as u64,
         total_size: row.get::<_, i64>(8)? as u64,
-        content_hash: row.get(9)?,
-        archive_size: row.get::<_, i64>(10)? as u64,
-        archive_sha256: row.get(11)?,
-        published_at: row.get(12)?,
-        created_by_device_id: row.get(13)?,
+        source_count: row.get::<_, i64>(9)? as u32,
+        content_hash: row.get(10)?,
+        archive_size: row.get::<_, i64>(11)? as u64,
+        archive_sha256: row.get(12)?,
+        published_at: row.get(13)?,
+        created_by_device_id: row.get(14)?,
         sync_status: CloudSyncStatus::from_str(&status),
-        last_synced_at: row.get(15)?,
-        last_error_code: row.get(16)?,
+        last_synced_at: row.get(16)?,
+        last_error_code: row.get(17)?,
     })
 }
 
@@ -469,8 +504,8 @@ impl Repository for SqliteRepo {
         let conn = self.conn.lock().unwrap();
         let created_at = normalize_for_storage(&s.created_at)?;
         conn.execute(
-            "INSERT INTO snapshots (id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+            "INSERT INTO snapshots (id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 s.id,
                 s.game_id,
@@ -483,6 +518,7 @@ impl Repository for SqliteRepo {
                 s.content_hash,
                 s.storage_key,
                 status_to_str(s.status),
+                s.source_count as i64,
             ],
         )
         .map_err(map_err)?;
@@ -520,7 +556,8 @@ impl Repository for SqliteRepo {
         let created_at = normalize_for_storage(&s.created_at)?;
         conn.execute(
             "UPDATE snapshots SET game_id=?2, created_at=?3, note=?4, reason=?5, locked=?6,
-                 file_count=?7, total_size=?8, content_hash=?9, storage_key=?10, status=?11
+                 file_count=?7, total_size=?8, content_hash=?9, storage_key=?10, status=?11,
+                 source_count=?12
              WHERE id=?1",
             params![
                 s.id,
@@ -534,6 +571,7 @@ impl Repository for SqliteRepo {
                 s.content_hash,
                 s.storage_key,
                 status_to_str(s.status),
+                s.source_count as i64,
             ],
         )
         .map_err(map_err)?;
@@ -758,9 +796,9 @@ impl CloudStateRepository for SqliteRepo {
         conn.execute(
             "INSERT INTO cloud_snapshot_sync
                 (account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked,
-                 file_count, total_size, content_hash, archive_size, archive_sha256,
+                 file_count, total_size, source_count, content_hash, archive_size, archive_sha256,
                  published_at, created_by_device_id, sync_status, last_synced_at, last_error_code)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
              ON CONFLICT(account_id, snapshot_id) DO UPDATE SET
                 cloud_game_id=excluded.cloud_game_id,
                 created_at=excluded.created_at,
@@ -769,6 +807,7 @@ impl CloudStateRepository for SqliteRepo {
                 locked=excluded.locked,
                 file_count=excluded.file_count,
                 total_size=excluded.total_size,
+                source_count=excluded.source_count,
                 content_hash=excluded.content_hash,
                 archive_size=excluded.archive_size,
                 archive_sha256=excluded.archive_sha256,
@@ -787,6 +826,7 @@ impl CloudStateRepository for SqliteRepo {
                 snapshot.locked as i64,
                 snapshot.file_count as i64,
                 snapshot.total_size as i64,
+                snapshot.source_count as i64,
                 snapshot.content_hash,
                 snapshot.archive_size as i64,
                 snapshot.archive_sha256,

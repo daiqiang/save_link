@@ -197,6 +197,10 @@ button {
 .ghead .path { display: flex; align-items: center; gap: 6px; color: var(--color-text-3);
   font-size: 12.5px; }
 .ghead .path .mono { font-family: ui-monospace, Menlo, Consolas, monospace; }
+.game-paths { display: flex; flex-direction: column; gap: 3px; }
+.game-paths .path { min-width: 0; }
+.game-paths .path svg { flex: none; }
+.game-paths .path .mono { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .gstats { display: flex; gap: 32px; margin: 20px 0 18px; }
 .gstat .k { font-size: 12px; color: var(--color-text-3); }
@@ -248,6 +252,7 @@ button {
 .modal.narrow { width: 520px; }
 .modal.settings-modal { width: 680px; }
 .modal.cloud-modal { width: 760px; max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.modal.add-game-modal { width: 860px; max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
 .modal-head { display: flex; align-items: center; justify-content: space-between;
   padding: 16px 20px; border-bottom: 1px solid var(--color-border); }
 .modal-head h3 { margin: 0; font-size: 16px; font-weight: 650; }
@@ -277,6 +282,72 @@ button {
 .modal-foot { display: flex; justify-content: flex-end; gap: 10px;
   padding: 14px 20px; border-top: 1px solid var(--color-border); background: #fafbfc; }
 .modal-foot .spacer { flex: 1; }
+
+/* 添加游戏 */
+.add-game-tabs { display: flex; gap: 4px; padding: 8px 20px 0; border-bottom: 1px solid var(--color-border); }
+.add-game-tabs button { display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 12px;
+  border: 0; border-bottom: 2px solid transparent; background: transparent; color: var(--color-text-3); font-size: 13px; }
+.add-game-tabs button:hover { color: var(--color-text); background: #f7f8fa; }
+.add-game-tabs button.active { color: var(--color-accent); border-bottom-color: var(--color-accent); font-weight: 600; }
+.add-manual-body { min-height: 356px; overflow-y: auto; }
+.field-actions { display: flex; gap: 8px; margin-top: 8px; }
+.save-path-editor { display: flex; flex-direction: column; gap: 12px; }
+.save-path-edit { min-width: 0; }
+.save-path-edit-label { margin-bottom: 5px; color: var(--color-text-3); font-size: 11.5px; font-weight: 600; }
+.save-path-edit-row { display: grid; grid-template-columns: minmax(0, 1fr) 30px 30px 30px; align-items: center; gap: 5px; }
+.save-path-edit-row .iconbtn { border-color: var(--color-border); background: var(--color-surface); }
+.save-path-edit-row .iconbtn:hover:not(:disabled) { background: #f0f1f3; }
+.save-path-edit-row .danger-text { color: var(--color-danger); }
+.add-save-path { margin-top: 10px; }
+.path-stack { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.path-stack span { overflow-wrap: anywhere; font-size: 12px; }
+.modal.bind-path-modal { max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.bind-path-body { overflow-y: auto; }
+.steam-discovery-body { min-height: 420px; display: flex; flex-direction: column; overflow: hidden; }
+.steam-discovery-state { min-height: 420px; padding: 32px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 10px; color: var(--color-text-3); text-align: center; }
+.steam-discovery-state strong { color: var(--color-text); font-size: 14px; }
+.steam-error { max-width: 560px; overflow-wrap: anywhere; font-size: 12px; }
+.steam-scan-head { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 9px 20px;
+  border-bottom: 1px solid var(--color-border); background: #fafbfc; }
+.steam-scan-head > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.steam-scan-head strong { font-size: 13px; }
+.steam-scan-head span { color: var(--color-text-3); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.steam-discovery-layout { min-height: 362px; display: grid; grid-template-columns: 290px minmax(0, 1fr); overflow: hidden; }
+.steam-game-list { overflow-y: auto; padding: 8px; border-right: 1px solid var(--color-border); background: #fafbfc; }
+.steam-game-row { width: 100%; min-height: 58px; display: flex; align-items: center; gap: 10px; padding: 8px;
+  border: 1px solid transparent; border-radius: var(--radius); background: transparent; color: var(--color-text); text-align: left; }
+.steam-game-row:hover { background: var(--color-surface); border-color: var(--color-border); }
+.steam-game-row.active { background: var(--color-surface); border-color: #bfd0ee; box-shadow: var(--shadow-sm); }
+.steam-game-row .game-cover { width: 36px; height: 36px; font-size: 13px; }
+.steam-game-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.steam-game-copy strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; }
+.steam-game-copy > span { color: var(--color-text-3); font-size: 11.5px; }
+.steam-added { display: inline-flex; align-items: center; gap: 3px; flex: none; color: var(--color-ok); font-size: 11px; }
+.steam-game-detail { min-width: 0; overflow-y: auto; padding: 16px 18px 20px; }
+.steam-detail-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px;
+  padding-bottom: 12px; border-bottom: 1px solid var(--color-border); }
+.steam-detail-title strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.steam-detail-title span { flex: none; color: var(--color-text-3); font-size: 11.5px; }
+.steam-path-group { margin-top: 15px; }
+.steam-path-label { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--color-text-2); font-size: 12px; font-weight: 600; }
+.steam-path-label span { min-width: 18px; height: 18px; display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 9px; background: #e9edf3; color: var(--color-text-2); font-size: 10.5px; font-weight: 600; }
+.steam-path { min-height: 34px; display: flex; align-items: center; gap: 7px; padding: 7px 9px;
+  border: 1px solid var(--color-border); background: #fafbfc; color: var(--color-text-2); }
+.steam-path + .steam-path { border-top: 0; }
+.steam-path-group .steam-path:nth-child(2) { border-radius: var(--radius-sm) var(--radius-sm) 0 0; }
+.steam-path:last-child { border-radius: 0 0 var(--radius-sm) var(--radius-sm); }
+.steam-path-group .steam-path:nth-child(2):last-child { border-radius: var(--radius-sm); }
+.steam-path svg { flex: none; }
+.steam-path span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; }
+.steam-path-group.muted .steam-path { color: var(--color-text-3); background: #fff; }
+
+@media (max-width: 720px) {
+  .steam-discovery-layout { grid-template-columns: 1fr; overflow-y: auto; }
+  .steam-game-list { max-height: 190px; border-right: 0; border-bottom: 1px solid var(--color-border); }
+  .steam-game-detail { overflow: visible; }
+}
 
 .field { margin-bottom: 16px; }
 .field label { display: block; font-size: 12.5px; font-weight: 600; color: var(--color-text-2); margin-bottom: 6px; }

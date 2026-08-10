@@ -23,6 +23,18 @@ pub trait SnapshotStore: Send + Sync {
     /// 把指定快照解出到目标目录（恢复用）。必须是覆盖式、内容无损。
     fn restore(&self, key: &str, target: &Path) -> Result<()>;
 
+    /// 把快照中的各个独立存档根恢复到对应目标目录。
+    /// 单目录实现默认退化为原有 `restore`，保持测试替身与旧存储实现兼容。
+    fn restore_sources(&self, key: &str, targets: &[PathBuf]) -> Result<()> {
+        let target = targets
+            .first()
+            .ok_or_else(|| SaveLinkError::Io("restore has no target".into()))?;
+        if targets.len() != 1 {
+            return Err(SaveLinkError::Io("snapshot store does not support multiple sources".into()));
+        }
+        self.restore(key, target)
+    }
+
     /// 校验快照完整性（恢复前 / 创建后调用）。
     fn verify(&self, key: &str) -> Result<bool>;
 
@@ -58,6 +70,29 @@ impl FsStore {
     fn ok_marker(&self, key: &str) -> PathBuf {
         self.repo_root.join("snapshots").join(format!("{key}.ok"))
     }
+
+    /// 多目录布局标记，内容为根目录数量。旧单目录快照没有该文件。
+    fn layout_marker(&self, key: &str) -> PathBuf {
+        self.repo_root
+            .join("snapshots")
+            .join(format!("{key}.layout"))
+    }
+
+    fn stored_source_count(&self, key: &str) -> Result<u32> {
+        let marker = self.layout_marker(key);
+        if !marker.exists() {
+            return Ok(1);
+        }
+        let value = fs::read_to_string(marker).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+        let count = value
+            .trim()
+            .parse::<u32>()
+            .map_err(|_| SaveLinkError::SnapshotCorrupt)?;
+        if count < 2 {
+            return Err(SaveLinkError::SnapshotCorrupt);
+        }
+        Ok(count)
+    }
 }
 
 /// 递归把 `src` 目录下的内容复制进 `dst`（不含 src 本身这一层）。
@@ -90,11 +125,17 @@ impl SnapshotStore for FsStore {
         // 重入清理：若有同名残留先清掉，保证幂等。
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_file(self.ok_marker(snapshot_id));
+        let _ = fs::remove_file(self.layout_marker(snapshot_id));
         fs::create_dir_all(&dir).map_err(|e| SaveLinkError::Io(e.to_string()))?;
 
-        // MVP 单源；多源聚合留待实现者扩展（不影响当前测试）。
-        if let Some(src) = sources.first() {
-            copy_tree(src, &dir)?;
+        if sources.len() > 1 {
+            for (index, source) in sources.iter().enumerate() {
+                copy_tree(source, &dir.join("sources").join(index.to_string()))?;
+            }
+            fs::write(self.layout_marker(snapshot_id), sources.len().to_string())
+                .map_err(|e| SaveLinkError::Io(e.to_string()))?;
+        } else if let Some(source) = sources.first() {
+            copy_tree(source, &dir)?;
         }
 
         // 全部内容写完后，最后写 .ok 标记（含指纹）。中断时不会有标记 → verify 为 false。
@@ -116,6 +157,28 @@ impl SnapshotStore for FsStore {
         copy_tree(&dir, target)
     }
 
+    fn restore_sources(&self, key: &str, targets: &[PathBuf]) -> Result<()> {
+        let dir = self.snap_dir(key);
+        if !dir.exists() {
+            return Err(SaveLinkError::SnapshotCorrupt);
+        }
+        let source_count = self.stored_source_count(key)? as usize;
+        if targets.len() != source_count {
+            return Err(SaveLinkError::SnapshotCorrupt);
+        }
+        if source_count == 1 {
+            return copy_tree(&dir, &targets[0]);
+        }
+        for (index, target) in targets.iter().enumerate() {
+            let source = dir.join("sources").join(index.to_string());
+            if !source.is_dir() {
+                return Err(SaveLinkError::SnapshotCorrupt);
+            }
+            copy_tree(&source, target)?;
+        }
+        Ok(())
+    }
+
     fn verify(&self, key: &str) -> Result<bool> {
         let dir = self.snap_dir(key);
         let marker = self.ok_marker(key);
@@ -123,7 +186,8 @@ impl SnapshotStore for FsStore {
             return Ok(false);
         }
         let expected = fs::read_to_string(&marker).map_err(|e| SaveLinkError::Io(e.to_string()))?;
-        let actual = scan::fingerprint_dir(&dir)?.content_hash;
+        let source_count = self.stored_source_count(key)?;
+        let actual = scan::fingerprint_snapshot_payload(&dir, source_count)?.content_hash;
         Ok(actual == expected.trim())
     }
 
@@ -135,6 +199,10 @@ impl SnapshotStore for FsStore {
         let marker = self.ok_marker(key);
         if marker.exists() {
             fs::remove_file(&marker).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+        }
+        let layout = self.layout_marker(key);
+        if layout.exists() {
+            fs::remove_file(&layout).map_err(|e| SaveLinkError::Io(e.to_string()))?;
         }
         Ok(())
     }
