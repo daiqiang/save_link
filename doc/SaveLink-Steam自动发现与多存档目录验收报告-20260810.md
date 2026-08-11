@@ -5,6 +5,7 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | Codex | 2026-08-10 | 完成真实 Steam 发现和隔离多目录验收；修复 Elden Ring 父子路径重叠并补自动回归 |
+| 1.1 | Codex | 2026-08-11 | 复验修复后的真实 Steam 开发版与绿色版候选，并验证重复及父子目录拒绝提示 |
 
 ## 验收范围
 
@@ -15,6 +16,10 @@
 - 多目录写入测试全部使用工作区假存档；未对真实 Steam 存档创建快照或执行恢复。
 - 真实百度网盘不在本次范围内。
 
+2026-08-11 针对提交 `18e1bb8 修复一轮bug` 增加一次定向回归：使用
+`acceptance-data/steam-overlap-retest-20260811/profile` 隔离数据运行最新 Tauri 开发版，
+真实 Steam 只读扫描，目录重叠测试只使用工作区临时目录。
+
 ## 自动验证
 
 - `savelink-core cargo test --no-fail-fast`：93 个默认测试通过，0 失败；J/L 两个真实百度测试按设计忽略。
@@ -23,6 +28,13 @@
 - `build-portable.bat --no-open`：通过。
 - 绿色版 ZIP SHA-256：`633BFB13EB2DC88103BBE2F3962384DE2DAADAE5C9490CCA62EEFE8DA1F9E2CB`。
 - ZIP 包含 `SaveLink.exe`、README、`manifest.db`、Manifest 来源 JSON 和 Ludusavi 许可证；本机搜狗压缩产生的空 `log/` 目录属于已确认的外部环境现象。
+
+2026-08-11 定向回归结果：
+
+- `savelink-core cargo test --no-fail-fast`：93 个默认测试通过，0 失败；2 个真实百度测试按设计忽略。
+- `savelink-app/src-tauri cargo test --no-fail-fast`：2 个测试通过。
+- `npm.cmd run build`：通过。
+- `build-portable.bat --no-open`：通过；绿色版 ZIP SHA-256 为 `906B4B1A592F624560B467BB6CFFA5D46B73CA8F161E7B0729D7367F722116CC`。
 
 ## 真实窗口结果
 
@@ -34,6 +46,17 @@
 - 《杀戮尖塔》显示 4 个保护目录：`betaPreferences`、`preferences`、`runs`、`saves`。
 - 两个纯配置文件归一为 1 个安装父目录，并显示在“不纳入快照的纯配置路径”。
 - 当前机器只有 1 个 Steam 游戏库，真实多库扫描尚未验收；N 组自动测试已覆盖多库枚举和分组。
+
+2026-08-11 修复后真实窗口复验：
+
+- 仍识别 8 个候选；Elden Ring 与《杀戮尖塔》均正常出现。
+- Elden Ring 的 `save_paths` 只包含真实数字用户目录 `...\EldenRing\76561198820991451`。
+- Elden Ring 的 `config_paths` 保留 `...\EldenRing`，该父目录不再进入 `save_paths`。
+- 《杀戮尖塔》仍发现 `betaPreferences`、`preferences`、`runs`、`saves` 四个存档目录，未发生回归。
+- 相同目录保存被拒绝，并显示“存档目录不能相同或相互嵌套”。
+- 父目录与子目录同时保存也被拒绝，错误信息列出两条冲突路径。
+- 测试游戏已从隔离 profile 移除，父目录和子目录中的测试文件内容保持不变。
+- 同一提交生成的绿色版再次只读扫描真实 Steam，候选数量、Elden Ring 路径分类和《杀戮尖塔》4 个目录均与开发版一致；全程没有添加游戏。
 
 ### 多存档目录
 
@@ -77,10 +100,10 @@ Elden Ring 的 Manifest 规则包含：
 - 手动添加/编辑游戏，以及创建和恢复快照前，都会拒绝相同或父子嵌套的存档目录。
 - N 组新增 Elden Ring 同级配置文件和嵌套 Manifest 规则回归；O 组新增重叠来源拒绝回归，均已通过。
 
-代码和自动回归已确认修复。Elden Ring 真实绿色版候选只显示一个保护目录的复验，可在下一次打包验收时补做。
+代码、自动回归、最新 Tauri 开发版和绿色版真实窗口均已确认修复。Elden Ring 只显示一个数字用户保护目录，配置父目录只显示在 `config_paths`。
 
 ## 结论
 
 - 多存档目录：通过。扫描、编辑、快照、指纹变化、A/B 往返恢复、详情展示和移除安全均符合预期。
-- Steam 自动发现：代码和自动回归通过，`BUG-STEAM-01` 已修复；真实多 Steam 游戏库和修复后 Elden Ring 绿色版候选留待后续实机复验。
+- Steam 自动发现：代码、自动回归、修复后真实 Tauri 开发版与绿色版候选均通过，`BUG-STEAM-01` 已关闭；仅真实多 Steam 游戏库留待后续实机复验。
 - 数据安全：本轮未写入真实 Steam 存档；所有恢复和删除测试均在隔离假目录及隔离 profile 中完成。
