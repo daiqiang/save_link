@@ -95,6 +95,62 @@ fn n3_missing_manifest_database_has_a_clear_error() {
     assert_eq!(error, SteamDiscoveryError::ManifestDatabaseMissing(missing));
 }
 
+#[test]
+fn n4_store_user_id_rule_does_not_capture_sibling_config_file() {
+    let temp = TempDir::new();
+    let steam_root = temp.child("Steam");
+    prepare_library(&steam_root);
+    write_library_folders(&steam_root, &[&steam_root]);
+    write_app_manifest(&steam_root, 2778580, "Elden Ring", "EldenRing");
+
+    let base = steam_root.join("steamapps/common/EldenRing");
+    let user_dir = base.join("saves/76561198820991451");
+    fs::create_dir_all(&user_dir).unwrap();
+    fs::write(user_dir.join("ER0000.sl2"), b"save").unwrap();
+    fs::write(base.join("saves/GraphicsConfig.xml"), b"config").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = SteamDiscoveryService::new(&database)
+        .scan(Some(&steam_root))
+        .unwrap();
+    let game = report
+        .games
+        .iter()
+        .find(|game| game.app_id == 2778580)
+        .unwrap();
+
+    assert_eq!(game.save_paths, vec![user_dir]);
+    assert_eq!(game.config_paths, vec![base.join("saves")]);
+}
+
+#[test]
+fn n5_discovery_collapses_nested_save_rule_matches() {
+    let temp = TempDir::new();
+    let steam_root = temp.child("Steam");
+    prepare_library(&steam_root);
+    write_library_folders(&steam_root, &[&steam_root]);
+    write_app_manifest(&steam_root, 999999, "Nested Save Game", "NestedSaveGame");
+
+    let base = steam_root.join("steamapps/common/NestedSaveGame");
+    fs::create_dir_all(base.join("all/nested")).unwrap();
+    fs::write(base.join("all/root.dat"), b"root").unwrap();
+    fs::write(base.join("all/nested/child.dat"), b"child").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = SteamDiscoveryService::new(&database)
+        .scan(Some(&steam_root))
+        .unwrap();
+    let game = report
+        .games
+        .iter()
+        .find(|game| game.app_id == 999999)
+        .unwrap();
+
+    assert_eq!(game.save_paths, vec![base.join("all")]);
+}
+
 fn prepare_library(library: &Path) {
     fs::create_dir_all(library.join("steamapps/common")).unwrap();
 }
@@ -170,7 +226,25 @@ fn build_manifest_database(path: &Path) {
             [],
         )
         .unwrap();
-    for (game_id, store_id, primary) in [(1, "646570", 1), (2, "123456", 1), (2, "900001", 0)] {
+    connection
+        .execute(
+            "INSERT INTO manifest_games(id, name, alias) VALUES (3, 'Elden Ring', NULL)",
+            [],
+        )
+        .unwrap();
+    connection
+        .execute(
+            "INSERT INTO manifest_games(id, name, alias) VALUES (4, 'Nested Save Game', NULL)",
+            [],
+        )
+        .unwrap();
+    for (game_id, store_id, primary) in [
+        (1, "646570", 1),
+        (2, "123456", 1),
+        (2, "900001", 0),
+        (3, "2778580", 1),
+        (4, "999999", 1),
+    ] {
         connection
             .execute(
                 "INSERT INTO manifest_store_ids(game_id, store, store_game_id, is_primary)
@@ -187,6 +261,10 @@ fn build_manifest_database(path: &Path) {
         (4, 1, "<base>/config", "config"),
         (5, 1, "<xdgData>/SlayTheSpire", "save"),
         (6, 2, "<base>/userdata", "save"),
+        (7, 3, "<base>/saves/<storeUserId>", "save"),
+        (8, 3, "<base>/saves/GraphicsConfig.xml", "config"),
+        (9, 4, "<base>/all", "save"),
+        (10, 4, "<base>/all/nested", "save"),
     ];
     for (id, game_id, template, tags) in rules {
         connection
@@ -197,7 +275,7 @@ fn build_manifest_database(path: &Path) {
             )
             .unwrap();
     }
-    for rule_id in [1, 2, 3, 4, 6] {
+    for rule_id in [1, 2, 3, 4, 6, 7, 8, 9, 10] {
         connection
             .execute(
                 "INSERT INTO manifest_file_constraints(file_rule_id, ordinal, os, store)

@@ -4,7 +4,7 @@
 
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
-| 1.0 | Codex | 2026-08-10 | 首次真实 Steam 发现和隔离多目录快照/恢复验收 |
+| 1.0 | Codex | 2026-08-10 | 完成真实 Steam 发现和隔离多目录验收；修复 Elden Ring 父子路径重叠并补自动回归 |
 
 ## 验收范围
 
@@ -17,7 +17,7 @@
 
 ## 自动验证
 
-- `savelink-core cargo test --no-fail-fast`：90 个默认测试通过，0 失败；J/L 两个真实百度测试按设计忽略。
+- `savelink-core cargo test --no-fail-fast`：93 个默认测试通过，0 失败；J/L 两个真实百度测试按设计忽略。
 - `savelink-app/src-tauri cargo test --no-fail-fast`：2 个测试通过。
 - `npm.cmd run build`：通过。
 - `build-portable.bat --no-open`：通过。
@@ -48,7 +48,7 @@
 
 ## 发现的问题
 
-### BUG-STEAM-01：纯配置父目录误入保护路径
+### BUG-STEAM-01：`<storeUserId>` 误匹配同级文件（已修复）
 
 Elden Ring 的 Manifest 规则包含：
 
@@ -57,7 +57,7 @@ Elden Ring 的 Manifest 规则包含：
 [config] <winAppData>/EldenRing/GraphicsConfig.xml
 ```
 
-主工程会把精确文件规则归一到父目录。实际候选结果为：
+修复前，`<storeUserId>` 会展开为通配符 `*`，同时匹配数字用户目录和同级文件 `GraphicsConfig.xml`。文件命中又会被归一到父目录，因此实际候选结果为：
 
 ```text
 将保护的存档目录：
@@ -68,12 +68,19 @@ Elden Ring 的 Manifest 规则包含：
 - .../EldenRing
 ```
 
-纯配置父目录同时进入了保护路径，并与真实数字用户存档目录形成父子重叠来源。该问题在真实绿色版、自动发现和单游戏复核中可稳定复现。
+这会制造 `EldenRing` 与 `EldenRing/<数字用户目录>` 两个父子重叠的存档来源。问题不是 `config` 标签串入了 `save_paths`，而是 save 规则的末尾目录占位符误接收了同级文件。
 
-预期：纯 `config` 规则只能进入 `config_paths`；`save_paths` 只保留真正带 `save` 标签的路径。修复后应增加“纯配置归一父目录不进入 recommended”的自动回归，并重新验证 Elden Ring 候选只显示 1 个保护目录。
+修复内容：
+
+- `<storeUserId>` 位于规则末尾时只接受目录匹配，不再把同级文件提升为父目录。
+- Manifest 规则同时命中父子目录时收敛为最外层保护目录，保证来源互不嵌套。
+- 手动添加/编辑游戏，以及创建和恢复快照前，都会拒绝相同或父子嵌套的存档目录。
+- N 组新增 Elden Ring 同级配置文件和嵌套 Manifest 规则回归；O 组新增重叠来源拒绝回归，均已通过。
+
+代码和自动回归已确认修复。Elden Ring 真实绿色版候选只显示一个保护目录的复验，可在下一次打包验收时补做。
 
 ## 结论
 
 - 多存档目录：通过。扫描、编辑、快照、指纹变化、A/B 往返恢复、详情展示和移除安全均符合预期。
-- Steam 自动发现：有条件通过。真实候选发现和《杀戮尖塔》添加可用，但 `BUG-STEAM-01` 修复前不能认为候选分类完全验收通过。
+- Steam 自动发现：代码和自动回归通过，`BUG-STEAM-01` 已修复；真实多 Steam 游戏库和修复后 Elden Ring 绿色版候选留待后续实机复验。
 - 数据安全：本轮未写入真实 Steam 存档；所有恢复和删除测试均在隔离假目录及隔离 profile 中完成。

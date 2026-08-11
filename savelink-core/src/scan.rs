@@ -115,6 +115,45 @@ pub fn scan(save_paths: &[PathBuf]) -> Result<ScanResult> {
     fingerprint_sources(save_paths)
 }
 
+/// 检查多个存档根目录是否可以作为相互独立的来源处理。
+///
+/// 多目录快照、恢复和云端载荷都依赖每个来源拥有独立的根目录。父子目录
+/// 会导致同一批文件被重复扫描，并破坏恢复时的目录替换顺序，因此在进入
+/// 这些流程前统一拒绝。
+pub fn validate_save_paths(save_paths: &[PathBuf]) -> Result<()> {
+    for (index, first) in save_paths.iter().enumerate() {
+        for second in save_paths.iter().skip(index + 1) {
+            if is_same_or_ancestor(first, second) || is_same_or_ancestor(second, first) {
+                return Err(SaveLinkError::OverlappingSavePaths {
+                    first: first.clone(),
+                    second: second.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn is_same_or_ancestor(parent: &Path, candidate: &Path) -> bool {
+    let parent = normalized_path_components(parent);
+    let candidate = normalized_path_components(candidate);
+    candidate.len() >= parent.len() && candidate.starts_with(&parent)
+}
+
+fn normalized_path_components(path: &Path) -> Vec<String> {
+    let mut components = Vec::new();
+    for component in path.to_string_lossy().replace('\\', "/").split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            value => components.push(value.to_ascii_lowercase()),
+        }
+    }
+    components
+}
+
 /// 对多个独立存档根目录生成一个稳定的聚合指纹。
 ///
 /// 每个根目录先沿用单目录指纹算法，再把目录序号和子指纹按顺序聚合；因此同名文件
@@ -123,6 +162,7 @@ pub fn fingerprint_sources(sources: &[PathBuf]) -> Result<ScanResult> {
     if sources.len() <= 1 {
         return scan(sources);
     }
+    validate_save_paths(sources)?;
     let mut hash = FNV_OFFSET;
     let mut file_count = 0u64;
     let mut total_size = 0u64;

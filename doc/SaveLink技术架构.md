@@ -16,7 +16,7 @@
 | 1.9 | 代强 | 2026-07-29 | 补充 doc 文档目录；同步中文文档名和引用 |
 | 1.10 | 代强 | 2026-08-05 | 同步 v0.1.0 发布与 v0.2.0 专项验收；补充自动调度、联合清理及快照时间统一、旧库迁移和跨设备兼容架构 |
 | 1.11 | 代强 | 2026-08-06 | 确认 v0.2.0 架构与主流程验收完成；同步版本元数据和发布后故障验收边界 |
-| 1.12 | Codex | 2026-08-10 | 同步 Steam 自动发现、Manifest 打包资源、多目录存储/恢复边界、90 个默认测试及当前候选分类问题 |
+| 1.12 | Codex | 2026-08-10 | 同步 Steam 自动发现、Manifest 打包资源、多目录存储/恢复边界、93 个默认测试及重叠目录防护 |
 
 ## 文档用途
 
@@ -62,7 +62,7 @@ save_link/
 
 当前验证状态：
 
-- `savelink-core`：90 个默认测试全绿；新增 N 组覆盖 Steam 发现，O 组覆盖多目录指纹、存储、恢复和旧库迁移。J/L 两个真实百度测试均已按需执行通过。
+- `savelink-core`：93 个默认测试全绿；N 组覆盖 Steam 发现、Elden Ring 同级配置文件过滤和嵌套规则收敛，O 组覆盖多目录指纹、存储、恢复、旧库迁移和重叠来源拒绝。J/L 两个真实百度测试均已按需执行通过。
 - Tauri：自动上传状态选择测试 2 个全绿。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
@@ -206,7 +206,7 @@ Windows 运行时数据：
 
 当前 SQLite 生产实现位于 `savelink-core/src/sqlite_repo.rs`。和早期设计不同，当前没有独立 `save_paths` 表；游戏路径以换行分隔文本存储在 `games` 表中。模型使用 `Vec<PathBuf>`，扫描、指纹、`FsStore`、恢复、云端协议、设备 B 绑定和前端展示均按完整路径数组运行；旧数据库中的单路径记录会迁移为一个来源。
 
-Steam 自动发现位于 `savelink-core/src/steam_discovery.rs`：通过注册表和 Steam appmanifest 枚举已安装应用，再按 AppID 查询随包 `src-tauri/resources/manifest.db`。绿色版同时携带 Manifest 来源说明和 Ludusavi 许可证。精确文件规则会归一到父目录后交给 SaveLink 的目录型存储；当前需特别防止纯配置规则归一后的父目录进入 `save_paths`，否则会与真正存档目录形成重叠来源。
+Steam 自动发现位于 `savelink-core/src/steam_discovery.rs`：通过注册表和 Steam appmanifest 枚举已安装应用，再按 AppID 查询随包 `src-tauri/resources/manifest.db`。绿色版同时携带 Manifest 来源说明和 Ludusavi 许可证。精确文件规则会归一到父目录后交给 SaveLink 的目录型存储；末尾 `<storeUserId>` 目录占位符只接受目录，规则结果还会收敛相同或父子嵌套路径。添加/编辑游戏及创建/恢复快照前会再次调用 `validate_save_paths`，把重叠来源作为安全错误拒绝。
 
 快照时间采用统一口径：新记录持久化为固定秒精度 UTC RFC 3339（例如 `2026-08-05T13:25:00Z`）。打开旧数据库时，`YYYY-MM-DD HH:MM`、`YYYY-MM-DD HH:MM:SS` 和带偏移 RFC 3339 会自动转换为该格式；前端再按用户本地时区显示为 `YYYY-MM-DD HH:MM`。云端协议版本和目录结构不变，比较已有 `.ok` 时按真实时刻而非字符串表现形式判断。
 
@@ -309,6 +309,7 @@ pub trait SnapshotStore: Send + Sync {
   - `rolled_back=false`：极端情况下可能已经改动真实存档，UI 必须提醒用户核对。
 - `SaveDirMissingNeedsChoice`：真实存档目录不存在，需要用户选择。
 - `SnapshotLocked`：锁定快照不可删除。
+- `OverlappingSavePaths`：多个存档根目录相同或互为父子目录，拒绝进入快照或恢复流程。
 
 前端恢复失败页会根据错误类型给出“本次恢复未修改真实存档”或“请核对存档目录”的提示。
 
@@ -440,7 +441,7 @@ Tauri 2 capability 需要：
 ## 当前技术债
 
 - `FsStore` 目录复制不压缩，空间占用和文件数量后续可能成为问题。
-- Steam 候选分类仍有缺陷：Elden Ring 的纯配置精确文件归一为父目录后，该父目录重复进入 `save_paths`，与数字用户存档目录形成父子重叠；修复时必须保证纯 `config` 规则只进入 `config_paths`。
+- Steam 自动发现的 Elden Ring 父子候选问题已修复并有自动回归；修复后真实绿色版候选和真实多 Steam 游戏库机器仍待以后验收。
 - 真实恢复进度事件未接入前端；当前 Tauri 命令传空 progress 回调。
 - `startup_self_check` 已在 Tauri setup 中显式调用；真实窗口残留清理场景可在正式回归时补验收。
 - 设置入口已提供自动备份开关；帮助入口仍是占位。

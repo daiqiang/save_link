@@ -1,6 +1,7 @@
 //! 统一错误类型。前端按 kind 渲染对应状态（对应视觉文档「状态设计」清单）。
 
 use std::fmt;
+use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveLinkError {
@@ -17,6 +18,8 @@ pub enum SaveLinkError {
     SnapshotLocked,
     /// 真实存档目录不存在，需用户决策（安全规则 5）。
     SaveDirMissingNeedsChoice,
+    /// 一个游戏的多个存档根目录相同或相互嵌套，无法安全地作为独立来源处理。
+    OverlappingSavePaths { first: PathBuf, second: PathBuf },
     /// 其它 IO 错误。
     Io(String),
 }
@@ -34,6 +37,12 @@ impl fmt::Display for SaveLinkError {
             SaveLinkError::SaveDirMissingNeedsChoice => {
                 write!(f, "存档目录不存在，请选择如何处理")
             }
+            SaveLinkError::OverlappingSavePaths { first, second } => write!(
+                f,
+                "存档目录不能相同或相互嵌套：{} 与 {}",
+                first.display(),
+                second.display()
+            ),
             SaveLinkError::Io(msg) => write!(f, "IO 错误: {msg}"),
         }
     }

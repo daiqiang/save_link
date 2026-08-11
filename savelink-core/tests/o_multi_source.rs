@@ -193,3 +193,20 @@ fn o4_old_sqlite_rows_migrate_to_one_source() {
         1
     );
 }
+
+#[test]
+fn o5_overlapping_sources_are_rejected_before_scanning() {
+    let temp = TempDir::new();
+    let outer = temp.child("outer");
+    let inner = outer.join("inner");
+    write_files(&inner, &[("save.dat", b"SAVE")]);
+
+    let error = scan::validate_save_paths(&[outer.clone(), inner.clone()]).unwrap_err();
+    assert!(matches!(error, SaveLinkError::OverlappingSavePaths { .. }));
+
+    let reverse = scan::validate_save_paths(&[inner, outer]).unwrap_err();
+    assert!(matches!(
+        reverse,
+        SaveLinkError::OverlappingSavePaths { .. }
+    ));
+}

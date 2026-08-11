@@ -63,6 +63,8 @@ impl SnapshotService {
             .get_game(game_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("game not found: {game_id}")))?;
 
+        scan::validate_save_paths(&game.save_paths)?;
+
         // A6：扫描，目录不存在/不可读直接返回错误，不写任何状态。
         let ctx = scan::scan(&game.save_paths)?;
 
@@ -314,6 +316,7 @@ impl RestoreService {
             .repo
             .get_snapshot(snapshot_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("snapshot not found: {snapshot_id}")))?;
+        scan::validate_save_paths(&game.save_paths)?;
         let save_dirs = snapshot_save_dirs(&game.save_paths, target.source_count)?;
 
         // 步骤 1（前置）：目标快照必须完好（B4）。
@@ -415,6 +418,7 @@ impl RestoreService {
             .repo
             .get_snapshot(snapshot_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("snapshot not found: {snapshot_id}")))?;
+        scan::validate_save_paths(&game.save_paths)?;
         let save_dirs = snapshot_save_dirs(&game.save_paths, target.source_count)?;
 
         if !self.store.verify(&target.storage_key)? {

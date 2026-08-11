@@ -844,6 +844,16 @@ pub fn add_game(
     if save_paths.is_empty() {
         return Err("请至少选择一个存档目录".into());
     }
+    let save_paths = save_paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    if save_paths.is_empty() {
+        return Err("请至少选择一个存档目录".into());
+    }
+    savelink_core::scan::validate_save_paths(&save_paths).map_err(|e| e.to_string())?;
     let _operation = acquire_snapshot_operation_guard(&state)?;
     let now = state.clock.now_stamp();
     let game = Game {
@@ -851,10 +861,7 @@ pub fn add_game(
         name,
         icon: None,
         repo_path: std::path::PathBuf::new(), // 仓库由 store 管理，DTO 不暴露
-        save_paths: save_paths
-            .into_iter()
-            .map(std::path::PathBuf::from)
-            .collect(),
+        save_paths,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -886,6 +893,11 @@ pub fn update_game(
     if trimmed_paths.is_empty() {
         return Err("请至少选择一个存档目录".into());
     }
+    let trimmed_paths = trimmed_paths
+        .into_iter()
+        .map(std::path::PathBuf::from)
+        .collect::<Vec<_>>();
+    savelink_core::scan::validate_save_paths(&trimmed_paths).map_err(|e| e.to_string())?;
     let _operation = acquire_snapshot_operation_guard(&state)?;
 
     let mut game = state
@@ -894,10 +906,7 @@ pub fn update_game(
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "游戏不存在".to_string())?;
     game.name = name.trim().to_string();
-    game.save_paths = trimmed_paths
-        .into_iter()
-        .map(std::path::PathBuf::from)
-        .collect();
+    game.save_paths = trimmed_paths;
     game.updated_at = state.clock.now_stamp();
     state
         .repo

@@ -19,7 +19,8 @@ pub struct SteamDiscoveredGame {
     pub steam_root: PathBuf,
     pub library_root: PathBuf,
     pub install_dir: PathBuf,
-    /// 可交给 SaveLink 保护的目录。Manifest 命中单个文件时会归一到其父目录。
+    /// 可交给 SaveLink 保护的目录。Manifest 命中单个文件时会归一到其父目录；
+    /// `<storeUserId>` 作为末尾目录占位符时只接受目录匹配。
     pub save_paths: Vec<PathBuf>,
     /// 只有 `config` 标签的路径，默认不保护。
     pub config_paths: Vec<PathBuf>,
@@ -393,6 +394,12 @@ fn scan_rules(rules: &[DbRule], context: &ResolutionContext) -> SteamDiscoveryRe
             continue;
         }
         for matched in match_pattern(&expanded.pattern)? {
+            // `<storeUserId>` 代表用户目录。通配符还会匹配同级文件，但把这类
+            // 文件提升为父目录会制造父子存档来源，例如 Elden Ring 的
+            // GraphicsConfig.xml 与真实数字用户目录会重叠。
+            if matched.is_file() && terminal_store_user_id_placeholder(&rule.path_template) {
+                continue;
+            }
             let protection_path = if matched.is_file() {
                 matched.parent().map(Path::to_path_buf)
             } else if matched.is_dir() {
@@ -413,7 +420,59 @@ fn scan_rules(rules: &[DbRule], context: &ResolutionContext) -> SteamDiscoveryRe
             }
         }
     }
+    result.recommended = collapse_overlapping_paths(result.recommended);
+    result.config_only = collapse_overlapping_paths(result.config_only);
     Ok(result)
+}
+
+fn terminal_store_user_id_placeholder(template: &str) -> bool {
+    template
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .ends_with("<storeUserId>")
+}
+
+/// 多条 Manifest 规则可能命中同一目录树。SaveLink 的存档来源必须互相独立，
+/// 因此保留最外层目录即可覆盖其子目录，避免后续快照和恢复出现父子来源。
+fn collapse_overlapping_paths(paths: BTreeSet<PathBuf>) -> BTreeSet<PathBuf> {
+    let mut candidates = paths.into_iter().collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        normalized_path_components(left)
+            .len()
+            .cmp(&normalized_path_components(right).len())
+            .then_with(|| normalized_path(left).cmp(&normalized_path(right)))
+    });
+
+    let mut kept: Vec<PathBuf> = Vec::new();
+    for candidate in candidates {
+        if kept.iter().any(|parent| {
+            let parent = normalized_path_components(parent);
+            let candidate = normalized_path_components(&candidate);
+            candidate.len() >= parent.len() && candidate.starts_with(&parent)
+        }) {
+            continue;
+        }
+        kept.push(candidate);
+    }
+    kept.into_iter().collect()
+}
+
+fn normalized_path(path: &Path) -> String {
+    normalized_path_components(path).join("/")
+}
+
+fn normalized_path_components(path: &Path) -> Vec<String> {
+    let mut components = Vec::new();
+    for component in path.to_string_lossy().replace('\\', "/").split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            value => components.push(value.to_ascii_lowercase()),
+        }
+    }
+    components
 }
 
 fn compatibility(constraints: &[RuleConstraint], os: &str, store: &str) -> Compatibility {
