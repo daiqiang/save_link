@@ -1,6 +1,6 @@
 # SaveLink 当前功能完成情况（给总规划会话）
 
-更新时间：2026-08-11
+更新时间：2026-08-12
 用途：给总规划会话快速判断 SaveLink 当前阶段、已完成功能、已验收点和下一阶段优先级。
 
 > 备注：`PROGRESS.md`、`HANDOFF-codex.md`、`SaveLink技术架构.md`、`SaveLink恢复与存储测试规格.md`、`savelink-app/README.md`、`savelink-app/BUILD.md`、`savelink-app/手动测试计划.md` 已同步到当前实现状态。
@@ -21,10 +21,11 @@
 | 1.9 | 代强 | 2026-08-06 | 确认 v0.2.0 功能完成并进入发布准备；统一版本元数据，记录发布后故障验收项 |
 | 1.10 | Codex | 2026-08-10 | 同步 Steam 自动发现、多存档目录、93 个默认测试和真实绿色版验收；修复 Elden Ring 父子路径重叠 |
 | 1.11 | Codex | 2026-08-11 | 完成 Elden Ring 修复后真实 Steam 开发版与绿色版候选复验 |
+| 1.12 | 代强 | 2026-08-12 | 完成 v0.3.0 版本统一、自动验证和正式绿色版构建，进入标签与 Release 收口 |
 
 ## 一句话结论
 
-SaveLink 已公开发布 Windows 桌面版 v0.1.0，v0.2.0 功能已完成；后续主干又接入 Steam 自动发现和多存档目录。多目录快照、恢复与移除安全主链路已验收，Elden Ring 父子路径重叠修复已通过自动、开发版和绿色版回归。
+SaveLink 已公开发布 Windows 桌面版 v0.1.0；v0.3.0 功能与正式绿色版已完成，包含自动备份与上云、Steam 自动发现和多存档目录支持，当前只剩标签与 GitHub Release。
 
 MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `TC-41` 启动自检清理残留均已补测通过。恢复链路已增加小文件/中文路径回归测试，并把恢复后校验加强为 `content_hash + file_count + total_size`。
 
@@ -111,11 +112,20 @@ MVP 已完成正式回归验收，`TC-17` 移除游戏不删除真实存档和 `
 
 ```text
 savelink-app/src-tauri/target/release/savelink-app.exe
-savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip
-savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.2.0_windows_x64_portable.zip.sha256.txt
-savelink-app/src-tauri/target/release/bundle/nsis/SaveLink_0.2.0_x64-setup.exe
-savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.2.0_x64_en-US.msi
+savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.3.0_windows_x64_portable.zip
+savelink-app/src-tauri/target/release/bundle/portable/SaveLink_0.3.0_windows_x64_portable.zip.sha256.txt
+savelink-app/src-tauri/target/release/bundle/nsis/SaveLink_0.3.0_x64-setup.exe
+savelink-app/src-tauri/target/release/bundle/msi/SaveLink_0.3.0_x64_en-US.msi
 ```
+
+本次 v0.3.0 绿色版实际从独立 Cargo target 构建，发布文件位于：
+
+```text
+savelink-app/src-tauri/target-v030/release/bundle/portable/SaveLink_0.3.0_windows_x64_portable.zip
+savelink-app/src-tauri/target-v030/release/bundle/portable/SaveLink_0.3.0_windows_x64_portable.zip.sha256.txt
+```
+
+ZIP SHA-256：`0BA1B1309C778D7DA2EED0D5C033807E0D0E8CA9CB3EFD3380A1DDECFFB4FD70`。EXE 文件版本和产品版本均为 `0.3.0`，ZIP 中的程序、README、Manifest 数据库、来源说明和 Ludusavi 许可证均已核验。
 
 ## 本轮已验收通过的重点
 
@@ -196,4 +206,4 @@ v0.2.0 的目标是让 SaveLink 定期检测存档变化，自动创建快照并
 
 本地专项、真实百度上传、跨 profile 下载恢复、31→30 联合删除、旧库时间迁移和设备 B 本地化显示均已验收。手动、自动和云端接收的完整未锁定快照已经统一计入 30 条。项目已确认这些结果足以发布 v0.2.0。
 
-发布后继续补充但不阻塞本次发布的项目：真实断网重试、Token 失效或限流、真实百度删除中途失败、另一设备提前删除对象，以及多设备冲突选择交互。npm、Cargo、Tauri 和打包元数据已统一为 `0.2.0`，下一步从本次版本提交生成正式绿色版 ZIP 和 SHA-256。
+发布后继续补充但不阻塞本次发布的项目：真实断网重试、Token 失效或限流、真实百度删除中途失败、另一设备提前删除对象，以及多设备冲突选择交互。npm、Cargo、Tauri 和打包元数据已统一为 `0.3.0`，正式绿色版 ZIP 和 SHA-256 已生成。

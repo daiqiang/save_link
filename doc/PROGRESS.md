@@ -19,13 +19,14 @@
 | 1.12 | 代强 | 2026-08-06 | 完成时间修复绿色版与真实百度复验；确认 v0.2.0 功能完成，统一版本元数据并记录发布后故障验收项 |
 | 1.13 | Codex | 2026-08-10 | 同步 Steam 自动发现、多存档目录、93 个默认测试和真实绿色版验收；修复 Elden Ring 父子路径重叠并补安全校验 |
 | 1.14 | Codex | 2026-08-11 | 完成 Elden Ring 修复后真实 Steam 开发版与绿色版回归，并验证重叠目录拒绝 |
+| 1.15 | 代强 | 2026-08-12 | 完成 v0.3.0 版本统一、自动验证和正式绿色版构建，进入标签与 Release 收口 |
 
 > 持久化的路线图与当前位置。上下文压缩不影响此文件——以它为准。
-> 最后更新：2026-08-11（Steam 自动发现与多存档目录主链路通过验收，Elden Ring 修复已通过真实绿色版回归）
+> 最后更新：2026-08-12（v0.3.0 功能、专项验收和正式绿色版完成，待标签与 Release）
 
 ## 当前位置
 
-**SaveLink v0.2.0 已完成；后续主干又接入 Steam 自动发现与多存档目录。多目录快照、恢复和移除安全主链路已验收，Elden Ring 父子路径重叠修复已通过自动、开发版和绿色版回归。**
+**SaveLink v0.3.0 功能已完成，正式纳入 v0.2.0 的自动备份与上云能力，以及本轮 Steam 自动发现和多存档目录支持；当前进入正式打包与发布。**
 
 当前核心闭环：
 
@@ -66,6 +67,7 @@ v0.1.0 公开发布             ████████████ 100%  ✅ G
 v0.2.0 自动备份与上云         ████████████ 100%  ✅ 主流程、旧库迁移及真实百度跨设备验收通过
 Steam 自动发现              ████████████ 100%  ✅ 主链路及 Elden Ring 父子路径回归通过
 多存档目录                  ████████████ 100%  ✅ 快照/恢复/云协议/UI/旧库迁移及真实窗口验收通过
+v0.3.0 发布收口             ███████████░  95%  ⏳ 正式包已生成，待标签和 Release
 ```
 
 ## v0.2.0 自动备份（已完成，准备发布）
@@ -236,7 +238,8 @@ cargo test --no-fail-fast
 前端/打包已验证：
 
 - `npm run build` 通过。
-- v0.2.0 的 npm、Cargo、Tauri 和打包版本元数据已统一为 `0.2.0`；正式发布包需从本次版本提交重新执行 `build-portable.bat --no-open` 生成。
+- v0.3.0 的 npm、Cargo、Tauri 和打包版本元数据已统一为 `0.3.0`；正式绿色版已通过独立 Cargo target 构建并完成内容与 SHA-256 核验。
+- v0.3.0 绿色版位于 `savelink-app/src-tauri/target-v030/release/bundle/portable/`，ZIP SHA-256 为 `0BA1B1309C778D7DA2EED0D5C033807E0D0E8CA9CB3EFD3380A1DDECFFB4FD70`。本机沙箱无法覆盖旧 `target/release` DLL，因此使用独立 target；不影响二进制内容和发布。
 - `build-installer.bat` 打包通过。
 - 绿色版实机打开验证通过。
 - `v0.1.0` GitHub Release 已发布绿色版 ZIP 与 SHA-256；当前附件需按发布标签重新打包一次，以纳入最后的托盘菜单提交。
@@ -285,7 +288,7 @@ cargo test --no-fail-fast
 - GitHub 主仓库：`https://github.com/daiqiang/save_link`
 - Gitee 国内镜像：`https://gitee.com/qigugu/save-link`
 - v0.1.0 Release：`https://github.com/daiqiang/save_link/releases/tag/v0.1.0`
-- v0.2.0 Release（发布后）：`https://github.com/daiqiang/save_link/releases/tag/v0.2.0`
+- v0.3.0 Release（发布后）：`https://github.com/daiqiang/save_link/releases/tag/v0.3.0`
 - 当前正式状态总结：`doc/SaveLink当前功能完成情况.md`
 - v0.2.0 自动备份方案：`doc/SaveLink-v0.2.0自动备份方案.md`
 - 交接文档：`doc/HANDOFF-codex.md`
