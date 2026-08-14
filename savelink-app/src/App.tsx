@@ -7,6 +7,7 @@ import * as api from "./lib/api";
 import type { Game, Snapshot } from "./lib/types";
 import { ToastProvider, useToast } from "./components/Toast";
 import { AddGameDialog } from "./components/AddGameDialog";
+import type { AddGameMode } from "./components/AddGameDialog";
 import { EditGameDialog } from "./components/EditGameDialog";
 import { RestoreDialog } from "./components/RestoreDialog";
 import { SnapshotDrawer } from "./components/SnapshotDrawer";
@@ -25,7 +26,7 @@ function SaveLink() {
   const [appVersion, setAppVersion] = useState<string | null>(null);
 
   // 弹窗 / 抽屉 / 菜单状态
-  const [showAdd, setShowAdd] = useState(false);
+  const [addMode, setAddMode] = useState<AddGameMode | null>(null);
   const [showCloud, setShowCloud] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [editingGame, setEditingGame] = useState<Game | null>(null);
@@ -166,7 +167,7 @@ function SaveLink() {
       <aside className="sidebar">
         <div className="head">
           <span>游戏列表</span>
-          <button className="iconbtn" title="添加游戏" onClick={() => setShowAdd(true)}><Icon.Plus /></button>
+          <button className="iconbtn" title="添加游戏" onClick={() => setAddMode("steam")}><Icon.Plus /></button>
         </div>
         {games.map((g) => (
           <div key={g.id} className={`game-item ${g.id === selectedId ? "active" : ""}`}
@@ -176,7 +177,7 @@ function SaveLink() {
               <div className="game-name"><span className={`status-dot ${g.save_paths.length > 0 ? "ok" : "warn"}`} />{g.name}</div>
               <div className="game-sub">
                 {g.save_paths.length === 0
-                  ? `${g.snapshot_count} 个快照 · 尚未绑定存档目录`
+                  ? `${g.snapshot_count} 个快照 · ${g.emulator === "desmume" ? "尚未绑定 DeSmuME" : "尚未绑定存档目录"}`
                   : <>{g.snapshot_count} 个快照{g.last_snapshot_at ? ` · 最近 ${formatTimestampTime(g.last_snapshot_at)}` : ""}</>}
               </div>
             </div>
@@ -187,7 +188,7 @@ function SaveLink() {
       <main className="detail">
         {!selected ? (
           <EmptyState
-            onAdd={() => setShowAdd(true)}
+            onAdd={() => setAddMode("steam")}
             onCloud={() => setShowCloud(true)}
           />
         ) : (
@@ -203,7 +204,9 @@ function SaveLink() {
                     ))}
                   </div>
                 ) : (
-                  <div className="path"><Icon.Folder size={14} /><span className="mono">尚未绑定本机存档目录</span></div>
+                  <div className="path"><Icon.Folder size={14} /><span className="mono">
+                    {selected.emulator === "desmume" ? "尚未绑定本机 DeSmuME ROM" : "尚未绑定本机存档目录"}
+                  </span></div>
                 )}
               </div>
             </div>
@@ -217,8 +220,12 @@ function SaveLink() {
 
             <div className="toolbar">
               {selected.save_paths.length === 0 ? (
-                <button className="btn primary" onClick={() => setBindingGame(selected)}>
-                  <Icon.Folder /> 绑定存档目录
+                <button className="btn primary" onClick={() => selected.emulator === "desmume"
+                  ? setAddMode("desmume")
+                  : setBindingGame(selected)}>
+                  {selected.emulator === "desmume"
+                    ? <><Icon.Gamepad /> 绑定 DeSmuME</>
+                    : <><Icon.Folder /> 绑定存档目录</>}
                 </button>
               ) : (
                 <button className="btn primary" onClick={createSnapshot} disabled={creating}>
@@ -231,7 +238,7 @@ function SaveLink() {
             <div className="section-label">时间线</div>
             <div className="timeline">
               {shown.length === 0 && <div className="empty-tl">{selected.save_paths.length === 0
-                ? "尚未绑定本机存档目录。"
+                ? selected.emulator === "desmume" ? "尚未绑定本机 DeSmuME ROM。" : "尚未绑定本机存档目录。"
                 : "还没有快照。点击「创建快照」保存当前存档状态。"}</div>}
               {shown.map((s) => {
                 const cloudBusy = cloudUploadingId === s.id;
@@ -315,8 +322,8 @@ function SaveLink() {
         </div>
       )}
 
-      {showAdd && <AddGameDialog onClose={() => setShowAdd(false)}
-        onCreated={(g) => { setShowAdd(false); setSelectedId(g.id); loadGames(); }} />}
+      {addMode && <AddGameDialog initialMode={addMode} onClose={() => setAddMode(null)}
+        onCreated={(g) => { setAddMode(null); setSelectedId(g.id); loadGames(); }} />}
 
 
       {showCloud && <CloudSnapshotsDialog onClose={() => setShowCloud(false)}
@@ -330,6 +337,10 @@ function SaveLink() {
 
       {editingGame && <EditGameDialog game={editingGame}
         onClose={() => setEditingGame(null)}
+        onRebindDesmume={() => {
+          setEditingGame(null);
+          setAddMode("desmume");
+        }}
         onSaved={(g) => {
           setEditingGame(null);
           setSelectedId(g.id);

@@ -19,10 +19,11 @@
 | 1.12 | Codex | 2026-08-10 | 同步 Steam 自动发现、Manifest 打包资源、多目录存储/恢复边界、93 个默认测试及重叠目录防护 |
 | 1.13 | Codex | 2026-08-11 | 同步 Elden Ring 修复后的真实开发版与绿色版候选回归结果 |
 | 1.14 | 代强 | 2026-08-12 | 将自动备份、Steam 自动发现和多存档目录实现统一收口为 v0.3.0 架构 |
+| 1.15 | 代强 | 2026-08-14 | 增加 v0.4.0 DeSmuME 精确 `.dsv` 来源、ROM 身份、跨设备映射；补目录链接环和 ROM 哈希栈溢出防护 |
 
 ## 文档用途
 
-本文档描述 SaveLink v0.3.0 的真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
+本文档描述 SaveLink v0.4.0 开发中的真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
 
 配套文档：
 
@@ -61,14 +62,15 @@ save_link/
 - 未绑定本机存档目录时禁止创建快照和恢复，下载与恢复保持为两个独立动作。
 - 独立绑定弹窗复用 `scan_path` 做只读检测，扫描成功后复用 `update_game` 保存路径；绑定本身不触发快照、恢复或上传。
 - v0.2.0 启动立即检查、10 分钟轮询、自动快照上云和 30 条未锁定记录联合清理已接入，并已通过绿色版及真实百度主流程验收。
+- v0.4.0 DeSmuME 支持已接入：扫描 `desmume.ini`/ROM 目录、读取 NDS Header 身份、计算并缓存 ROM SHA-256、按目标 ROM 精确选择 `.dsv`，以及跨设备按目标设备 ROM 文件名恢复。
 
 当前验证状态：
 
-- `savelink-core`：93 个默认测试全绿；N 组覆盖 Steam 发现、Elden Ring 同级配置文件过滤和嵌套规则收敛，O 组覆盖多目录指纹、存储、恢复、旧库迁移和重叠来源拒绝。J/L 两个真实百度测试均已按需执行通过。
+- `savelink-core`：102 个默认测试全绿；N/O 组覆盖 Steam 和多目录，P 组覆盖精确文件快照/恢复，Q 组 5 个测试覆盖 DeSmuME 发现、ROM 身份、目录链接环和小栈线程哈希。J/L 已按需执行通过，Q5 真实 DeSmuME 测试默认忽略且已执行通过。
 - Tauri：自动上传状态选择测试 2 个全绿。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
-- 旧设置对话框的“打开”目录代码路径曾通过绿色版实机验证；当前齿轮入口展示新的自动备份设置页。
+- 旧设置对话框的“打开”目录代码路径曾通过绿色版实机验证；当前齿轮入口展示新的自动备份设置页。DeSmuME 添加和重新绑定流程已完成代码接线，真实可见窗口验收待补。
 - 设备 B 已完成云端接收、绑定假存档目录和手动安全恢复；恢复文件与仓库目标快照 SHA-256 一致。
 
 ## 第一性原则
@@ -210,6 +212,10 @@ Windows 运行时数据：
 
 Steam 自动发现位于 `savelink-core/src/steam_discovery.rs`：通过注册表和 Steam appmanifest 枚举已安装应用，再按 AppID 查询随包 `src-tauri/resources/manifest.db`。绿色版同时携带 Manifest 来源说明和 Ludusavi 许可证。精确文件规则会归一到父目录后交给 SaveLink 的目录型存储；末尾 `<storeUserId>` 目录占位符只接受目录，规则结果还会收敛相同或父子嵌套路径。添加/编辑游戏及创建/恢复快照前会再次调用 `validate_save_paths`，把重叠来源作为安全错误拒绝。
 
+DeSmuME 自动发现位于 `savelink-core/src/desmume_discovery.rs`：检查模拟器目录和可执行文件，读取 `[PathSettings]` 中的 ROM 目录，以带 canonical 路径去重的迭代遍历发现 `.nds`，解析 NDS Header Title/Game Code，并分块计算 ROM SHA-256。哈希使用堆上的 1 MiB 流式缓冲区，避免占满 Tauri 工作线程栈。ROM 的文件大小和修改时间会写入当前设备绑定，用于后续缓存哈希；缓存失效时重新计算。扫描是只读的，配置路径失效时明确要求用户重新选择，不静默改写配置。
+
+DeSmuME 使用 `SaveSource::Files` 表达共享 `Battery` 目录中的精确文件映射：例如设备 A 的 `zzjb2r ver0.99.dsv` 映射为快照内稳定的 `save.dsv`，设备 B 恢复时再映射为目标 ROM 文件名对应的 `.dsv`。`.dsv-01` 至 `.dsv-09` 不会冒充游戏内存档。SHA-256 相同是精确匹配；SHA 不同但 Header Title 与 Game Code 同时相同，只产生候选并要求用户确认。ROM 身份进入云端 `game.json`，模拟器根目录、ROM 路径和 Battery 路径只保存在本机绑定中。
+
 快照时间采用统一口径：新记录持久化为固定秒精度 UTC RFC 3339（例如 `2026-08-05T13:25:00Z`）。打开旧数据库时，`YYYY-MM-DD HH:MM`、`YYYY-MM-DD HH:MM:SS` 和带偏移 RFC 3339 会自动转换为该格式；前端再按用户本地时区显示为 `YYYY-MM-DD HH:MM`。云端协议版本和目录结构不变，比较已有 `.ok` 时按真实时刻而非字符串表现形式判断。
 
 主要概念：
@@ -217,7 +223,10 @@ Steam 自动发现位于 `savelink-core/src/steam_discovery.rs`：通过注册�
 - `Game`
   - `id`
   - `name`
-  - `save_paths`
+  - `save_paths`：旧普通游戏的整目录来源兼容字段
+  - `save_sources`：当前实际参与扫描、快照和恢复的目录或精确文件来源
+  - `emulator_identity`：可跨设备同步的模拟器/ROM 身份
+  - `emulator_binding`：仅当前设备有效的模拟器根目录、ROM 路径及哈希缓存
   - `created_at`
   - `updated_at`
 - `Snapshot`
@@ -345,10 +354,12 @@ pub trait SnapshotStore: Send + Sync {
 - `cloud_protocol.rs`：manifest、game、云端 `.ok` JSON 和逻辑路径的序列化、解析与严格校验。
 - `cloud_archive.rs`：单快照 zip、SHA-256、路径安全、防 zip slip 和解压后内容指纹校验。
 - `cloud_service.rs`：上传、发现、下载、冲突、幂等、接收落地和“云端优先、本地最后”的联合删除编排。
-- H 组 11 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配、硬冲突、联合删除成功/失败重试，以及旧偏移时间云对象幂等兼容。
+- H 组 15 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配、硬冲突、联合删除成功/失败重试、旧偏移时间云对象幂等兼容，以及已有云文档补写模拟器身份。
 - 百度适配器内部单元测试 2 个，I 组本地 HTTP 契约测试 4 个；J 组真实百度对象存取冒烟默认忽略，2026-07-15 已使用环境变量注入 Token 执行通过。
 - `baidu_oauth.rs`：OAuth URL、授权码换 Token、刷新方法、随机 `state`、本机回调监听和 Token 文件仓库；K 组 8 个测试保护。
 - L 组真实百度设备 B 测试默认忽略，保护只读发现不创建游戏、下载后双重校验、接收落地及设备路径隔离；2026-07-16 已按需执行通过。
+- P 组 2 个测试：共享 `Battery` 目录中只读取目标 `.dsv`、只恢复目标 `.dsv`，其他游戏存档保持不变。
+- Q 组 5 个默认测试：失效 ROM 配置要求重选、NDS Header/SHA-256 解析与缓存、精确 `.dsv` 匹配及 `.dsv-01` 排除、目录链接环不会导致递归栈溢出，以及 512 KiB 小栈线程可完成 ROM 哈希；Q5 为真实 DeSmuME 只读发现测试，默认忽略。
 
 OAuth、凭据持久化、自动刷新、真实上云和设备 B 发现/下载/接收已实现。上传通过 `CloudSyncService` 发布 `.zip + .ok`；下载先校验压缩包，再校验解压内容，通过后才写本机仓库。只读发现不创建本机游戏，接收后创建的游戏不含设备 A 路径。尚未完成解绑和凭据加密；`BaiduNetdiskStore` 当前按百度官方单步上传边界支持不超过 2 GiB 的对象，更大快照需要后续增加预上传/分片上传。
 
@@ -443,6 +454,7 @@ Tauri 2 capability 需要：
 ## 当前技术债
 
 - `FsStore` 目录复制不压缩，空间占用和文件数量后续可能成为问题。
+- v0.4.0 真实可见 Tauri 窗口的 DeSmuME 添加、绑定、创建和恢复尚待人工验收；自动化测试已覆盖核心逻辑。
 - Steam 自动发现的 Elden Ring 父子候选问题已修复，并通过自动测试、真实开发版和绿色版候选回归；真实多 Steam 游戏库机器仍待以后验收。
 - 真实恢复进度事件未接入前端；当前 Tauri 命令传空 progress 回调。
 - `startup_self_check` 已在 Tauri setup 中显式调用；真实窗口残留清理场景可在正式回归时补验收。
@@ -461,6 +473,7 @@ Tauri 2 capability 需要：
 | 阶段 2 自动化 | notify 文件监听、游戏退出后快照、保留策略 |
 | 阶段 3 游戏识别 | Ludusavi manifest / 常见游戏路径库 |
 | 阶段 4 云端 | POC、协议 v1、Fake/真实双设备传输、OAuth、上传/接收、独立绑定及安全恢复均已完成实机验收 |
+| 阶段 5 DeSmuME | ROM 发现、身份匹配、精确 `.dsv` 快照/恢复和云身份兼容已实现，待真实窗口验收；Yuzu 后置到 v0.5.0 |
 
 ## 当前结论
 

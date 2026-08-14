@@ -4,7 +4,7 @@
 //! 每个方法的契约注释直接对应 `doc/SaveLink恢复与存储测试规格.md` 的用例编号。
 
 use crate::error::{Result, SaveLinkError};
-use crate::model::{CreateOutcome, RestoreOutcome, RestoreStep};
+use crate::model::{CreateOutcome, RestoreOutcome, RestoreStep, SaveSource};
 use crate::model::{Snapshot, SnapshotStatus};
 use crate::repo::{Clock, IdGen, Repository};
 use crate::scan;
@@ -30,7 +30,12 @@ impl SnapshotService {
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdGen>,
     ) -> Self {
-        Self { repo, store, clock, ids }
+        Self {
+            repo,
+            store,
+            clock,
+            ids,
+        }
     }
 
     /// 创建快照。
@@ -63,10 +68,11 @@ impl SnapshotService {
             .get_game(game_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("game not found: {game_id}")))?;
 
-        scan::validate_save_paths(&game.save_paths)?;
+        let save_sources = game.effective_save_sources();
+        scan::validate_save_sources(&save_sources)?;
 
         // A6：扫描，目录不存在/不可读直接返回错误，不写任何状态。
-        let ctx = scan::scan(&game.save_paths)?;
+        let ctx = scan::scan_save_sources(&save_sources)?;
 
         // A2/A3：与最近一个快照内容比对，一致则不创建。
         let latest = self.repo.list_snapshots(game_id)?.into_iter().next();
@@ -87,14 +93,14 @@ impl SnapshotService {
             locked: false,
             file_count: ctx.file_count,
             total_size: ctx.total_size,
-            source_count: game.save_paths.len().max(1) as u32,
+            source_count: save_sources.len().max(1) as u32,
             content_hash: ctx.content_hash.clone(),
             storage_key: id.clone(),
             status: SnapshotStatus::Writing,
         };
         self.repo.insert_snapshot(pending.clone())?;
 
-        let stored = match self.store.create(&id, &game.save_paths, &ctx) {
+        let stored = match self.store.create_save_sources(&id, &save_sources, &ctx) {
             Ok(s) => s,
             Err(e) => {
                 let _ = self.store.delete(&id); // 清理可能的半成品
@@ -225,17 +231,16 @@ impl AutoBackupService {
         let mut report = AutoBackupReport::default();
 
         for game in games {
-            if game.save_paths.is_empty() {
+            if game.effective_save_sources().is_empty() {
                 report.skipped_game_ids.push(game.id);
                 continue;
             }
 
             report.checked_game_ids.push(game.id.clone());
-            match self.snapshots.create_snapshot(
-                &game.id,
-                None,
-                crate::model::Reason::Auto,
-            ) {
+            match self
+                .snapshots
+                .create_snapshot(&game.id, None, crate::model::Reason::Auto)
+            {
                 Ok(CreateOutcome::Created(snapshot)) => {
                     report.created_snapshots.push(snapshot);
                 }
@@ -266,9 +271,7 @@ impl AutoBackupService {
             .repo
             .list_snapshots(game_id)?
             .into_iter()
-            .filter(|snapshot| {
-                !snapshot.locked && snapshot.status == SnapshotStatus::Complete
-            })
+            .filter(|snapshot| !snapshot.locked && snapshot.status == SnapshotStatus::Complete)
             .skip(max_unlocked)
             .collect();
         candidates.reverse();
@@ -316,8 +319,9 @@ impl RestoreService {
             .repo
             .get_snapshot(snapshot_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("snapshot not found: {snapshot_id}")))?;
-        scan::validate_save_paths(&game.save_paths)?;
-        let save_dirs = snapshot_save_dirs(&game.save_paths, target.source_count)?;
+        let configured_sources = game.effective_save_sources();
+        scan::validate_save_sources(&configured_sources)?;
+        let save_sources = snapshot_save_sources(&configured_sources, target.source_count)?;
 
         // 步骤 1（前置）：目标快照必须完好（B4）。
         if !self.store.verify(&target.storage_key)? {
@@ -325,15 +329,36 @@ impl RestoreService {
         }
 
         // 步骤 2：真实存档目录不存在 → 交还用户决策，未确认前不写入（B7）。
-        if save_dirs.iter().any(|path| !path.exists()) {
+        if save_sources.iter().any(|source| !source.root().exists()) {
             return Err(SaveLinkError::SaveDirMissingNeedsChoice);
         }
 
-        self.do_restore(&target, &save_dirs, progress)
+        self.do_restore(&target, &save_sources, progress)
     }
 
     /// 真正执行恢复的内部流程。前置检查已在调用方完成。
     fn do_restore(
+        &self,
+        target: &Snapshot,
+        save_sources: &[SaveSource],
+        progress: &ProgressSink<'_>,
+    ) -> Result<RestoreOutcome> {
+        if save_sources.iter().all(SaveSource::is_directory) {
+            let save_dirs = save_sources
+                .iter()
+                .map(|source| source.root().to_path_buf())
+                .collect::<Vec<_>>();
+            return self.do_restore_directories(target, &save_dirs, progress);
+        }
+        if save_sources.iter().all(|source| !source.is_directory()) {
+            return self.do_restore_selected_files(target, save_sources, progress);
+        }
+        Err(SaveLinkError::Io(
+            "暂不支持整目录与精确文件来源混合恢复".into(),
+        ))
+    }
+
+    fn do_restore_directories(
         &self,
         target: &Snapshot,
         save_dirs: &[std::path::PathBuf],
@@ -401,6 +426,80 @@ impl RestoreService {
         })
     }
 
+    fn do_restore_selected_files(
+        &self,
+        target: &Snapshot,
+        save_sources: &[SaveSource],
+        progress: &ProgressSink<'_>,
+    ) -> Result<RestoreOutcome> {
+        let current =
+            scan::scan_save_sources(save_sources).map_err(|_| SaveLinkError::SaveDirUnreadable)?;
+        if snapshot_matches_scan(target, &current) {
+            return Ok(RestoreOutcome {
+                target_id: target.id.clone(),
+                restored: false,
+            });
+        }
+
+        progress(RestoreStep::RestoreTarget);
+        let stamp = restore_stamp(&self.clock.now_stamp());
+        let tmp_dirs = save_sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| {
+                source
+                    .root()
+                    .parent()
+                    .ok_or_else(|| SaveLinkError::Io("save dir has no parent".into()))
+                    .map(|parent| parent.join(format!(".savelink_selected_{stamp}_{index}")))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        cleanup_dirs(&tmp_dirs);
+        if let Err(error) = self.store.restore_sources(&target.storage_key, &tmp_dirs) {
+            cleanup_dirs(&tmp_dirs);
+            return Err(restore_failed(error, true));
+        }
+        match scan::scan(&tmp_dirs) {
+            Ok(scan)
+                if scan.content_hash == target.content_hash
+                    && scan.file_count == target.file_count
+                    && scan.total_size == target.total_size => {}
+            _ => {
+                cleanup_dirs(&tmp_dirs);
+                return Err(SaveLinkError::RestoreFailed { rolled_back: true });
+            }
+        }
+
+        let replacements = match prepare_selected_replacements(save_sources, &tmp_dirs, &stamp) {
+            Ok(replacements) => replacements,
+            Err(error) => {
+                cleanup_dirs(&tmp_dirs);
+                return Err(restore_failed(error, true));
+            }
+        };
+        if let Err((error, rolled_back)) = apply_selected_replacements(&replacements) {
+            cleanup_selected_replacements(&replacements);
+            cleanup_dirs(&tmp_dirs);
+            return Err(restore_failed_io(error, rolled_back));
+        }
+
+        progress(RestoreStep::Verify);
+        if !matches!(scan::scan_save_sources(save_sources), Ok(ref scan) if snapshot_matches_scan(target, scan))
+        {
+            let rolled_back = rollback_selected_replacements(&replacements);
+            cleanup_selected_replacements(&replacements);
+            cleanup_dirs(&tmp_dirs);
+            return Err(SaveLinkError::RestoreFailed { rolled_back });
+        }
+
+        cleanup_selected_replacements(&replacements);
+        cleanup_dirs(&tmp_dirs);
+        Ok(RestoreOutcome {
+            target_id: target.id.clone(),
+            restored: true,
+        })
+    }
+
     /// 恢复时真实存档目录不存在，用户已做出选择后的续走入口（B7）。
     pub fn restore_with_choice(
         &self,
@@ -418,8 +517,9 @@ impl RestoreService {
             .repo
             .get_snapshot(snapshot_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("snapshot not found: {snapshot_id}")))?;
-        scan::validate_save_paths(&game.save_paths)?;
-        let save_dirs = snapshot_save_dirs(&game.save_paths, target.source_count)?;
+        let configured_sources = game.effective_save_sources();
+        scan::validate_save_sources(&configured_sources)?;
+        let save_sources = snapshot_save_sources(&configured_sources, target.source_count)?;
 
         if !self.store.verify(&target.storage_key)? {
             return Err(SaveLinkError::SnapshotCorrupt);
@@ -432,7 +532,7 @@ impl RestoreService {
             }
             MissingDirChoice::CreateAndRestore => {
                 let mut created = Vec::new();
-                for save_dir in &save_dirs {
+                for save_dir in save_sources.iter().map(SaveSource::root) {
                     if save_dir.exists() {
                         continue;
                     }
@@ -440,24 +540,21 @@ impl RestoreService {
                         cleanup_dirs(&created);
                         return Err(SaveLinkError::Io(error.to_string()));
                     }
-                    created.push(save_dir.clone());
+                    created.push(save_dir.to_path_buf());
                 }
-                self.do_restore(&target, &save_dirs, progress)
+                self.do_restore(&target, &save_sources, progress)
             }
         }
     }
 }
 
-fn snapshot_save_dirs(
-    configured: &[std::path::PathBuf],
-    source_count: u32,
-) -> Result<Vec<std::path::PathBuf>> {
+fn snapshot_save_sources(configured: &[SaveSource], source_count: u32) -> Result<Vec<SaveSource>> {
     let expected = source_count.max(1) as usize;
     if expected == 1 {
         return configured
             .first()
             .cloned()
-            .map(|path| vec![path])
+            .map(|source| vec![source])
             .ok_or_else(|| SaveLinkError::Io("game has no save path".into()));
     }
     if configured.len() != expected {
@@ -466,6 +563,131 @@ fn snapshot_save_dirs(
         )));
     }
     Ok(configured.to_vec())
+}
+
+#[derive(Debug)]
+struct SelectedFileReplacement {
+    target: std::path::PathBuf,
+    incoming: Option<std::path::PathBuf>,
+    backup: std::path::PathBuf,
+    had_original: bool,
+}
+
+fn restore_stamp(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_ascii_alphanumeric())
+        .collect()
+}
+
+fn prepare_selected_replacements(
+    save_sources: &[SaveSource],
+    payload_dirs: &[std::path::PathBuf],
+    stamp: &str,
+) -> Result<Vec<SelectedFileReplacement>> {
+    if save_sources.len() != payload_dirs.len() {
+        return Err(SaveLinkError::SnapshotCorrupt);
+    }
+    let mut replacements = Vec::new();
+    for (source_index, (source, payload_dir)) in save_sources.iter().zip(payload_dirs).enumerate() {
+        let SaveSource::Files { root, files } = source else {
+            return Err(SaveLinkError::Io("精确文件恢复收到整目录来源".into()));
+        };
+        for (file_index, mapping) in files.iter().enumerate() {
+            let target = root.join(&mapping.local_relative_path);
+            let parent = target
+                .parent()
+                .ok_or_else(|| SaveLinkError::Io("存档文件没有父目录".into()))?;
+            fs::create_dir_all(parent).map_err(|error| SaveLinkError::Io(error.to_string()))?;
+            let suffix = format!("{stamp}_{source_index}_{file_index}");
+            let incoming_path = parent.join(format!(".savelink_incoming_{suffix}"));
+            let backup = parent.join(format!(".savelink_backup_{suffix}"));
+            let _ = fs::remove_file(&incoming_path);
+            let _ = fs::remove_file(&backup);
+            let payload = payload_dir.join(&mapping.snapshot_relative_path);
+            let incoming = if payload.exists() {
+                if !payload.is_file() {
+                    return Err(SaveLinkError::SnapshotCorrupt);
+                }
+                fs::copy(&payload, &incoming_path)
+                    .map_err(|error| SaveLinkError::Io(error.to_string()))?;
+                Some(incoming_path)
+            } else {
+                None
+            };
+            replacements.push(SelectedFileReplacement {
+                had_original: target.exists(),
+                target,
+                incoming,
+                backup,
+            });
+        }
+    }
+    Ok(replacements)
+}
+
+fn apply_selected_replacements(
+    replacements: &[SelectedFileReplacement],
+) -> std::result::Result<(), (std::io::Error, bool)> {
+    for (index, replacement) in replacements.iter().enumerate() {
+        if replacement.had_original {
+            if let Err(error) = fs::rename(&replacement.target, &replacement.backup) {
+                let rolled_back = rollback_moved_selected_replacements(replacements, index);
+                return Err((error, rolled_back));
+            }
+        }
+    }
+    for replacement in replacements {
+        if let Some(incoming) = &replacement.incoming {
+            if let Err(error) = fs::rename(incoming, &replacement.target) {
+                let rolled_back = rollback_selected_replacements(replacements);
+                return Err((error, rolled_back));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn rollback_moved_selected_replacements(
+    replacements: &[SelectedFileReplacement],
+    processed: usize,
+) -> bool {
+    let mut rolled_back = true;
+    for replacement in replacements[..processed].iter().rev() {
+        if replacement.had_original
+            && replacement.backup.exists()
+            && fs::rename(&replacement.backup, &replacement.target).is_err()
+        {
+            rolled_back = false;
+        }
+    }
+    rolled_back
+}
+
+fn rollback_selected_replacements(replacements: &[SelectedFileReplacement]) -> bool {
+    let mut rolled_back = true;
+    for replacement in replacements.iter().rev() {
+        if replacement.target.exists() && fs::remove_file(&replacement.target).is_err() {
+            rolled_back = false;
+            continue;
+        }
+        if replacement.had_original
+            && replacement.backup.exists()
+            && fs::rename(&replacement.backup, &replacement.target).is_err()
+        {
+            rolled_back = false;
+        }
+    }
+    rolled_back
+}
+
+fn cleanup_selected_replacements(replacements: &[SelectedFileReplacement]) {
+    for replacement in replacements {
+        if let Some(incoming) = &replacement.incoming {
+            let _ = fs::remove_file(incoming);
+        }
+        let _ = fs::remove_file(&replacement.backup);
+    }
 }
 
 fn snapshot_matches_scan(snapshot: &Snapshot, scan: &crate::model::ScanResult) -> bool {
@@ -544,9 +766,8 @@ fn rollback_save_dirs(
     old_dirs: &[std::path::PathBuf],
     expected: &crate::model::ScanResult,
 ) -> bool {
-    let restored = rollback_save_dirs_with(save_dirs, old_dirs, &mut |from, to| {
-        fs::rename(from, to)
-    });
+    let restored =
+        rollback_save_dirs_with(save_dirs, old_dirs, &mut |from, to| fs::rename(from, to));
     restored && matches!(scan::scan(save_dirs), Ok(ref result) if result == expected)
 }
 
@@ -595,21 +816,16 @@ mod tests {
         write_files(&tmp_dirs[1], &[("profile.dat", b"NEW-1")]);
 
         let mut rename_calls = 0usize;
-        let result = replace_save_dirs_with(
-            &save_dirs,
-            &tmp_dirs,
-            &old_dirs,
-            &mut |from, to| {
-                rename_calls += 1;
-                if rename_calls == 4 {
-                    return Err(io::Error::new(
-                        io::ErrorKind::PermissionDenied,
-                        "injected second-target failure",
-                    ));
-                }
-                fs::rename(from, to)
-            },
-        );
+        let result = replace_save_dirs_with(&save_dirs, &tmp_dirs, &old_dirs, &mut |from, to| {
+            rename_calls += 1;
+            if rename_calls == 4 {
+                return Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "injected second-target failure",
+                ));
+            }
+            fs::rename(from, to)
+        });
 
         assert!(matches!(result, Err((_, true))));
         assert_eq!(fs::read(save_dirs[0].join("slot.sav")).unwrap(), b"OLD-0");
@@ -659,7 +875,11 @@ pub fn same_volume(a: &Path, b: &Path) -> Option<bool> {
 
 /// 向上找到第一个真实存在的祖先目录。
 fn existing_ancestor(p: &Path) -> Option<std::path::PathBuf> {
-    let mut cur = if p.exists() { Some(p.to_path_buf()) } else { p.parent().map(|x| x.to_path_buf()) };
+    let mut cur = if p.exists() {
+        Some(p.to_path_buf())
+    } else {
+        p.parent().map(|x| x.to_path_buf())
+    };
     while let Some(c) = cur {
         if c.exists() {
             return Some(c);

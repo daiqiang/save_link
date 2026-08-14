@@ -5,8 +5,8 @@
 
 mod common;
 
-use common::*;
 use chrono::{Duration, Local, TimeZone};
+use common::*;
 use rusqlite::{params, Connection};
 use savelink_core::model::Game;
 use savelink_core::model::{CreateOutcome, Reason};
@@ -41,9 +41,16 @@ fn f1_data_survives_reopen() {
     {
         let repo = SqliteRepo::open(&db_path).unwrap();
         let got = repo.get_snapshot(&snap_id).unwrap();
-        assert!(got.is_some(), "F1: 重新打开数据库后，快照记录应仍然存在（数据已落盘）");
+        assert!(
+            got.is_some(),
+            "F1: 重新打开数据库后，快照记录应仍然存在（数据已落盘）"
+        );
         let snap = got.unwrap();
-        assert_eq!(snap.note.as_deref(), Some("持久化测试"), "F1: 备注应原样保留");
+        assert_eq!(
+            snap.note.as_deref(),
+            Some("持久化测试"),
+            "F1: 备注应原样保留"
+        );
         assert_eq!(snap.reason, Reason::Manual, "F1: reason 应正确反序列化");
 
         let games = repo.list_games().unwrap();
@@ -59,14 +66,22 @@ fn f2_enum_roundtrip_through_sql() {
     let repo: Arc<dyn Repository> = Arc::new(SqliteRepo::open(&db_path).unwrap());
     let h = Harness::with_repo(&[("s", b"x")], repo);
 
-    let s = match h.snapshots().create_snapshot(&h.game_id, None, Reason::BeforeRestore).unwrap() {
+    let s = match h
+        .snapshots()
+        .create_snapshot(&h.game_id, None, Reason::BeforeRestore)
+        .unwrap()
+    {
         CreateOutcome::Created(s) => s,
         _ => panic!(),
     };
     h.snapshots().update_meta(&s.id, None, Some(true)).unwrap();
 
     let got = h.repo.get_snapshot(&s.id).unwrap().unwrap();
-    assert_eq!(got.reason, Reason::BeforeRestore, "F2: before_restore 经 SQL 往返应不变");
+    assert_eq!(
+        got.reason,
+        Reason::BeforeRestore,
+        "F2: before_restore 经 SQL 往返应不变"
+    );
     assert!(got.locked, "F2: locked 经 SQL 往返应不变");
 }
 
@@ -84,6 +99,9 @@ fn f3_game_update_survives_reopen() {
             icon: None,
             repo_path: tmp.path().join("repo"),
             save_paths: vec![tmp.child("old-save")],
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
             created_at: "2026-06-23 00:00".into(),
             updated_at: "2026-06-23 00:00".into(),
         };
@@ -100,7 +118,11 @@ fn f3_game_update_survives_reopen() {
         let repo = SqliteRepo::open(&db_path).unwrap();
         let got = repo.get_game("g_edit").unwrap().unwrap();
         assert_eq!(got.name, "新名称", "F3: 游戏名称修改应持久化");
-        assert_eq!(got.save_paths, vec![PathBuf::from(new_save)], "F3: 存档目录修改应持久化");
+        assert_eq!(
+            got.save_paths,
+            vec![PathBuf::from(new_save)],
+            "F3: 存档目录修改应持久化"
+        );
         assert_eq!(got.updated_at, "2026-06-23 00:01", "F3: 更新时间应持久化");
     }
 }
@@ -152,7 +174,10 @@ fn f4_mixed_snapshot_times_are_migrated_and_sorted_by_real_time() {
     let repo = SqliteRepo::open(&db_path).expect("打开旧数据库时应自动迁移时间");
     let timeline = repo.list_snapshots("game_1").unwrap();
     assert_eq!(
-        timeline.iter().map(|snapshot| snapshot.id.as_str()).collect::<Vec<_>>(),
+        timeline
+            .iter()
+            .map(|snapshot| snapshot.id.as_str())
+            .collect::<Vec<_>>(),
         vec!["snap_local_latest", "snap_remote_older"],
         "混合格式迁移后必须按真实时间倒序"
     );

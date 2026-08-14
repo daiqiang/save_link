@@ -12,6 +12,7 @@ import type {
   CloudUploadResult,
   CloudReceiveResult,
   CloudSnapshot,
+  DesmumeDiscoveryReport,
   Game,
   RestoreResult,
   ScanResult,
@@ -75,6 +76,30 @@ export async function scanPath(path: string): Promise<ScanResult> {
 export async function scanSteamGames(steamRoot?: string): Promise<SteamDiscoveryReport> {
   return invoke<SteamDiscoveryReport>("scan_steam_games", {
     steamRoot: steamRoot?.trim() || null,
+  });
+}
+
+export async function scanDesmumeGames(
+  emulatorRoot: string,
+  romRoot?: string,
+): Promise<DesmumeDiscoveryReport> {
+  return invoke<DesmumeDiscoveryReport>("scan_desmume_games", {
+    emulatorRoot,
+    romRoot: romRoot?.trim() || null,
+  });
+}
+
+export async function registerDesmumeGame(
+  emulatorRoot: string,
+  romRoot: string | null,
+  romPath: string,
+  bindGameId: string | null,
+): Promise<Game> {
+  return invoke<Game>("register_desmume_game", {
+    emulatorRoot,
+    romRoot,
+    romPath,
+    bindGameId,
   });
 }
 

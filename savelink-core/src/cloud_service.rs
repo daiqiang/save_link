@@ -308,14 +308,10 @@ where
                 )?;
 
                 let remote_result = (|| -> CloudSyncResult<()> {
-                    self.cloud_store.delete_file(&snapshot_ok_path(
-                        &cloud.cloud_game_id,
-                        snapshot_id,
-                    )?)?;
-                    self.cloud_store.delete_file(&snapshot_zip_path(
-                        &cloud.cloud_game_id,
-                        snapshot_id,
-                    )?)?;
+                    self.cloud_store
+                        .delete_file(&snapshot_ok_path(&cloud.cloud_game_id, snapshot_id)?)?;
+                    self.cloud_store
+                        .delete_file(&snapshot_zip_path(&cloud.cloud_game_id, snapshot_id)?)?;
                     Ok(())
                 })();
                 if let Err(error) = remote_result {
@@ -610,6 +606,27 @@ where
         let remote_path = game_path(&game.id)?;
         if self.cloud_store.stat_file(&remote_path)?.is_some() {
             let existing = self.read_game_document(&game.id)?;
+            if existing.emulator_identity.is_none() && game.emulator_identity.is_some() {
+                let mut upgraded = existing.clone();
+                upgraded.emulator_identity = game.emulator_identity.clone();
+                upgraded.revision = upgraded.revision.checked_add(1).ok_or_else(|| {
+                    CloudSyncError::InvalidState("云端游戏元数据版本已达到上限".into())
+                })?;
+                upgraded.updated_at = self.now_timestamp()?;
+                upgraded.updated_by_device_id = self.device_id.clone();
+                let local_path = self.metadata_temp_path(&format!("game-{}.json", game.id))?;
+                write_bytes(&local_path, &upgraded.to_json()?)?;
+                self.cloud_store
+                    .put_file(&remote_path, &local_path, PutMode::Overwrite)?;
+                let published = self.read_game_document(&game.id)?;
+                if published != upgraded {
+                    return Err(CloudSyncError::InvalidState(
+                        "云端游戏元数据更新后校验失败".into(),
+                    ));
+                }
+                self.upsert_binding(&published)?;
+                return Ok(published);
+            }
             self.upsert_binding(&existing)?;
             return Ok(existing);
         }
@@ -619,6 +636,7 @@ where
             object_type: "game".into(),
             cloud_game_id: game.id.clone(),
             name: game.name.clone(),
+            emulator_identity: game.emulator_identity.clone(),
             created_at,
             revision: 1,
             updated_at: normalize_timestamp(&game.updated_at)?,
@@ -722,6 +740,9 @@ where
                     .is_none_or(|value| document.revision > value.remote_revision)
                 {
                     game.name = document.name.clone();
+                    if document.emulator_identity.is_some() {
+                        game.emulator_identity = document.emulator_identity.clone();
+                    }
                     game.updated_at = updated_at.clone();
                     self.repo.update_game(game)?;
                 }
@@ -733,6 +754,9 @@ where
                     icon: None,
                     repo_path: PathBuf::new(),
                     save_paths: Vec::new(),
+                    save_sources: Vec::new(),
+                    emulator_identity: document.emulator_identity.clone(),
+                    emulator_binding: None,
                     created_at,
                     updated_at,
                 })?;

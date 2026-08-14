@@ -2,7 +2,71 @@
 //!
 //! 字段与 `doc/SaveLink技术架构.md` 的数据模型、以及前端原型 mock 一致。
 
-use std::path::PathBuf;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
+
+/// 快照内的逻辑文件与本机真实文件之间的映射。
+///
+/// 模拟器通常让多个游戏共用一个存档目录，并按 ROM 文件名区分存档。快照使用
+/// `snapshot_relative_path` 作为稳定名称，本机恢复时再写入 `local_relative_path`，
+/// 因而 ROM 改名不会让跨设备恢复失效。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveFileMapping {
+    pub local_relative_path: PathBuf,
+    pub snapshot_relative_path: PathBuf,
+}
+
+/// 一个游戏需要保护的本机来源。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SaveSource {
+    /// 传统游戏：保护整个目录，保持 v0.1-v0.3 行为不变。
+    Directory { path: PathBuf },
+    /// 模拟器游戏：只保护共享目录中明确列出的文件。
+    Files {
+        root: PathBuf,
+        files: Vec<SaveFileMapping>,
+    },
+}
+
+impl SaveSource {
+    pub fn root(&self) -> &Path {
+        match self {
+            Self::Directory { path } => path,
+            Self::Files { root, .. } => root,
+        }
+    }
+
+    pub fn is_directory(&self) -> bool {
+        matches!(self, Self::Directory { .. })
+    }
+}
+
+/// ROM 的稳定身份。这里只保存可计算的元数据，不保存或上传 ROM 内容。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RomIdentity {
+    pub file_name: String,
+    pub sha256: String,
+    pub header_title: String,
+    pub game_code: String,
+}
+
+/// 可跨设备同步的模拟器游戏身份。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmulatorGameIdentity {
+    pub emulator: String,
+    pub rom: RomIdentity,
+}
+
+/// 当前设备上的模拟器绑定。路径仅保存在本机，不进入云协议。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EmulatorLocalBinding {
+    pub emulator_root: PathBuf,
+    pub rom_path: PathBuf,
+    pub rom_size: u64,
+    pub rom_modified_unix_ms: Option<u64>,
+    pub local_rom: RomIdentity,
+}
 
 /// 快照创建原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -38,8 +102,28 @@ pub struct Game {
     pub repo_path: PathBuf,
     /// 真实存档目录（MVP 先支持一个，结构上允许多个）。
     pub save_paths: Vec<PathBuf>,
+    /// 非空时覆盖 `save_paths` 的整目录语义，用于共享目录中的精确文件保护。
+    pub save_sources: Vec<SaveSource>,
+    /// 跨设备同步的模拟器/ROM 身份，不包含本机绝对路径。
+    pub emulator_identity: Option<EmulatorGameIdentity>,
+    /// 当前设备的 ROM 绑定；云端下载后在用户完成本机绑定前为空。
+    pub emulator_binding: Option<EmulatorLocalBinding>,
     pub created_at: String,
     pub updated_at: String,
+}
+
+impl Game {
+    /// 返回当前设备真正参与扫描、快照和恢复的来源。
+    pub fn effective_save_sources(&self) -> Vec<SaveSource> {
+        if !self.save_sources.is_empty() {
+            return self.save_sources.clone();
+        }
+        self.save_paths
+            .iter()
+            .cloned()
+            .map(|path| SaveSource::Directory { path })
+            .collect()
+    }
 }
 
 /// 快照元数据。内容不可变，仅 `note` / `locked` 可改（安全规则 3）。

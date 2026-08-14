@@ -4,10 +4,10 @@
 //!   实现者可直接把它换成真正的 zip 实现，trait 不变。
 //! - 未来：`ResticStore`，`storage_key` 存 restic snapshot id。
 //!
-//! 当前 `FsStore` 的方法体是 `todo!()` —— 红灯。实现它以让 D 组用例转绿。
+//! 当前 `FsStore` 提供本地文件系统实现，并兼容整目录与精确文件来源。
 
 use crate::error::{Result, SaveLinkError};
-use crate::model::{ScanResult, StoredSnapshot};
+use crate::model::{SaveSource, ScanResult, StoredSnapshot};
 use crate::scan;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -17,8 +17,32 @@ pub trait SnapshotStore: Send + Sync {
     /// 把若干源目录打包成一个快照，返回 storage_key 与统计信息。
     ///
     /// 约束：写入必须可识别中断（半成品不得被当作完好快照）。
-    fn create(&self, snapshot_id: &str, sources: &[PathBuf], ctx: &ScanResult)
-        -> Result<StoredSnapshot>;
+    fn create(
+        &self,
+        snapshot_id: &str,
+        sources: &[PathBuf],
+        ctx: &ScanResult,
+    ) -> Result<StoredSnapshot>;
+
+    /// 按来源规则创建快照。默认实现兼容传统整目录存储；支持精确文件来源的存储
+    /// 实现需要覆盖此方法。
+    fn create_save_sources(
+        &self,
+        snapshot_id: &str,
+        sources: &[SaveSource],
+        ctx: &ScanResult,
+    ) -> Result<StoredSnapshot> {
+        let directories = sources
+            .iter()
+            .map(|source| match source {
+                SaveSource::Directory { path } => Ok(path.clone()),
+                SaveSource::Files { .. } => Err(SaveLinkError::Io(
+                    "snapshot store does not support selected files".into(),
+                )),
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.create(snapshot_id, &directories, ctx)
+    }
 
     /// 把指定快照解出到目标目录（恢复用）。必须是覆盖式、内容无损。
     fn restore(&self, key: &str, target: &Path) -> Result<()>;
@@ -30,7 +54,9 @@ pub trait SnapshotStore: Send + Sync {
             .first()
             .ok_or_else(|| SaveLinkError::Io("restore has no target".into()))?;
         if targets.len() != 1 {
-            return Err(SaveLinkError::Io("snapshot store does not support multiple sources".into()));
+            return Err(SaveLinkError::Io(
+                "snapshot store does not support multiple sources".into(),
+            ));
         }
         self.restore(key, target)
     }
@@ -55,7 +81,9 @@ pub struct FsStore {
 
 impl FsStore {
     pub fn new(repo_root: impl Into<PathBuf>) -> Self {
-        Self { repo_root: repo_root.into() }
+        Self {
+            repo_root: repo_root.into(),
+        }
     }
 
     pub fn repo_root(&self) -> &Path {
@@ -93,6 +121,39 @@ impl FsStore {
         }
         Ok(count)
     }
+
+    fn create_from_save_sources(
+        &self,
+        snapshot_id: &str,
+        sources: &[SaveSource],
+        ctx: &ScanResult,
+    ) -> Result<StoredSnapshot> {
+        let dir = self.snap_dir(snapshot_id);
+        // 重入清理：若有同名残留先清掉，保证幂等。
+        let _ = fs::remove_dir_all(&dir);
+        let _ = fs::remove_file(self.ok_marker(snapshot_id));
+        let _ = fs::remove_file(self.layout_marker(snapshot_id));
+        fs::create_dir_all(&dir).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+
+        if sources.len() > 1 {
+            for (index, source) in sources.iter().enumerate() {
+                copy_save_source(source, &dir.join("sources").join(index.to_string()))?;
+            }
+            fs::write(self.layout_marker(snapshot_id), sources.len().to_string())
+                .map_err(|e| SaveLinkError::Io(e.to_string()))?;
+        } else if let Some(source) = sources.first() {
+            copy_save_source(source, &dir)?;
+        }
+
+        fs::write(self.ok_marker(snapshot_id), ctx.content_hash.as_bytes())
+            .map_err(|e| SaveLinkError::Io(e.to_string()))?;
+
+        Ok(StoredSnapshot {
+            storage_key: snapshot_id.to_string(),
+            file_count: ctx.file_count,
+            total_size: ctx.total_size,
+        })
+    }
 }
 
 /// 递归把 `src` 目录下的内容复制进 `dst`（不含 src 本身这一层）。
@@ -114,6 +175,33 @@ fn copy_tree(src: &Path, dst: &Path) -> Result<()> {
     Ok(())
 }
 
+fn copy_save_source(source: &SaveSource, dst: &Path) -> Result<()> {
+    match source {
+        SaveSource::Directory { path } => copy_tree(path, dst),
+        SaveSource::Files { root, files } => {
+            if !root.is_dir() {
+                return Err(SaveLinkError::SaveDirMissing);
+            }
+            fs::create_dir_all(dst).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+            for mapping in files {
+                let from = root.join(&mapping.local_relative_path);
+                if !from.exists() {
+                    continue;
+                }
+                if !from.is_file() {
+                    return Err(SaveLinkError::SaveDirUnreadable);
+                }
+                let to = dst.join(&mapping.snapshot_relative_path);
+                if let Some(parent) = to.parent() {
+                    fs::create_dir_all(parent).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+                }
+                fs::copy(from, to).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+            }
+            Ok(())
+        }
+    }
+}
+
 impl SnapshotStore for FsStore {
     fn create(
         &self,
@@ -121,32 +209,21 @@ impl SnapshotStore for FsStore {
         sources: &[PathBuf],
         ctx: &ScanResult,
     ) -> Result<StoredSnapshot> {
-        let dir = self.snap_dir(snapshot_id);
-        // 重入清理：若有同名残留先清掉，保证幂等。
-        let _ = fs::remove_dir_all(&dir);
-        let _ = fs::remove_file(self.ok_marker(snapshot_id));
-        let _ = fs::remove_file(self.layout_marker(snapshot_id));
-        fs::create_dir_all(&dir).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+        let save_sources = sources
+            .iter()
+            .cloned()
+            .map(|path| SaveSource::Directory { path })
+            .collect::<Vec<_>>();
+        self.create_from_save_sources(snapshot_id, &save_sources, ctx)
+    }
 
-        if sources.len() > 1 {
-            for (index, source) in sources.iter().enumerate() {
-                copy_tree(source, &dir.join("sources").join(index.to_string()))?;
-            }
-            fs::write(self.layout_marker(snapshot_id), sources.len().to_string())
-                .map_err(|e| SaveLinkError::Io(e.to_string()))?;
-        } else if let Some(source) = sources.first() {
-            copy_tree(source, &dir)?;
-        }
-
-        // 全部内容写完后，最后写 .ok 标记（含指纹）。中断时不会有标记 → verify 为 false。
-        fs::write(self.ok_marker(snapshot_id), ctx.content_hash.as_bytes())
-            .map_err(|e| SaveLinkError::Io(e.to_string()))?;
-
-        Ok(StoredSnapshot {
-            storage_key: snapshot_id.to_string(),
-            file_count: ctx.file_count,
-            total_size: ctx.total_size,
-        })
+    fn create_save_sources(
+        &self,
+        snapshot_id: &str,
+        sources: &[SaveSource],
+        ctx: &ScanResult,
+    ) -> Result<StoredSnapshot> {
+        self.create_from_save_sources(snapshot_id, sources, ctx)
     }
 
     fn restore(&self, key: &str, target: &Path) -> Result<()> {

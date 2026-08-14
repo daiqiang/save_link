@@ -1,6 +1,6 @@
 //! SaveLink 云端快照协议 v1 的 JSON 契约与逻辑路径。
 
-use crate::model::Reason;
+use crate::model::{EmulatorGameIdentity, Reason};
 use chrono::DateTime;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
@@ -77,6 +77,9 @@ pub struct CloudGameDocument {
     pub object_type: String,
     pub cloud_game_id: String,
     pub name: String,
+    /// v1 的向后兼容可选扩展。旧版 game.json 没有此字段时按普通游戏处理。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emulator_identity: Option<EmulatorGameIdentity>,
     pub created_at: String,
     pub revision: u64,
     pub updated_at: String,
@@ -104,6 +107,9 @@ impl CloudGameDocument {
                 "游戏名称为空或过长",
             ));
         }
+        if let Some(identity) = &self.emulator_identity {
+            validate_emulator_identity(identity)?;
+        }
         if self.revision == 0 {
             return Err(CloudProtocolError::new(
                 "game_metadata_invalid",
@@ -125,6 +131,33 @@ impl CloudGameDocument {
         value.validate(expected_game_id)?;
         Ok(value)
     }
+}
+
+fn validate_emulator_identity(identity: &EmulatorGameIdentity) -> CloudProtocolResult<()> {
+    if identity.emulator.trim().is_empty()
+        || identity.emulator.len() > 64
+        || !identity.emulator.is_ascii()
+    {
+        return Err(CloudProtocolError::new(
+            "game_metadata_invalid",
+            "模拟器标识不正确",
+        ));
+    }
+    let rom = &identity.rom;
+    if rom.file_name.trim().is_empty()
+        || rom.file_name.chars().count() > 260
+        || rom.file_name.contains(['/', '\\'])
+        || !is_lower_hex(&rom.sha256, 64)
+        || rom.header_title.chars().count() > 12
+        || rom.game_code.len() != 4
+        || !rom.game_code.bytes().all(|byte| byte.is_ascii_graphic())
+    {
+        return Err(CloudProtocolError::new(
+            "game_metadata_invalid",
+            "ROM 身份信息不正确",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -261,7 +294,11 @@ fn default_source_count() -> u32 {
 }
 
 pub fn archive_layout_version(source_count: u32) -> u32 {
-    if source_count > 1 { 2 } else { 1 }
+    if source_count > 1 {
+        2
+    } else {
+        1
+    }
 }
 
 pub fn content_hash_algorithm(source_count: u32) -> &'static str {

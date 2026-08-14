@@ -8,7 +8,9 @@
 use crate::cloud_model::{CloudAccount, CloudGameBinding, CloudSnapshotRecord, CloudSyncStatus};
 use crate::cloud_repo::CloudStateRepository;
 use crate::error::{Result, SaveLinkError};
-use crate::model::{Game, Reason, Snapshot, SnapshotStatus};
+use crate::model::{
+    EmulatorGameIdentity, EmulatorLocalBinding, Game, Reason, SaveSource, Snapshot, SnapshotStatus,
+};
 use crate::repo::Repository;
 use crate::timestamp::normalize_timestamp;
 use rusqlite::{params, Connection};
@@ -60,14 +62,18 @@ impl SqliteRepo {
     pub fn open(db_path: impl AsRef<Path>) -> Result<Self> {
         let conn = Connection::open(db_path.as_ref()).map_err(map_err)?;
         Self::init(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     /// 内存数据库（测试用，等价 InMemoryRepo 但走真 SQL 路径）。
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory().map_err(map_err)?;
         Self::init(&conn)?;
-        Ok(Self { conn: Mutex::new(conn) })
+        Ok(Self {
+            conn: Mutex::new(conn),
+        })
     }
 
     fn init(conn: &Connection) -> Result<()> {
@@ -79,6 +85,9 @@ impl SqliteRepo {
                 icon TEXT,
                 repo_path TEXT NOT NULL,
                 save_paths TEXT NOT NULL,
+                save_sources TEXT NOT NULL DEFAULT '[]',
+                emulator_identity TEXT,
+                emulator_binding TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
              );
@@ -153,7 +162,27 @@ impl SqliteRepo {
         .map_err(map_err)?;
         Self::migrate_cloud_snapshot_sync_status(conn)?;
         Self::migrate_source_count_columns(conn)?;
+        Self::migrate_game_source_columns(conn)?;
         Self::migrate_snapshot_timestamps(conn)
+    }
+
+    fn migrate_game_source_columns(conn: &Connection) -> Result<()> {
+        if !table_has_column(conn, "games", "save_sources")? {
+            conn.execute(
+                "ALTER TABLE games ADD COLUMN save_sources TEXT NOT NULL DEFAULT '[]'",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "games", "emulator_identity")? {
+            conn.execute("ALTER TABLE games ADD COLUMN emulator_identity TEXT", [])
+                .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "games", "emulator_binding")? {
+            conn.execute("ALTER TABLE games ADD COLUMN emulator_binding TEXT", [])
+                .map_err(map_err)?;
+        }
+        Ok(())
     }
 
     fn migrate_source_count_columns(conn: &Connection) -> Result<()> {
@@ -334,6 +363,51 @@ fn paths_from_str(s: &str) -> Vec<PathBuf> {
     s.split('\n').map(PathBuf::from).collect()
 }
 
+fn encode_json<T: serde::Serialize>(value: &T) -> Result<String> {
+    serde_json::to_string(value).map_err(|error| SaveLinkError::Io(error.to_string()))
+}
+
+fn decode_json_column<T: serde::de::DeserializeOwned>(
+    value: &str,
+    column: usize,
+) -> rusqlite::Result<T> {
+    serde_json::from_str(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(error),
+        )
+    })
+}
+
+const GAME_COLS: &str = "id, name, icon, repo_path, save_paths, save_sources, emulator_identity, emulator_binding, created_at, updated_at";
+
+fn row_to_game(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
+    let repo_path: String = row.get(3)?;
+    let save_paths: String = row.get(4)?;
+    let save_sources_json: String = row.get(5)?;
+    let identity_json: Option<String> = row.get(6)?;
+    let binding_json: Option<String> = row.get(7)?;
+    Ok(Game {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        icon: row.get(2)?,
+        repo_path: PathBuf::from(repo_path),
+        save_paths: paths_from_str(&save_paths),
+        save_sources: decode_json_column::<Vec<SaveSource>>(&save_sources_json, 5)?,
+        emulator_identity: identity_json
+            .as_deref()
+            .map(|value| decode_json_column::<EmulatorGameIdentity>(value, 6))
+            .transpose()?,
+        emulator_binding: binding_json
+            .as_deref()
+            .map(|value| decode_json_column::<EmulatorLocalBinding>(value, 7))
+            .transpose()?,
+        created_at: row.get(8)?,
+        updated_at: row.get(9)?,
+    })
+}
+
 fn table_has_column(conn: &Connection, table: &str, column: &str) -> Result<bool> {
     let sql = format!("PRAGMA table_info({table})");
     let mut statement = conn.prepare(&sql).map_err(map_err)?;
@@ -400,15 +474,31 @@ fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnaps
 impl Repository for SqliteRepo {
     fn insert_game(&self, game: Game) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let save_sources = encode_json(&game.save_sources)?;
+        let emulator_identity = game
+            .emulator_identity
+            .as_ref()
+            .map(encode_json)
+            .transpose()?;
+        let emulator_binding = game
+            .emulator_binding
+            .as_ref()
+            .map(encode_json)
+            .transpose()?;
         conn.execute(
-            "INSERT INTO games (id, name, icon, repo_path, save_paths, created_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            "INSERT INTO games (
+                id, name, icon, repo_path, save_paths, save_sources,
+                emulator_identity, emulator_binding, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 game.id,
                 game.name,
                 game.icon,
                 game.repo_path.to_string_lossy(),
                 paths_to_str(&game.save_paths),
+                save_sources,
+                emulator_identity,
+                emulator_binding,
                 game.created_at,
                 game.updated_at,
             ],
@@ -419,23 +509,10 @@ impl Repository for SqliteRepo {
 
     fn get_game(&self, game_id: &str) -> Result<Option<Game>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT id, name, icon, repo_path, save_paths, created_at, updated_at FROM games WHERE id = ?1")
-            .map_err(map_err)?;
+        let sql = format!("SELECT {GAME_COLS} FROM games WHERE id = ?1");
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
         let mut rows = stmt
-            .query_map(params![game_id], |row| {
-                let repo_path: String = row.get(3)?;
-                let save_paths: String = row.get(4)?;
-                Ok(Game {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    icon: row.get(2)?,
-                    repo_path: PathBuf::from(repo_path),
-                    save_paths: paths_from_str(&save_paths),
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
-            })
+            .query_map(params![game_id], row_to_game)
             .map_err(map_err)?;
         match rows.next() {
             Some(r) => Ok(Some(r.map_err(map_err)?)),
@@ -445,24 +522,9 @@ impl Repository for SqliteRepo {
 
     fn list_games(&self) -> Result<Vec<Game>> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = conn
-            .prepare("SELECT id, name, icon, repo_path, save_paths, created_at, updated_at FROM games")
-            .map_err(map_err)?;
-        let rows = stmt
-            .query_map([], |row| {
-                let repo_path: String = row.get(3)?;
-                let save_paths: String = row.get(4)?;
-                Ok(Game {
-                    id: row.get(0)?,
-                    name: row.get(1)?,
-                    icon: row.get(2)?,
-                    repo_path: PathBuf::from(repo_path),
-                    save_paths: paths_from_str(&save_paths),
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                })
-            })
-            .map_err(map_err)?;
+        let sql = format!("SELECT {GAME_COLS} FROM games");
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+        let rows = stmt.query_map([], row_to_game).map_err(map_err)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r.map_err(map_err)?);
@@ -472,8 +534,21 @@ impl Repository for SqliteRepo {
 
     fn update_game(&self, game: Game) -> Result<()> {
         let conn = self.conn.lock().unwrap();
+        let save_sources = encode_json(&game.save_sources)?;
+        let emulator_identity = game
+            .emulator_identity
+            .as_ref()
+            .map(encode_json)
+            .transpose()?;
+        let emulator_binding = game
+            .emulator_binding
+            .as_ref()
+            .map(encode_json)
+            .transpose()?;
         conn.execute(
-            "UPDATE games SET name=?2, icon=?3, repo_path=?4, save_paths=?5, created_at=?6, updated_at=?7
+            "UPDATE games SET name=?2, icon=?3, repo_path=?4, save_paths=?5,
+                save_sources=?6, emulator_identity=?7, emulator_binding=?8,
+                created_at=?9, updated_at=?10
              WHERE id=?1",
             params![
                 game.id,
@@ -481,6 +556,9 @@ impl Repository for SqliteRepo {
                 game.icon,
                 game.repo_path.to_string_lossy(),
                 paths_to_str(&game.save_paths),
+                save_sources,
+                emulator_identity,
+                emulator_binding,
                 game.created_at,
                 game.updated_at,
             ],
@@ -529,7 +607,9 @@ impl Repository for SqliteRepo {
         let conn = self.conn.lock().unwrap();
         let sql = format!("SELECT {SNAP_COLS} FROM snapshots WHERE id = ?1");
         let mut stmt = conn.prepare(&sql).map_err(map_err)?;
-        let mut rows = stmt.query_map(params![snapshot_id], row_to_snapshot).map_err(map_err)?;
+        let mut rows = stmt
+            .query_map(params![snapshot_id], row_to_snapshot)
+            .map_err(map_err)?;
         match rows.next() {
             Some(r) => Ok(Some(r.map_err(map_err)?)),
             None => Ok(None),
@@ -543,7 +623,9 @@ impl Repository for SqliteRepo {
             "SELECT {SNAP_COLS} FROM snapshots WHERE game_id = ?1 ORDER BY created_at DESC, rowid DESC"
         );
         let mut stmt = conn.prepare(&sql).map_err(map_err)?;
-        let rows = stmt.query_map(params![game_id], row_to_snapshot).map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![game_id], row_to_snapshot)
+            .map_err(map_err)?;
         let mut out = Vec::new();
         for r in rows {
             out.push(r.map_err(map_err)?);

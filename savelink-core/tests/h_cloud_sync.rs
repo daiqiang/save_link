@@ -5,7 +5,8 @@ use savelink_core::cloud_archive::{
 };
 use savelink_core::cloud_model::{CloudAccount, CloudSyncStatus};
 use savelink_core::cloud_protocol::{
-    snapshot_ok_path, snapshot_zip_path, CloudManifest, SnapshotCommitDocument,
+    game_path, snapshot_ok_path, snapshot_zip_path, CloudGameDocument, CloudManifest,
+    SnapshotCommitDocument,
 };
 use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::cloud_service::{
@@ -15,7 +16,9 @@ use savelink_core::cloud_store::{
     CloudEntry, CloudFile, CloudObjectStore, CloudStoreError, CloudStoreResult,
     FakeCloudObjectStore, PutMode,
 };
-use savelink_core::model::{Game, Reason, ScanResult, Snapshot, SnapshotStatus};
+use savelink_core::model::{
+    EmulatorGameIdentity, Game, Reason, RomIdentity, ScanResult, Snapshot, SnapshotStatus,
+};
 use savelink_core::repo::{Clock, Repository};
 use savelink_core::scan;
 use savelink_core::sqlite_repo::SqliteRepo;
@@ -126,6 +129,9 @@ fn seed_device_a(device: &Device, contents: &[(&str, &[u8])]) -> PathBuf {
             icon: None,
             repo_path: PathBuf::new(),
             save_paths: vec![save_dir.clone()],
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
             created_at: "2026-07-14T18:00:00+08:00".into(),
             updated_at: "2026-07-14T18:00:00+08:00".into(),
         })
@@ -176,6 +182,9 @@ fn seed_multi_source_device_a(device: &Device) -> (Vec<PathBuf>, ScanResult) {
             icon: None,
             repo_path: PathBuf::new(),
             save_paths: sources.clone(),
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
             created_at: "2026-07-14T18:00:00+08:00".into(),
             updated_at: "2026-07-14T18:00:00+08:00".into(),
         })
@@ -651,12 +660,9 @@ fn h11_existing_offset_marker_is_idempotent_with_canonical_local_time() {
         .path()
         .join("fake-cloud")
         .join(snapshot_ok_path("game_1", "snap_1").unwrap());
-    let mut marker = SnapshotCommitDocument::from_json(
-        &fs::read(&marker_path).unwrap(),
-        "game_1",
-        "snap_1",
-    )
-    .unwrap();
+    let mut marker =
+        SnapshotCommitDocument::from_json(&fs::read(&marker_path).unwrap(), "game_1", "snap_1")
+            .unwrap();
     marker.created_at = "2026-07-14T18:10:00+08:00".into();
     fs::write(&marker_path, marker.to_json().unwrap()).unwrap();
 
@@ -680,19 +686,13 @@ fn h12_legacy_cloud_marker_without_source_count_remains_readable() {
 
     let marker = device_a.root.join("legacy-marker.ok");
     cloud
-        .get_file(
-            &snapshot_ok_path("game_1", "snap_1").unwrap(),
-            &marker,
-        )
+        .get_file(&snapshot_ok_path("game_1", "snap_1").unwrap(), &marker)
         .unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&fs::read(marker).unwrap()).unwrap();
     value.as_object_mut().unwrap().remove("source_count");
-    let legacy = SnapshotCommitDocument::from_json(
-        &serde_json::to_vec(&value).unwrap(),
-        "game_1",
-        "snap_1",
-    )
-    .unwrap();
+    let legacy =
+        SnapshotCommitDocument::from_json(&serde_json::to_vec(&value).unwrap(), "game_1", "snap_1")
+            .unwrap();
     assert_eq!(legacy.source_count, 1);
     assert_eq!(legacy.archive.layout_version, 1);
 }
@@ -711,17 +711,11 @@ fn h13_multi_source_snapshot_round_trips_through_fake_cloud() {
     );
     let marker_path = device_a.root.join("multi-marker.ok");
     cloud
-        .get_file(
-            &snapshot_ok_path("game_1", "snap_1").unwrap(),
-            &marker_path,
-        )
+        .get_file(&snapshot_ok_path("game_1", "snap_1").unwrap(), &marker_path)
         .unwrap();
-    let commit = SnapshotCommitDocument::from_json(
-        &fs::read(marker_path).unwrap(),
-        "game_1",
-        "snap_1",
-    )
-    .unwrap();
+    let commit =
+        SnapshotCommitDocument::from_json(&fs::read(marker_path).unwrap(), "game_1", "snap_1")
+            .unwrap();
     assert_eq!(commit.source_count, 2);
     assert_eq!(commit.archive.layout_version, 2);
     assert_eq!(
@@ -762,6 +756,84 @@ fn h13_multi_source_snapshot_round_trips_through_fake_cloud() {
     assert_eq!(scan::scan(&restored).unwrap(), expected);
     assert_eq!(fs::read(restored[0].join("same.dat")).unwrap(), b"ZERO");
     assert_eq!(fs::read(restored[1].join("same.dat")).unwrap(), b"ONE");
+}
+
+#[test]
+fn h14_emulator_identity_reaches_device_b_without_local_paths() {
+    let (_tmp, _cloud, _codec, device_a, device_b) = setup();
+    seed_device_a(&device_a, &[("save.dsv", b"desmume-save")]);
+    let identity = EmulatorGameIdentity {
+        emulator: "desmume".into(),
+        rom: RomIdentity {
+            file_name: "zzjb2r ver0.99.nds".into(),
+            sha256: "a".repeat(64),
+            header_title: "METALMAX2R".into(),
+            game_code: "TMXJ".into(),
+        },
+    };
+    let mut game = device_a.repo.get_game("game_1").unwrap().unwrap();
+    game.emulator_identity = Some(identity.clone());
+    device_a.repo.update_game(game).unwrap();
+
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    device_b.service.discover_remote_snapshots().unwrap();
+    device_b.service.receive_remote_snapshot("snap_1").unwrap();
+
+    let landed = device_b.repo.get_game("game_1").unwrap().unwrap();
+    assert_eq!(landed.emulator_identity, Some(identity));
+    assert!(landed.emulator_binding.is_none());
+    assert!(landed.save_paths.is_empty());
+    assert!(landed.save_sources.is_empty());
+}
+
+#[test]
+fn h15_existing_game_document_is_upgraded_with_emulator_identity() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    seed_device_a(&device_a, &[("save.dsv", b"desmume-save")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    let identity = EmulatorGameIdentity {
+        emulator: "desmume".into(),
+        rom: RomIdentity {
+            file_name: "zzjb2r ver0.99.nds".into(),
+            sha256: "b".repeat(64),
+            header_title: "METALMAX2R".into(),
+            game_code: "TMXJ".into(),
+        },
+    };
+    let mut game = device_a.repo.get_game("game_1").unwrap().unwrap();
+    game.emulator_identity = Some(identity.clone());
+    device_a.repo.update_game(game).unwrap();
+
+    assert_eq!(
+        device_a
+            .service
+            .upload_snapshot("game_1", "snap_1")
+            .unwrap(),
+        UploadOutcome::AlreadyPresent
+    );
+    let local_document = device_a.root.join("upgraded-game.json");
+    cloud
+        .get_file(&game_path("game_1").unwrap(), &local_document)
+        .unwrap();
+    let document =
+        CloudGameDocument::from_json(&fs::read(local_document).unwrap(), "game_1").unwrap();
+    assert_eq!(document.revision, 2);
+    assert_eq!(document.emulator_identity, Some(identity.clone()));
+
+    device_b.service.discover_remote_snapshots().unwrap();
+    device_b.service.receive_remote_snapshot("snap_1").unwrap();
+    let landed = device_b.repo.get_game("game_1").unwrap().unwrap();
+    assert_eq!(landed.emulator_identity, Some(identity));
+    assert!(landed.emulator_binding.is_none());
+    assert!(landed.save_paths.is_empty());
+    assert!(landed.save_sources.is_empty());
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

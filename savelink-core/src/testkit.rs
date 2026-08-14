@@ -11,7 +11,7 @@
 //! - `corrupt_dir`：破坏某快照物理内容，模拟损坏（B4 / D2）。
 
 use crate::error::{Result, SaveLinkError};
-use crate::model::{ScanResult, StoredSnapshot};
+use crate::model::{SaveSource, ScanResult, StoredSnapshot};
 use crate::scan;
 use crate::store::SnapshotStore;
 use std::path::{Path, PathBuf};
@@ -131,6 +131,18 @@ impl SnapshotStore for FailingStore {
             self.trip()?;
         }
         self.inner.create(snapshot_id, sources, ctx)
+    }
+
+    fn create_save_sources(
+        &self,
+        snapshot_id: &str,
+        sources: &[SaveSource],
+        ctx: &ScanResult,
+    ) -> Result<StoredSnapshot> {
+        if self.should_fail(FailOp::Create) {
+            self.trip()?;
+        }
+        self.inner.create_save_sources(snapshot_id, sources, ctx)
     }
 
     fn restore(&self, key: &str, target: &Path) -> Result<()> {

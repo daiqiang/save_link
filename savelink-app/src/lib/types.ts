@@ -20,6 +20,7 @@ export interface Game {
   name: string;
   icon: string | null;
   save_paths: string[];
+  emulator: string | null;
   snapshot_count: number;
   last_snapshot_at: string | null;
 }
@@ -62,6 +63,33 @@ export interface SteamDiscoveryReport {
   registered_app_count: number;
   manifest_match_count: number;
   games: SteamDiscoveredGame[];
+}
+
+export interface DesmumeGameMatch {
+  game_id: string;
+  game_name: string;
+  match_kind: "exact" | "possible";
+  already_bound_here: boolean;
+}
+
+export interface DesmumeDiscoveredGame {
+  name: string;
+  rom_path: string;
+  save_path: string;
+  has_save: boolean;
+  rom_sha256: string;
+  rom_header_title: string;
+  rom_game_code: string;
+  matches: DesmumeGameMatch[];
+}
+
+export interface DesmumeDiscoveryReport {
+  emulator_root: string;
+  configured_rom_root: string | null;
+  rom_root: string | null;
+  configured_rom_root_missing: boolean;
+  battery_dir: string;
+  games: DesmumeDiscoveredGame[];
 }
 
 export interface RestoreResult {

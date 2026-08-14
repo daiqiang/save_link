@@ -40,9 +40,8 @@ impl Harness {
 
         // 用真 SQLite（内存模式）跑全部测试：证明换数据库后端，
         // 上层逻辑与这 31 个用例一行不改即可通过。
-        let repo: Arc<dyn Repository> = Arc::new(
-            savelink_core::sqlite_repo::SqliteRepo::open_in_memory().unwrap(),
-        );
+        let repo: Arc<dyn Repository> =
+            Arc::new(savelink_core::sqlite_repo::SqliteRepo::open_in_memory().unwrap());
         let store = make_store(repo_root);
         Self::assemble(tmp, save_dir, repo, store)
     }
@@ -72,12 +71,23 @@ impl Harness {
             icon: None,
             repo_path: tmp.path().join("repo"),
             save_paths: vec![save_dir.clone()],
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
             created_at: clock.now_stamp(),
             updated_at: clock.now_stamp(),
         };
         repo.insert_game(game).unwrap();
 
-        Self { tmp, save_dir, repo, store, clock, ids, game_id: "g_test".into() }
+        Self {
+            tmp,
+            save_dir,
+            repo,
+            store,
+            clock,
+            ids,
+            game_id: "g_test".into(),
+        }
     }
 
     pub fn snapshots(&self) -> SnapshotService {
@@ -113,7 +123,12 @@ impl Harness {
         } else {
             Arc::new(FailingStore::new(self.store.clone()).fail_on_call(op, kind, nth))
         };
-        RestoreService::new(self.repo.clone(), wrapped, self.clock.clone(), self.ids.clone())
+        RestoreService::new(
+            self.repo.clone(),
+            wrapped,
+            self.clock.clone(),
+            self.ids.clone(),
+        )
     }
 
     pub fn timeline(&self) -> Vec<Snapshot> {

@@ -10,10 +10,11 @@
 //! 实现者若引入更强哈希（如 blake3），**必须同时改这一处**，测试自动跟随。
 
 use crate::error::{Result, SaveLinkError};
-use crate::model::ScanResult;
+use crate::model::{SaveFileMapping, SaveSource, ScanResult};
+use std::collections::BTreeSet;
 use std::fs;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const FNV_OFFSET: u64 = 0xcbf29ce484222325;
 const FNV_PRIME: u64 = 0x100000001b3;
@@ -40,10 +41,8 @@ pub fn fingerprint_dir(dir: &Path) -> Result<ScanResult> {
     collect_files(dir, &mut files).map_err(|e| SaveLinkError::Io(e.to_string()))?;
 
     // 用归一化后的相对路径排序，保证顺序无关。
-    let mut entries: Vec<(String, PathBuf)> = files
-        .iter()
-        .map(|p| (rel_key(dir, p), p.clone()))
-        .collect();
+    let mut entries: Vec<(String, PathBuf)> =
+        files.iter().map(|p| (rel_key(dir, p), p.clone())).collect();
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let mut h = FNV_OFFSET;
@@ -58,7 +57,9 @@ pub fn fingerprint_dir(dir: &Path) -> Result<ScanResult> {
         let mut f = fs::File::open(path).map_err(|e| SaveLinkError::Io(e.to_string()))?;
         let mut buf = [0u8; 64 * 1024];
         loop {
-            let n = f.read(&mut buf).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+            let n = f
+                .read(&mut buf)
+                .map_err(|e| SaveLinkError::Io(e.to_string()))?;
             if n == 0 {
                 break;
             }
@@ -76,10 +77,63 @@ pub fn fingerprint_dir(dir: &Path) -> Result<ScanResult> {
     })
 }
 
+/// 扫描共享目录中属于某个游戏的精确文件，并以快照逻辑路径参与指纹计算。
+pub fn fingerprint_selected_files(root: &Path, mappings: &[SaveFileMapping]) -> Result<ScanResult> {
+    if !root.is_dir() {
+        return Err(SaveLinkError::SaveDirMissing);
+    }
+    validate_file_mappings(mappings)?;
+    let mut entries = Vec::new();
+    for mapping in mappings {
+        let local = root.join(&mapping.local_relative_path);
+        if !local.exists() {
+            continue;
+        }
+        if !local.is_file() {
+            return Err(SaveLinkError::SaveDirUnreadable);
+        }
+        entries.push((path_key(&mapping.snapshot_relative_path), local));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    fingerprint_entries(&entries)
+}
+
+fn fingerprint_entries(entries: &[(String, PathBuf)]) -> Result<ScanResult> {
+    let mut hash = FNV_OFFSET;
+    let mut total_size = 0u64;
+    for (key, path) in entries {
+        hash = fnv1a(hash, key.as_bytes());
+        hash = fnv1a(hash, &[0]);
+        let mut file = fs::File::open(path).map_err(|e| SaveLinkError::Io(e.to_string()))?;
+        let mut buffer = [0u8; 64 * 1024];
+        loop {
+            let count = file
+                .read(&mut buffer)
+                .map_err(|e| SaveLinkError::Io(e.to_string()))?;
+            if count == 0 {
+                break;
+            }
+            total_size += count as u64;
+            hash = fnv1a(hash, &buffer[..count]);
+        }
+        hash = fnv1a(hash, &[0xff]);
+    }
+    Ok(ScanResult {
+        file_count: entries.len() as u64,
+        total_size,
+        content_hash: format!("{hash:016x}"),
+        readable: true,
+    })
+}
+
 /// 相对路径归一化为以 `/` 分隔的字符串。
 fn rel_key(root: &Path, path: &Path) -> String {
     let rel = path.strip_prefix(root).unwrap_or(path);
-    rel.components()
+    path_key(rel)
+}
+
+fn path_key(path: &Path) -> String {
+    path.components()
         .map(|c| c.as_os_str().to_string_lossy().to_string())
         .collect::<Vec<_>>()
         .join("/")
@@ -113,6 +167,101 @@ pub fn scan(save_paths: &[PathBuf]) -> Result<ScanResult> {
         return fingerprint_dir(&save_paths[0]);
     }
     fingerprint_sources(save_paths)
+}
+
+/// 扫描游戏的有效来源。传统整目录来源保持原指纹算法；精确文件来源使用快照
+/// 逻辑路径，因此同一 ROM 改名后仍能与原快照比较。
+pub fn scan_save_sources(sources: &[SaveSource]) -> Result<ScanResult> {
+    if sources.is_empty() {
+        return scan(&[]);
+    }
+    validate_save_sources(sources)?;
+    if sources.iter().all(SaveSource::is_directory) {
+        let paths = sources
+            .iter()
+            .map(|source| source.root().to_path_buf())
+            .collect::<Vec<_>>();
+        return scan(&paths);
+    }
+
+    let fingerprints = sources
+        .iter()
+        .map(|source| match source {
+            SaveSource::Directory { path } => fingerprint_dir(path),
+            SaveSource::Files { root, files } => fingerprint_selected_files(root, files),
+        })
+        .collect::<Result<Vec<_>>>()?;
+    aggregate_source_fingerprints(&fingerprints)
+}
+
+pub fn validate_save_sources(sources: &[SaveSource]) -> Result<()> {
+    let roots = sources
+        .iter()
+        .map(|source| source.root().to_path_buf())
+        .collect::<Vec<_>>();
+    validate_save_paths(&roots)?;
+    for source in sources {
+        if let SaveSource::Files { files, .. } = source {
+            validate_file_mappings(files)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_file_mappings(mappings: &[SaveFileMapping]) -> Result<()> {
+    if mappings.is_empty() {
+        return Err(SaveLinkError::Io("精确文件来源不能为空".into()));
+    }
+    let mut local_paths = BTreeSet::new();
+    let mut snapshot_paths = BTreeSet::new();
+    for mapping in mappings {
+        if !is_safe_relative_path(&mapping.local_relative_path)
+            || !is_safe_relative_path(&mapping.snapshot_relative_path)
+        {
+            return Err(SaveLinkError::Io("存档文件映射包含非法相对路径".into()));
+        }
+        let local = path_key(&mapping.local_relative_path).to_ascii_lowercase();
+        let snapshot = path_key(&mapping.snapshot_relative_path).to_ascii_lowercase();
+        if !local_paths.insert(local) || !snapshot_paths.insert(snapshot) {
+            return Err(SaveLinkError::Io("存档文件映射包含重复路径".into()));
+        }
+    }
+    Ok(())
+}
+
+fn is_safe_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, Component::Normal(_)))
+}
+
+fn aggregate_source_fingerprints(fingerprints: &[ScanResult]) -> Result<ScanResult> {
+    if fingerprints.is_empty() {
+        return scan(&[]);
+    }
+    if fingerprints.len() == 1 {
+        return Ok(fingerprints[0].clone());
+    }
+    let mut hash = FNV_OFFSET;
+    let mut file_count = 0u64;
+    let mut total_size = 0u64;
+    for (index, child) in fingerprints.iter().enumerate() {
+        hash = fnv1a(hash, b"source\0");
+        hash = fnv1a(hash, index.to_string().as_bytes());
+        hash = fnv1a(hash, &[0]);
+        hash = fnv1a(hash, child.content_hash.as_bytes());
+        hash = fnv1a(hash, &[0xff]);
+        file_count += child.file_count;
+        total_size += child.total_size;
+    }
+    Ok(ScanResult {
+        file_count,
+        total_size,
+        content_hash: format!("{hash:016x}"),
+        readable: true,
+    })
 }
 
 /// 检查多个存档根目录是否可以作为相互独立的来源处理。

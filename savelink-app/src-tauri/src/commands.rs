@@ -17,6 +17,9 @@ use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::cloud_service::{
     CloudSnapshotDiscovery, CloudSyncError, CloudSyncService, ReceiveOutcome, UploadOutcome,
 };
+use savelink_core::desmume_discovery::{
+    compare_rom_identity, DesmumeDiscoveredGame, DesmumeDiscoveryService, RomMatch,
+};
 use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapshot};
 use savelink_core::repo::{Clock, IdGen, Repository};
 use savelink_core::service::{RestoreService, SnapshotService};
@@ -173,6 +176,7 @@ pub struct GameDto {
     pub name: String,
     pub icon: Option<String>,
     pub save_paths: Vec<String>,
+    pub emulator: Option<String>,
     pub snapshot_count: usize,
     pub last_snapshot_at: Option<String>,
 }
@@ -269,6 +273,36 @@ pub struct SteamDiscoveryReportDto {
     pub games: Vec<SteamDiscoveredGameDto>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct DesmumeGameMatchDto {
+    pub game_id: String,
+    pub game_name: String,
+    pub match_kind: String,
+    pub already_bound_here: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DesmumeDiscoveredGameDto {
+    pub name: String,
+    pub rom_path: String,
+    pub save_path: String,
+    pub has_save: bool,
+    pub rom_sha256: String,
+    pub rom_header_title: String,
+    pub rom_game_code: String,
+    pub matches: Vec<DesmumeGameMatchDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct DesmumeDiscoveryReportDto {
+    pub emulator_root: String,
+    pub configured_rom_root: Option<String>,
+    pub rom_root: Option<String>,
+    pub configured_rom_root_missing: bool,
+    pub battery_dir: String,
+    pub games: Vec<DesmumeDiscoveredGameDto>,
+}
+
 fn reason_str(r: Reason) -> String {
     match r {
         Reason::Manual => "manual",
@@ -327,6 +361,10 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
             .iter()
             .map(|p| p.to_string_lossy().to_string())
             .collect(),
+        emulator: g
+            .emulator_identity
+            .as_ref()
+            .map(|identity| identity.emulator.clone()),
         snapshot_count: snaps.len(),
         last_snapshot_at: snaps.first().map(|s| s.created_at.clone()),
     }
@@ -776,6 +814,170 @@ pub fn scan_steam_games(
     })
 }
 
+#[tauri::command]
+pub fn scan_desmume_games(
+    state: State<'_, AppState>,
+    emulator_root: String,
+    rom_root: Option<String>,
+) -> Result<DesmumeDiscoveryReportDto, String> {
+    let emulator_root = PathBuf::from(emulator_root.trim());
+    let rom_root = rom_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    let cached_bindings = existing
+        .iter()
+        .filter_map(|game| game.emulator_binding.clone())
+        .collect::<Vec<_>>();
+    let report = DesmumeDiscoveryService::scan_with_cache(
+        &emulator_root,
+        rom_root.as_deref(),
+        &cached_bindings,
+    )
+    .map_err(|error| error.to_string())?;
+    let games = report
+        .games
+        .into_iter()
+        .map(|game| desmume_game_to_dto(game, &existing))
+        .collect();
+    Ok(DesmumeDiscoveryReportDto {
+        emulator_root: report.emulator_root.to_string_lossy().to_string(),
+        configured_rom_root: report
+            .configured_rom_root
+            .map(|path| path.to_string_lossy().to_string()),
+        rom_root: report
+            .rom_root
+            .map(|path| path.to_string_lossy().to_string()),
+        configured_rom_root_missing: report.configured_rom_root_missing,
+        battery_dir: report.battery_dir.to_string_lossy().to_string(),
+        games,
+    })
+}
+
+#[tauri::command]
+pub fn register_desmume_game(
+    state: State<'_, AppState>,
+    emulator_root: String,
+    rom_root: Option<String>,
+    rom_path: String,
+    bind_game_id: Option<String>,
+) -> Result<GameDto, String> {
+    let emulator_root = PathBuf::from(emulator_root.trim());
+    let rom_root = rom_root
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    let requested_rom = PathBuf::from(rom_path.trim());
+    let report = DesmumeDiscoveryService::scan(&emulator_root, rom_root.as_deref())
+        .map_err(|error| error.to_string())?;
+    let discovered = report
+        .games
+        .into_iter()
+        .find(|game| normalized_path(&game.rom_path) == normalized_path(&requested_rom))
+        .ok_or_else(|| "所选 ROM 不在本次 DeSmuME 扫描结果中".to_string())?;
+    if !discovered.has_save {
+        return Err("该游戏还没有生成 .dsv 存档，暂时无法添加".into());
+    }
+    let save_source = discovered
+        .save_source()
+        .map_err(|error| error.to_string())?;
+    savelink_core::scan::validate_save_sources(std::slice::from_ref(&save_source))
+        .map_err(|error| error.to_string())?;
+    let save_root = save_source.root().to_path_buf();
+    let _operation = acquire_snapshot_operation_guard(&state)?;
+    let now = state.clock.now_stamp();
+
+    let game = if let Some(game_id) = bind_game_id.filter(|value| !value.trim().is_empty()) {
+        let mut game = state
+            .repo
+            .get_game(&game_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "要绑定的云端游戏不存在".to_string())?;
+        let expected = game
+            .emulator_identity
+            .as_ref()
+            .ok_or_else(|| "目标游戏没有模拟器身份信息".to_string())?;
+        if compare_rom_identity(expected, &discovered.identity) == RomMatch::None {
+            return Err("所选 ROM 与目标云端游戏不匹配".into());
+        }
+        game.save_paths = vec![save_root];
+        game.save_sources = vec![save_source];
+        game.emulator_binding = Some(discovered.binding);
+        game.updated_at = now;
+        state
+            .repo
+            .update_game(game.clone())
+            .map_err(|error| error.to_string())?;
+        game
+    } else {
+        let game = Game {
+            id: state.ids.new_id("game"),
+            name: discovered.name,
+            icon: None,
+            repo_path: PathBuf::new(),
+            save_paths: vec![save_root],
+            save_sources: vec![save_source],
+            emulator_identity: Some(discovered.identity),
+            emulator_binding: Some(discovered.binding),
+            created_at: now.clone(),
+            updated_at: now,
+        };
+        state
+            .repo
+            .insert_game(game.clone())
+            .map_err(|error| error.to_string())?;
+        game
+    };
+    Ok(game_to_dto(&state.repo, &game))
+}
+
+fn desmume_game_to_dto(game: DesmumeDiscoveredGame, existing: &[Game]) -> DesmumeDiscoveredGameDto {
+    let mut matches = existing
+        .iter()
+        .filter_map(|saved| {
+            let expected = saved.emulator_identity.as_ref()?;
+            let match_kind = compare_rom_identity(expected, &game.identity);
+            if match_kind == RomMatch::None {
+                return None;
+            }
+            let already_bound_here = saved.emulator_binding.as_ref().is_some_and(|binding| {
+                normalized_path(&binding.rom_path) == normalized_path(&game.rom_path)
+            });
+            Some(DesmumeGameMatchDto {
+                game_id: saved.id.clone(),
+                game_name: saved.name.clone(),
+                match_kind: match match_kind {
+                    RomMatch::Exact => "exact",
+                    RomMatch::Possible => "possible",
+                    RomMatch::None => unreachable!(),
+                }
+                .into(),
+                already_bound_here,
+            })
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by_key(|candidate| {
+        (
+            candidate.match_kind != "exact",
+            candidate.already_bound_here,
+            candidate.game_name.to_ascii_lowercase(),
+        )
+    });
+    DesmumeDiscoveredGameDto {
+        name: game.name,
+        rom_path: game.rom_path.to_string_lossy().to_string(),
+        save_path: game.save_path.to_string_lossy().to_string(),
+        has_save: game.has_save,
+        rom_sha256: game.identity.rom.sha256,
+        rom_header_title: game.identity.rom.header_title,
+        rom_game_code: game.identity.rom.game_code,
+        matches,
+    }
+}
+
 fn resolve_manifest_database(app: &AppHandle) -> Result<PathBuf, String> {
     let bundled = app
         .path()
@@ -862,6 +1064,9 @@ pub fn add_game(
         icon: None,
         repo_path: std::path::PathBuf::new(), // 仓库由 store 管理，DTO 不暴露
         save_paths,
+        save_sources: Vec::new(),
+        emulator_identity: None,
+        emulator_binding: None,
         created_at: now.clone(),
         updated_at: now,
     };
@@ -882,22 +1087,15 @@ pub fn update_game(
     if name.trim().is_empty() {
         return Err("游戏名称不能为空".into());
     }
-    if save_paths.is_empty() {
-        return Err("请至少选择一个存档目录".into());
-    }
     let trimmed_paths: Vec<String> = save_paths
         .into_iter()
         .map(|p| p.trim().to_string())
         .filter(|p| !p.is_empty())
         .collect();
-    if trimmed_paths.is_empty() {
-        return Err("请至少选择一个存档目录".into());
-    }
     let trimmed_paths = trimmed_paths
         .into_iter()
         .map(std::path::PathBuf::from)
         .collect::<Vec<_>>();
-    savelink_core::scan::validate_save_paths(&trimmed_paths).map_err(|e| e.to_string())?;
     let _operation = acquire_snapshot_operation_guard(&state)?;
 
     let mut game = state
@@ -905,8 +1103,27 @@ pub fn update_game(
         .get_game(&game_id)
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "游戏不存在".to_string())?;
+    if game.emulator_identity.is_some() {
+        if game
+            .save_paths
+            .iter()
+            .map(|path| normalized_path(path))
+            .collect::<Vec<_>>()
+            != trimmed_paths
+                .iter()
+                .map(|path| normalized_path(path))
+                .collect::<Vec<_>>()
+        {
+            return Err("模拟器游戏请通过 DeSmuME 重新扫描和绑定，不能直接修改存档目录".into());
+        }
+    } else {
+        if trimmed_paths.is_empty() {
+            return Err("请至少选择一个存档目录".into());
+        }
+        savelink_core::scan::validate_save_paths(&trimmed_paths).map_err(|e| e.to_string())?;
+        game.save_paths = trimmed_paths;
+    }
     game.name = name.trim().to_string();
-    game.save_paths = trimmed_paths;
     game.updated_at = state.clock.now_stamp();
     state
         .repo

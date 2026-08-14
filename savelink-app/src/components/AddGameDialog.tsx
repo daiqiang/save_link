@@ -4,24 +4,38 @@ import { Icon } from "../lib/icons";
 import { formatSize } from "../lib/format";
 import * as api from "../lib/api";
 import { useToast } from "./Toast";
-import type { Game, SteamDiscoveredGame, SteamDiscoveryReport } from "../lib/types";
+import type {
+  DesmumeDiscoveredGame,
+  DesmumeDiscoveryReport,
+  Game,
+  SteamDiscoveredGame,
+  SteamDiscoveryReport,
+} from "../lib/types";
 
 interface Props {
   onClose: () => void;
   onCreated: (game: Game) => void;
+  initialMode?: AddGameMode;
 }
 
-type Mode = "steam" | "manual";
+export type AddGameMode = "steam" | "desmume" | "manual";
 type SteamState =
   | { status: "loading" }
   | { status: "done"; report: SteamDiscoveryReport }
   | { status: "error"; message: string };
+type DesmumeState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "done"; report: DesmumeDiscoveryReport }
+  | { status: "error"; message: string };
 
-export function AddGameDialog({ onClose, onCreated }: Props) {
+export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Props) {
   const toast = useToast();
-  const [mode, setMode] = useState<Mode>("steam");
+  const [mode, setMode] = useState<AddGameMode>(initialMode);
   const [steam, setSteam] = useState<SteamState>({ status: "loading" });
+  const [desmume, setDesmume] = useState<DesmumeState>({ status: "idle" });
   const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
+  const [selectedDesmumeRom, setSelectedDesmumeRom] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
   const [scan, setScan] = useState<{ state: "idle" | "loading" | "done" | "error"; text: string }>({
@@ -35,6 +49,10 @@ export function AddGameDialog({ onClose, onCreated }: Props) {
     if (steam.status !== "done") return null;
     return steam.report.games.find((game) => game.app_id === selectedAppId) ?? null;
   }, [selectedAppId, steam]);
+  const selectedDesmume = useMemo(() => {
+    if (desmume.status !== "done") return null;
+    return desmume.report.games.find((game) => game.rom_path === selectedDesmumeRom) ?? null;
+  }, [desmume, selectedDesmumeRom]);
 
   useEffect(() => {
     let alive = true;
@@ -66,6 +84,56 @@ export function AddGameDialog({ onClose, onCreated }: Props) {
   async function pickSteamRoot() {
     const picked = await open({ directory: true, multiple: false, title: "选择 Steam 安装目录" });
     if (typeof picked === "string") await scanSteam(picked);
+  }
+
+  async function scanDesmume(emulatorRoot: string, romRoot?: string) {
+    setDesmume({ status: "loading" });
+    setSelectedDesmumeRom(null);
+    try {
+      const report = await api.scanDesmumeGames(emulatorRoot, romRoot);
+      setDesmume({ status: "done", report });
+      setSelectedDesmumeRom(report.games.find((game) => game.has_save)?.rom_path ?? report.games[0]?.rom_path ?? null);
+    } catch (error) {
+      setDesmume({ status: "error", message: String(error) });
+    }
+  }
+
+  async function pickDesmumeRoot() {
+    const picked = await open({ directory: true, multiple: false, title: "选择 DeSmuME 目录" });
+    if (typeof picked === "string") await scanDesmume(picked);
+  }
+
+  async function pickDesmumeRomRoot() {
+    if (desmume.status !== "done") return;
+    const picked = await open({ directory: true, multiple: false, title: "选择 DeSmuME ROM 目录" });
+    if (typeof picked === "string") await scanDesmume(desmume.report.emulator_root, picked);
+  }
+
+  async function addDesmumeGame(game: DesmumeDiscoveredGame) {
+    if (desmume.status !== "done" || !game.has_save || saving) return;
+    const candidate = game.matches[0];
+    if (candidate?.already_bound_here) return;
+    if (candidate?.match_kind === "possible") {
+      const confirmed = window.confirm(
+        `检测到可能对应“${candidate.game_name}”的 ROM，但 ROM 内容不同。\n\n不同版本的存档不一定兼容，确认绑定吗？`,
+      );
+      if (!confirmed) return;
+    }
+    setSaving(true);
+    try {
+      const created = await api.registerDesmumeGame(
+        desmume.report.emulator_root,
+        desmume.report.rom_root,
+        game.rom_path,
+        candidate?.game_id ?? null,
+      );
+      toast(candidate ? "已绑定 DeSmuME 游戏" : "DeSmuME 游戏已添加，去创建第一个快照吧", "ok");
+      onCreated(created);
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function addDiscoveredGame(game: SteamDiscoveredGame) {
@@ -129,6 +197,9 @@ export function AddGameDialog({ onClose, onCreated }: Props) {
           <button className={mode === "steam" ? "active" : ""} onClick={() => setMode("steam")}>
             <Icon.Search /> Steam 自动发现
           </button>
+          <button className={mode === "desmume" ? "active" : ""} onClick={() => setMode("desmume")}>
+            <Icon.Gamepad /> DeSmuME
+          </button>
           <button className={mode === "manual" ? "active" : ""} onClick={() => setMode("manual")}>
             <Icon.Folder /> 手动添加
           </button>
@@ -141,6 +212,15 @@ export function AddGameDialog({ onClose, onCreated }: Props) {
             onSelect={setSelectedAppId}
             onRefresh={() => scanSteam(steam.status === "done" ? steam.report.steam_root : undefined)}
             onPickRoot={pickSteamRoot}
+          />
+        ) : mode === "desmume" ? (
+          <DesmumeDiscoveryBody
+            state={desmume}
+            selectedRomPath={selectedDesmumeRom}
+            onSelect={setSelectedDesmumeRom}
+            onPickRoot={pickDesmumeRoot}
+            onPickRomRoot={pickDesmumeRomRoot}
+            onRefresh={() => desmume.status === "done" && scanDesmume(desmume.report.emulator_root, desmume.report.rom_root ?? undefined)}
           />
         ) : (
           <div className="modal-body add-manual-body">
@@ -182,12 +262,132 @@ export function AddGameDialog({ onClose, onCreated }: Props) {
         <div className="modal-foot">
           <button className="btn" onClick={onClose} disabled={saving}>取消</button>
           <button className="btn primary"
-            onClick={() => mode === "steam" ? selected && addDiscoveredGame(selected) : addManualGame()}
-            disabled={saving || (mode === "steam" && (!selected?.can_add_directly || selected.already_added))}>
-            {saving ? "添加中…" : mode === "steam" && selected?.already_added ? "已经添加" : "添加游戏"}
+            onClick={() => mode === "steam"
+              ? selected && addDiscoveredGame(selected)
+              : mode === "desmume"
+                ? selectedDesmume && addDesmumeGame(selectedDesmume)
+                : addManualGame()}
+            disabled={saving
+              || (mode === "steam" && (!selected?.can_add_directly || selected.already_added))
+              || (mode === "desmume" && (!selectedDesmume
+                || !selectedDesmume.has_save
+                || selectedDesmume.matches[0]?.already_bound_here))}>
+            {saving ? "添加中…"
+              : mode === "steam" && selected?.already_added ? "已经添加"
+                : mode === "desmume" && selectedDesmume?.matches[0]?.already_bound_here
+                    ? "已经添加"
+                    : mode === "desmume" && selectedDesmume?.matches[0]
+                        ? "绑定游戏"
+                        : "添加游戏"}
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DesmumeDiscoveryBody({ state, selectedRomPath, onSelect, onPickRoot, onPickRomRoot, onRefresh }: {
+  state: DesmumeState;
+  selectedRomPath: string | null;
+  onSelect: (romPath: string) => void;
+  onPickRoot: () => void;
+  onPickRomRoot: () => void;
+  onRefresh: () => void;
+}) {
+  if (state.status === "idle") {
+    return (
+      <div className="steam-discovery-state">
+        <Icon.Gamepad size={28} />
+        <strong>选择 DeSmuME 目录</strong>
+        <button className="btn primary" onClick={onPickRoot}><Icon.Folder /> 选择目录</button>
+      </div>
+    );
+  }
+  if (state.status === "loading") {
+    return <div className="steam-discovery-state"><span className="spin"><Icon.RotateCcw size={22} /></span><span>正在读取 ROM 与存档</span></div>;
+  }
+  if (state.status === "error") {
+    return (
+      <div className="steam-discovery-state">
+        <Icon.Alert size={26} />
+        <strong>未能读取 DeSmuME</strong>
+        <span className="steam-error">{state.message}</span>
+        <button className="btn primary" onClick={onPickRoot}><Icon.Folder /> 重新选择</button>
+      </div>
+    );
+  }
+
+  if (!state.report.rom_root) {
+    return (
+      <div className="steam-discovery-state">
+        <Icon.Alert size={26} />
+        <strong>ROM 目录不可用</strong>
+        {state.report.configured_rom_root && (
+          <span className="path-mono steam-error">{state.report.configured_rom_root}</span>
+        )}
+        <button className="btn primary" onClick={onPickRomRoot}><Icon.Folder /> 选择 ROM 目录</button>
+        <button className="btn sm" onClick={onPickRoot}>更换 DeSmuME 目录</button>
+      </div>
+    );
+  }
+
+  const selected = state.report.games.find((game) => game.rom_path === selectedRomPath) ?? null;
+  return (
+    <div className="steam-discovery-body">
+      <div className="steam-scan-head">
+        <div>
+          <strong>{state.report.games.filter((game) => game.has_save).length} 个游戏已有存档</strong>
+          <span className="path-mono" title={state.report.emulator_root}>{state.report.emulator_root}</span>
+        </div>
+        <button className="iconbtn" title="重新扫描" onClick={onRefresh}><Icon.RotateCcw /></button>
+        <button className="btn sm" onClick={onPickRomRoot}><Icon.Folder /> ROM 目录</button>
+        <button className="btn sm" onClick={onPickRoot}><Icon.Gamepad /> 模拟器目录</button>
+      </div>
+      {state.report.games.length === 0 ? (
+        <div className="steam-discovery-state"><Icon.Search size={26} /><strong>没有发现 NDS ROM</strong></div>
+      ) : (
+        <div className="steam-discovery-layout">
+          <div className="steam-game-list">
+            {state.report.games.map((game) => {
+              const candidate = game.matches[0];
+              return (
+                <button key={game.rom_path} className={`steam-game-row ${selectedRomPath === game.rom_path ? "active" : ""}`}
+                  onClick={() => onSelect(game.rom_path)}>
+                  <span className="game-cover">{game.name[0] ?? "游"}</span>
+                  <span className="steam-game-copy">
+                    <strong>{game.name}</strong>
+                    <span>{game.has_save ? "已找到 .dsv 存档" : "尚无 .dsv 存档"}</span>
+                  </span>
+                  {candidate?.already_bound_here && <span className="steam-added"><Icon.Check size={13} /> 已添加</span>}
+                </button>
+              );
+            })}
+          </div>
+          <div className="steam-game-detail">
+            {selected && <>
+              <div className="steam-detail-title">
+                <strong>{selected.name}</strong>
+                <span>{selected.rom_header_title || "无内部标题"} · {selected.rom_game_code}</span>
+              </div>
+              <PathGroup title="ROM" paths={[selected.rom_path]} />
+              <PathGroup title="将保护的游戏内存档" paths={[selected.save_path]} />
+              <div className="desmume-rom-id">
+                <span>SHA-256</span>
+                <code title={selected.rom_sha256}>{selected.rom_sha256}</code>
+              </div>
+              {!selected.has_save && (
+                <div className="hint muted"><Icon.Alert /><span>该游戏尚未生成 .dsv 存档</span></div>
+              )}
+              {selected.matches[0]?.match_kind === "exact" && !selected.matches[0].already_bound_here && (
+                <div className="hint ok"><Icon.CheckCircle /><span>与“{selected.matches[0].game_name}”的 ROM 完全一致</span></div>
+              )}
+              {selected.matches[0]?.match_kind === "possible" && (
+                <div className="hint err"><Icon.Alert /><span>可能对应“{selected.matches[0].game_name}”，绑定时需要确认</span></div>
+              )}
+            </>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

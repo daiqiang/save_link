@@ -51,6 +51,8 @@ pub fn run() {
             commands::list_snapshots,
             commands::scan_path,
             commands::scan_steam_games,
+            commands::scan_desmume_games,
+            commands::register_desmume_game,
             commands::add_game,
             commands::update_game,
             commands::create_snapshot,
