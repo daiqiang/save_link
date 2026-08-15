@@ -19,12 +19,12 @@ SaveLink是一款基于windows的游戏存档工具，同时满足存储空间�
 
 ## 下载
 
-前往 [GitHub Releases](https://github.com/daiqiang/save_link/releases) 下载最新版本。当前版本为 [v0.3.0](https://github.com/daiqiang/save_link/releases/tag/v0.3.0)。
+前往 [GitHub Releases](https://github.com/daiqiang/save_link/releases) 下载最新版本。当前版本为 [v0.4.0](https://github.com/daiqiang/save_link/releases/tag/v0.4.0)。
 
 ## 快速开始
 
 1. 下载压缩包，解压后双击exe就可以使用了。
-2. 添加游戏时，SaveLink 会自动扫描 Steam 游戏及其存档目录；未识别到的游戏仍可手动添加。
+2. 添加游戏时，SaveLink 会自动扫描 Steam 游戏及其存档目录，也可以选择 DeSmuME 模拟器；未识别到的游戏仍可手动添加。
 3. 存档可以上传到网盘，首次上传时，默认浏览器会打开百度授权页面。
 4. 用户手动上传过一次之后，后续存档会自动上传到百度网盘，每个游戏30个自动存档位，满了之后会自动删除最早的存档。可以手动锁定存档，锁定后存档不会自动清除。锁定后的存档不占用这30个自动存档位，可锁定的存档位没有上限。
 5. 在新电脑需要同步存档时，打开云端存档、下载快照、绑定本机目录、恢复。
@@ -39,11 +39,11 @@ SaveLink是一款基于windows的游戏存档工具，同时满足存储空间�
 
 ![SaveLink Steam 自动发现](img/添加游戏.png)
 
-## v0.3.0 更新
+## v0.4.0 更新
 
-- 支持自动发现本机 Steam 游戏，并推荐存档目录。
-- 支持一个游戏包含多个存档目录，快照、恢复和云同步会将它们作为一个整体处理。
-- 增加重复及父子嵌套目录保护，避免同一批文件被重复备份或错误恢复。
+- 支持 DeSmuME 0.9.x，可扫描 ROM 并自动找到对应的 `.dsv` 游戏内存档。
+- 只备份目标游戏的 `.dsv`，不会上传 ROM，也不会影响其他游戏存档或即时存档。
+- 使用 ROM SHA-256 识别同一游戏，支持 ROM 改名后继续匹配和跨设备重新绑定。
 
 ## License
 
