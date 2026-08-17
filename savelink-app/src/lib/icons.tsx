@@ -39,6 +39,9 @@ export const Icon = {
   Folder: ({ size = 16 }: P): JSX.Element => (
     <svg {...base(size)}><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2z" /></svg>
   ),
+  FileSearch: ({ size = 16 }: P): JSX.Element => (
+    <svg {...base(size)}><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h7" /><path d="M14 2v6h6" /><path d="M20 13.5V8l-6-6" /><circle cx="16" cy="17" r="3" /><path d="m18.5 19.5 2.5 2.5" /></svg>
+  ),
   Gamepad: ({ size = 16 }: P): JSX.Element => (
     <svg {...base(size)}><path d="M6 11h4M8 9v4M15 12h.01M18 10h.01" /><path d="M7 6h10a4 4 0 0 1 3.8 2.75l1.1 3.6A3.5 3.5 0 0 1 18.55 17a3 3 0 0 1-2.12-.88L14.5 14.2h-5l-1.93 1.93A3 3 0 0 1 5.45 17a3.5 3.5 0 0 1-3.35-4.65l1.1-3.6A4 4 0 0 1 7 6Z" /></svg>
   ),

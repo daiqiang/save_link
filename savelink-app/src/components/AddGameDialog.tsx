@@ -8,6 +8,8 @@ import type {
   DesmumeDiscoveredGame,
   DesmumeDiscoveryReport,
   Game,
+  ProgramDiscoveredGame,
+  ProgramDiscoveryReport,
   SteamDiscoveredGame,
   SteamDiscoveryReport,
 } from "../lib/types";
@@ -18,7 +20,7 @@ interface Props {
   initialMode?: AddGameMode;
 }
 
-export type AddGameMode = "steam" | "desmume" | "manual";
+export type AddGameMode = "steam" | "program" | "desmume" | "manual";
 type SteamState =
   | { status: "loading" }
   | { status: "done"; report: SteamDiscoveryReport }
@@ -28,13 +30,20 @@ type DesmumeState =
   | { status: "loading" }
   | { status: "done"; report: DesmumeDiscoveryReport }
   | { status: "error"; message: string };
+type ProgramState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "done"; report: ProgramDiscoveryReport }
+  | { status: "error"; message: string };
 
 export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Props) {
   const toast = useToast();
   const [mode, setMode] = useState<AddGameMode>(initialMode);
   const [steam, setSteam] = useState<SteamState>({ status: "loading" });
+  const [program, setProgram] = useState<ProgramState>({ status: "idle" });
   const [desmume, setDesmume] = useState<DesmumeState>({ status: "idle" });
   const [selectedAppId, setSelectedAppId] = useState<number | null>(null);
+  const [selectedProgramKey, setSelectedProgramKey] = useState<string | null>(null);
   const [selectedDesmumeRom, setSelectedDesmumeRom] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [path, setPath] = useState("");
@@ -53,6 +62,10 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
     if (desmume.status !== "done") return null;
     return desmume.report.games.find((game) => game.rom_path === selectedDesmumeRom) ?? null;
   }, [desmume, selectedDesmumeRom]);
+  const selectedProgram = useMemo(() => {
+    if (program.status !== "done") return null;
+    return program.report.games.find((game) => programKey(game) === selectedProgramKey) ?? null;
+  }, [program, selectedProgramKey]);
 
   useEffect(() => {
     let alive = true;
@@ -84,6 +97,34 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
   async function pickSteamRoot() {
     const picked = await open({ directory: true, multiple: false, title: "选择 Steam 安装目录" });
     if (typeof picked === "string") await scanSteam(picked);
+  }
+
+  async function scanProgram(selectedPath: string) {
+    setProgram({ status: "loading" });
+    setSelectedProgramKey(null);
+    try {
+      const report = await api.scanProgramGame(selectedPath);
+      setProgram({ status: "done", report });
+      const first = firstAvailableProgram(report) ?? report.games[0];
+      setSelectedProgramKey(first ? programKey(first) : null);
+    } catch (error) {
+      setProgram({ status: "error", message: String(error) });
+    }
+  }
+
+  async function pickProgramFile() {
+    const picked = await open({
+      directory: false,
+      multiple: false,
+      title: "选择游戏快捷方式或 EXE",
+      filters: [{ name: "游戏程序或快捷方式", extensions: ["exe", "lnk"] }],
+    });
+    if (typeof picked === "string") await scanProgram(picked);
+  }
+
+  async function pickProgramDir() {
+    const picked = await open({ directory: true, multiple: false, title: "选择游戏安装目录" });
+    if (typeof picked === "string") await scanProgram(picked);
   }
 
   async function scanDesmume(emulatorRoot: string, romRoot?: string) {
@@ -152,6 +193,22 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
     }
   }
 
+  async function addProgramGame(game: ProgramDiscoveredGame) {
+    if (!game.can_add_directly || game.already_added || saving) return;
+    setSaving(true);
+    try {
+      const created = await api.addGame(game.name, game.save_paths);
+      toast(game.match_kind === "app_id"
+        ? "已根据游戏程序找到并添加存档"
+        : "已添加名称匹配的游戏存档", "ok");
+      onCreated(created);
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setSaving(false);
+    }
+  }
+
   async function pickManualDir() {
     const picked = await open({ directory: true, multiple: false, title: "选择存档目录" });
     if (typeof picked === "string") {
@@ -197,6 +254,9 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
           <button className={mode === "steam" ? "active" : ""} onClick={() => setMode("steam")}>
             <Icon.Search /> Steam 自动发现
           </button>
+          <button className={mode === "program" ? "active" : ""} onClick={() => setMode("program")}>
+            <Icon.FileSearch /> 游戏程序
+          </button>
           <button className={mode === "desmume" ? "active" : ""} onClick={() => setMode("desmume")}>
             <Icon.Gamepad /> DeSmuME
           </button>
@@ -212,6 +272,15 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
             onSelect={setSelectedAppId}
             onRefresh={() => scanSteam(steam.status === "done" ? steam.report.steam_root : undefined)}
             onPickRoot={pickSteamRoot}
+          />
+        ) : mode === "program" ? (
+          <ProgramDiscoveryBody
+            state={program}
+            selectedKey={selectedProgramKey}
+            onSelect={setSelectedProgramKey}
+            onPickFile={pickProgramFile}
+            onPickDir={pickProgramDir}
+            onRefresh={() => program.status === "done" && scanProgram(program.report.selected_path)}
           />
         ) : mode === "desmume" ? (
           <DesmumeDiscoveryBody
@@ -264,16 +333,20 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
           <button className="btn primary"
             onClick={() => mode === "steam"
               ? selected && addDiscoveredGame(selected)
+              : mode === "program"
+                ? selectedProgram && addProgramGame(selectedProgram)
               : mode === "desmume"
                 ? selectedDesmume && addDesmumeGame(selectedDesmume)
                 : addManualGame()}
             disabled={saving
               || (mode === "steam" && (!selected?.can_add_directly || selected.already_added))
+              || (mode === "program" && (!selectedProgram?.can_add_directly || selectedProgram.already_added))
               || (mode === "desmume" && (!selectedDesmume
                 || !selectedDesmume.has_save
                 || selectedDesmume.matches[0]?.already_bound_here))}>
             {saving ? "添加中…"
               : mode === "steam" && selected?.already_added ? "已经添加"
+                : mode === "program" && selectedProgram?.already_added ? "已经添加"
                 : mode === "desmume" && selectedDesmume?.matches[0]?.already_bound_here
                     ? "已经添加"
                     : mode === "desmume" && selectedDesmume?.matches[0]
@@ -282,6 +355,107 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function ProgramDiscoveryBody({ state, selectedKey, onSelect, onPickFile, onPickDir, onRefresh }: {
+  state: ProgramState;
+  selectedKey: string | null;
+  onSelect: (key: string) => void;
+  onPickFile: () => void;
+  onPickDir: () => void;
+  onRefresh: () => void;
+}) {
+  if (state.status === "idle") {
+    return (
+      <div className="steam-discovery-state">
+        <Icon.FileSearch size={28} />
+        <strong>从游戏程序识别存档</strong>
+        <div className="program-pick-actions">
+          <button className="btn primary" onClick={onPickFile}><Icon.FileSearch /> 快捷方式或 EXE</button>
+          <button className="btn" onClick={onPickDir}><Icon.Folder /> 游戏目录</button>
+        </div>
+      </div>
+    );
+  }
+  if (state.status === "loading") {
+    return <div className="steam-discovery-state"><span className="spin"><Icon.RotateCcw size={22} /></span><span>正在识别游戏与存档</span></div>;
+  }
+  if (state.status === "error") {
+    return (
+      <div className="steam-discovery-state">
+        <Icon.Alert size={26} />
+        <strong>未能识别游戏程序</strong>
+        <span className="steam-error">{state.message}</span>
+        <div className="program-pick-actions">
+          <button className="btn primary" onClick={onPickFile}><Icon.FileSearch /> 重新选择程序</button>
+          <button className="btn" onClick={onPickDir}><Icon.Folder /> 选择游戏目录</button>
+        </div>
+      </div>
+    );
+  }
+
+  const selected = state.report.games.find((game) => programKey(game) === selectedKey) ?? null;
+  const sourcePath = state.report.resolved_program_path ?? state.report.selected_path;
+  return (
+    <div className="steam-discovery-body">
+      <div className="steam-scan-head">
+        <div>
+          <strong>{state.report.games.length} 个游戏匹配</strong>
+          <span className="path-mono" title={state.report.selected_path}>{state.report.selected_path}</span>
+        </div>
+        <button className="iconbtn" title="重新识别" onClick={onRefresh}><Icon.RotateCcw /></button>
+        <button className="btn sm" onClick={onPickFile}><Icon.FileSearch /> 程序</button>
+        <button className="btn sm" onClick={onPickDir}><Icon.Folder /> 目录</button>
+      </div>
+      {state.report.games.length === 0 ? (
+        <div className="program-discovery-empty">
+          <Icon.Search size={26} />
+          <strong>没有找到对应的存档规则</strong>
+        </div>
+      ) : (
+        <div className="steam-discovery-layout">
+          <div className="steam-game-list">
+            {state.report.games.map((game) => (
+              <button key={`${game.app_id}-${game.name}`}
+                className={`steam-game-row ${selectedKey === programKey(game) ? "active" : ""}`}
+                onClick={() => onSelect(programKey(game))}>
+                <span className="game-cover">{game.name[0] ?? "游"}</span>
+                <span className="steam-game-copy">
+                  <strong>{game.name}</strong>
+                  <span>{game.match_kind === "app_id" ? "AppID 精确识别" : "程序名称匹配"}</span>
+                </span>
+                {game.already_added && <span className="steam-added"><Icon.Check size={13} /> 已添加</span>}
+              </button>
+            ))}
+          </div>
+          <div className="steam-game-detail">
+            {selected && <>
+              <div className="steam-detail-title">
+                <strong>{selected.name}</strong>
+                <span>Steam AppID {selected.app_id}</span>
+              </div>
+              <PathGroup title="选择的游戏程序" paths={[sourcePath]} muted />
+              {state.report.install_dir !== sourcePath && (
+                <PathGroup title="识别的游戏目录" paths={[state.report.install_dir]} muted />
+              )}
+              <PathGroup title="将保护的存档目录" paths={selected.save_paths} />
+              {selected.config_paths.length > 0 && (
+                <PathGroup title="不纳入快照的纯配置路径" paths={selected.config_paths} muted />
+              )}
+              {selected.match_kind === "app_id" ? (
+                <div className="hint ok"><Icon.CheckCircle /><span>已通过游戏 AppID 精确匹配</span></div>
+              ) : (
+                <div className="hint muted"><Icon.Alert /><span>根据程序或目录名称匹配，请确认游戏名称</span></div>
+              )}
+              {!selected.can_add_directly && (
+                <div className="hint err"><Icon.Alert /><span>已识别游戏，但没有找到当前可读取的存档目录</span></div>
+              )}
+            </>}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -477,4 +651,12 @@ function PathGroup({ title, paths, muted = false }: { title: string; paths: stri
 
 function firstAvailableGame(report: SteamDiscoveryReport): SteamDiscoveredGame | undefined {
   return report.games.find((game) => game.can_add_directly && !game.already_added);
+}
+
+function firstAvailableProgram(report: ProgramDiscoveryReport): ProgramDiscoveredGame | undefined {
+  return report.games.find((game) => game.can_add_directly && !game.already_added);
+}
+
+function programKey(game: ProgramDiscoveredGame): string {
+  return `${game.app_id}:${game.name}`;
 }

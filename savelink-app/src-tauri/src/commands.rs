@@ -21,6 +21,9 @@ use savelink_core::desmume_discovery::{
     compare_rom_identity, DesmumeDiscoveredGame, DesmumeDiscoveryService, RomMatch,
 };
 use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapshot};
+use savelink_core::program_discovery::{
+    ProgramDiscoveredGame, ProgramDiscoveryService, ProgramMatchKind, ProgramSelectionKind,
+};
 use savelink_core::repo::{Clock, IdGen, Repository};
 use savelink_core::service::{RestoreService, SnapshotService};
 use savelink_core::sqlite_repo::SqliteRepo;
@@ -271,6 +274,31 @@ pub struct SteamDiscoveryReportDto {
     pub registered_app_count: usize,
     pub manifest_match_count: usize,
     pub games: Vec<SteamDiscoveredGameDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProgramDiscoveredGameDto {
+    pub name: String,
+    pub app_id: u32,
+    pub match_kind: String,
+    pub save_paths: Vec<String>,
+    pub config_paths: Vec<String>,
+    pub current_system_unresolved_rules: usize,
+    pub other_environment_rules: usize,
+    pub already_added: bool,
+    pub can_add_directly: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProgramDiscoveryReportDto {
+    pub selected_path: String,
+    pub selection_kind: String,
+    pub resolved_program_path: Option<String>,
+    pub install_dir: String,
+    pub detected_app_id: Option<u32>,
+    pub app_id_source: Option<String>,
+    pub identity_hints: Vec<String>,
+    pub games: Vec<ProgramDiscoveredGameDto>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -815,6 +843,47 @@ pub fn scan_steam_games(
 }
 
 #[tauri::command]
+pub fn scan_program_game(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    selected_path: String,
+) -> Result<ProgramDiscoveryReportDto, String> {
+    let selected_path = selected_path.trim();
+    if selected_path.is_empty() {
+        return Err("请选择游戏快捷方式、EXE 或安装目录".into());
+    }
+    let database = resolve_manifest_database(&app)?;
+    let report = ProgramDiscoveryService::new(database)
+        .scan(&PathBuf::from(selected_path))
+        .map_err(|error| error.to_string())?;
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    let games = report
+        .games
+        .into_iter()
+        .map(|game| program_game_to_dto(game, &existing))
+        .collect();
+    Ok(ProgramDiscoveryReportDto {
+        selected_path: report.selected_path.to_string_lossy().to_string(),
+        selection_kind: match report.selection_kind {
+            ProgramSelectionKind::Directory => "directory",
+            ProgramSelectionKind::Executable => "executable",
+            ProgramSelectionKind::Shortcut => "shortcut",
+        }
+        .into(),
+        resolved_program_path: report
+            .resolved_program_path
+            .map(|path| path.to_string_lossy().to_string()),
+        install_dir: report.install_dir.to_string_lossy().to_string(),
+        detected_app_id: report.detected_app_id,
+        app_id_source: report
+            .app_id_source
+            .map(|path| path.to_string_lossy().to_string()),
+        identity_hints: report.identity_hints,
+        games,
+    })
+}
+
+#[tauri::command]
 pub fn scan_desmume_games(
     state: State<'_, AppState>,
     emulator_root: String,
@@ -1013,6 +1082,44 @@ fn steam_game_to_dto(game: SteamDiscoveredGame, existing: &[Game]) -> SteamDisco
         steam_name: game.steam_name,
         app_id: game.app_id,
         install_dir: game.install_dir.to_string_lossy().to_string(),
+        save_paths: game
+            .save_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        config_paths: game
+            .config_paths
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect(),
+        current_system_unresolved_rules: game.current_system_unresolved_rules,
+        other_environment_rules: game.other_environment_rules,
+        already_added,
+        can_add_directly: !game.save_paths.is_empty(),
+    }
+}
+
+fn program_game_to_dto(game: ProgramDiscoveredGame, existing: &[Game]) -> ProgramDiscoveredGameDto {
+    let discovered_paths = game
+        .save_paths
+        .iter()
+        .map(|path| normalized_path(path))
+        .collect::<Vec<_>>();
+    let already_added = existing.iter().any(|saved| {
+        saved
+            .save_paths
+            .iter()
+            .map(|path| normalized_path(path))
+            .any(|path| discovered_paths.contains(&path))
+    });
+    ProgramDiscoveredGameDto {
+        name: game.name,
+        app_id: game.app_id,
+        match_kind: match game.match_kind {
+            ProgramMatchKind::AppId => "app_id",
+            ProgramMatchKind::Name => "name",
+        }
+        .into(),
         save_paths: game
             .save_paths
             .iter()

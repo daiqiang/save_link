@@ -308,6 +308,11 @@ button {
   align-items: center; justify-content: center; gap: 10px; color: var(--color-text-3); text-align: center; }
 .steam-discovery-state strong { color: var(--color-text); font-size: 14px; }
 .steam-error { max-width: 560px; overflow-wrap: anywhere; font-size: 12px; }
+.program-pick-actions { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.program-discovery-empty { min-height: 362px; padding: 32px; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: 9px; color: var(--color-text-3); text-align: center; }
+.program-discovery-empty strong { color: var(--color-text); font-size: 14px; }
+.program-discovery-empty span { max-width: 480px; font-size: 12px; }
 .steam-scan-head { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 9px 20px;
   border-bottom: 1px solid var(--color-border); background: #fafbfc; }
 .steam-scan-head > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

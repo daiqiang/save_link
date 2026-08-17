@@ -1,4 +1,7 @@
 use rusqlite::{params, Connection};
+use savelink_core::program_discovery::{
+    ProgramDiscoveryError, ProgramDiscoveryService, ProgramMatchKind, ProgramSelectionKind,
+};
 use savelink_core::steam_discovery::{SteamDiscoveryError, SteamDiscoveryService};
 use savelink_core::testkit::TempDir;
 use std::fs;
@@ -149,6 +152,172 @@ fn n5_discovery_collapses_nested_save_rule_matches() {
         .unwrap();
 
     assert_eq!(game.save_paths, vec![base.join("all")]);
+}
+
+#[test]
+fn n6_program_executable_uses_nearby_app_id_for_exact_manifest_match() {
+    let temp = TempDir::new();
+    let game_root = temp.child("Elden Ring");
+    let binary_dir = game_root.join("Binaries/Win64");
+    let executable = binary_dir.join("eldenring.exe");
+    let save_dir = game_root.join("saves/76561198000000000");
+    fs::create_dir_all(&binary_dir).unwrap();
+    fs::create_dir_all(&save_dir).unwrap();
+    fs::write(&executable, b"not-a-real-exe").unwrap();
+    fs::write(game_root.join("steam_appid.txt"), b"2778580\n").unwrap();
+    fs::write(save_dir.join("ER0000.sl2"), b"save").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&executable)
+        .unwrap();
+
+    assert_eq!(report.selection_kind, ProgramSelectionKind::Executable);
+    assert_eq!(report.resolved_program_path, Some(executable));
+    assert_eq!(report.install_dir, game_root);
+    assert_eq!(report.detected_app_id, Some(2778580));
+    assert_eq!(report.games.len(), 1);
+    assert_eq!(report.games[0].name, "Elden Ring");
+    assert_eq!(report.games[0].match_kind, ProgramMatchKind::AppId);
+    assert_eq!(report.games[0].save_paths, vec![save_dir]);
+}
+
+#[test]
+fn n7_program_name_is_a_conservative_fallback_when_app_id_is_missing() {
+    let temp = TempDir::new();
+    let game_root = temp.child("SlayTheSpire");
+    let executable = game_root.join("SlayTheSpire.exe");
+    fs::create_dir_all(game_root.join("saves")).unwrap();
+    fs::write(&executable, b"not-a-real-exe").unwrap();
+    fs::write(game_root.join("saves/slot.dat"), b"save").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&executable)
+        .unwrap();
+
+    assert_eq!(report.detected_app_id, None);
+    assert_eq!(report.games.len(), 1);
+    assert_eq!(report.games[0].name, "Slay the Spire");
+    assert_eq!(report.games[0].match_kind, ProgramMatchKind::Name);
+    assert_eq!(report.games[0].save_paths, vec![game_root.join("saves")]);
+}
+
+#[test]
+fn n8_program_directory_reads_app_id_from_common_ini_format() {
+    let temp = TempDir::new();
+    let game_root = temp.child("ExtraGame");
+    fs::create_dir_all(game_root.join("userdata")).unwrap();
+    fs::write(
+        game_root.join("ColdClientLoader.ini"),
+        b"[SteamClient]\nAppId=900001\n",
+    )
+    .unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&game_root)
+        .unwrap();
+
+    assert_eq!(report.selection_kind, ProgramSelectionKind::Directory);
+    assert_eq!(report.detected_app_id, Some(900001));
+    assert_eq!(report.games.len(), 1);
+    assert_eq!(report.games[0].match_kind, ProgramMatchKind::AppId);
+    assert_eq!(report.games[0].save_paths, vec![game_root.join("userdata")]);
+}
+
+#[test]
+fn n9_unrecognized_program_returns_an_empty_report_instead_of_guessing() {
+    let temp = TempDir::new();
+    let game_root = temp.child("Unknown Learning Game");
+    fs::create_dir_all(&game_root).unwrap();
+    fs::write(game_root.join("mystery.exe"), b"not-a-real-exe").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&game_root)
+        .unwrap();
+
+    assert_eq!(report.detected_app_id, None);
+    assert!(report.games.is_empty());
+}
+
+#[test]
+fn n10_missing_program_selection_has_a_clear_error() {
+    let temp = TempDir::new();
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let missing = temp.path().join("missing.exe");
+
+    let error = ProgramDiscoveryService::new(&database)
+        .scan(&missing)
+        .unwrap_err();
+    assert_eq!(error, ProgramDiscoveryError::SelectionMissing(missing));
+}
+
+#[cfg(windows)]
+#[test]
+fn n11_windows_shortcut_resolves_to_the_game_program() {
+    let temp = TempDir::new();
+    let game_root = temp.child("SlayTheSpire");
+    let executable = game_root.join("SlayTheSpire.exe");
+    let shortcut = temp.path().join("Slay the Spire.lnk");
+    fs::create_dir_all(game_root.join("saves")).unwrap();
+    fs::write(&executable, b"not-a-real-exe").unwrap();
+    fs::write(game_root.join("steam_appid.txt"), b"646570").unwrap();
+    fs::write(game_root.join("saves/slot.dat"), b"save").unwrap();
+    write_windows_shortcut(&shortcut, &executable);
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&shortcut)
+        .unwrap();
+
+    assert_eq!(report.selection_kind, ProgramSelectionKind::Shortcut);
+    assert_eq!(report.resolved_program_path, Some(executable));
+    assert_eq!(report.detected_app_id, Some(646570));
+    assert_eq!(report.games[0].name, "Slay the Spire");
+    assert_eq!(report.games[0].save_paths, vec![game_root.join("saves")]);
+}
+
+#[cfg(windows)]
+fn write_windows_shortcut(shortcut: &Path, target: &Path) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{Interface, PCWSTR};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CoUninitialize, IPersistFile, CLSCTX_INPROC_SERVER,
+        COINIT_APARTMENTTHREADED,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+
+    let shortcut = shortcut.to_path_buf();
+    let target = target.to_path_buf();
+    std::thread::spawn(move || unsafe {
+        CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok().unwrap();
+        let shell_link: IShellLinkW =
+            CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).unwrap();
+        let target = target
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        shell_link.SetPath(PCWSTR(target.as_ptr())).unwrap();
+        let persist: IPersistFile = shell_link.cast().unwrap();
+        let shortcut = shortcut
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>();
+        persist.Save(PCWSTR(shortcut.as_ptr()), true).unwrap();
+        CoUninitialize();
+    })
+    .join()
+    .unwrap();
 }
 
 fn prepare_library(library: &Path) {

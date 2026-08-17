@@ -18,6 +18,7 @@ pub mod cloud_store;
 pub mod desmume_discovery;
 pub mod error;
 pub mod model;
+pub mod program_discovery;
 pub mod repo;
 pub mod scan;
 pub mod service;

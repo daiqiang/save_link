@@ -14,6 +14,7 @@ import type {
   CloudSnapshot,
   DesmumeDiscoveryReport,
   Game,
+  ProgramDiscoveryReport,
   RestoreResult,
   ScanResult,
   Snapshot,
@@ -77,6 +78,10 @@ export async function scanSteamGames(steamRoot?: string): Promise<SteamDiscovery
   return invoke<SteamDiscoveryReport>("scan_steam_games", {
     steamRoot: steamRoot?.trim() || null,
   });
+}
+
+export async function scanProgramGame(selectedPath: string): Promise<ProgramDiscoveryReport> {
+  return invoke<ProgramDiscoveryReport>("scan_program_game", { selectedPath });
 }
 
 export async function scanDesmumeGames(

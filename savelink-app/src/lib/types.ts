@@ -65,6 +65,29 @@ export interface SteamDiscoveryReport {
   games: SteamDiscoveredGame[];
 }
 
+export interface ProgramDiscoveredGame {
+  name: string;
+  app_id: number;
+  match_kind: "app_id" | "name";
+  save_paths: string[];
+  config_paths: string[];
+  current_system_unresolved_rules: number;
+  other_environment_rules: number;
+  already_added: boolean;
+  can_add_directly: boolean;
+}
+
+export interface ProgramDiscoveryReport {
+  selected_path: string;
+  selection_kind: "directory" | "executable" | "shortcut";
+  resolved_program_path: string | null;
+  install_dir: string;
+  detected_app_id: number | null;
+  app_id_source: string | null;
+  identity_hints: string[];
+  games: ProgramDiscoveredGame[];
+}
+
 export interface DesmumeGameMatch {
   game_id: string;
   game_name: string;

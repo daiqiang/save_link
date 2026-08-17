@@ -21,10 +21,11 @@
 | 1.14 | 代强 | 2026-08-12 | 将自动备份、Steam 自动发现和多存档目录实现统一收口为 v0.3.0 架构 |
 | 1.15 | 代强 | 2026-08-14 | 增加 v0.4.0 DeSmuME 精确 `.dsv` 来源、ROM 身份、跨设备映射；补目录链接环和 ROM 哈希栈溢出防护 |
 | 1.16 | 代强 | 2026-08-15 | 确认 v0.4.0 ROM 扫描修复实测通过并统一发布版本元数据 |
+| 1.17 | 代强 | 2026-08-17 | 同步 v0.4.0 发布及游戏程序/快捷方式识别、Manifest 复用和扫描边界 |
 
 ## 文档用途
 
-本文档描述 SaveLink v0.4.0 发布候选的真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
+本文档描述 SaveLink v0.4.0 发布后开发主线的真实技术架构。若本文档与代码不一致，以代码和测试为准，并应回头更新本文档。
 
 配套文档：
 
@@ -64,14 +65,15 @@ save_link/
 - 独立绑定弹窗复用 `scan_path` 做只读检测，扫描成功后复用 `update_game` 保存路径；绑定本身不触发快照、恢复或上传。
 - v0.2.0 启动立即检查、10 分钟轮询、自动快照上云和 30 条未锁定记录联合清理已接入，并已通过绿色版及真实百度主流程验收。
 - v0.4.0 DeSmuME 支持已接入：扫描 `desmume.ini`/ROM 目录、读取 NDS Header 身份、计算并缓存 ROM SHA-256、按目标 ROM 精确选择 `.dsv`，以及跨设备按目标设备 ROM 文件名恢复。
+- 游戏程序识别已接入：用户选择 Windows `.lnk`、EXE 或安装目录后，优先读取 AppID、其次用名称匹配 Manifest，再展示真实存在的存档候选；手动添加继续保留。
 
 当前验证状态：
 
-- `savelink-core`：102 个默认测试全绿；N/O 组覆盖 Steam 和多目录，P 组覆盖精确文件快照/恢复，Q 组 5 个测试覆盖 DeSmuME 发现、ROM 身份、目录链接环和小栈线程哈希。J/L 已按需执行通过，Q5 真实 DeSmuME 测试默认忽略且已执行通过。
+- `savelink-core`：108 个默认测试全绿；N 组在 Steam 发现基础上增加程序 AppID、名称兜底、目录配置、未知程序和真实 `.lnk` 往返，O/P/Q 组覆盖多目录、精确文件和 DeSmuME。J/L 已按需执行通过，Q5 真实 DeSmuME 测试默认忽略且已执行通过。
 - Tauri：自动上传状态选择测试 2 个全绿。
 - `npm run build`：前端构建通过。
 - `build-installer.bat`：打包通过。
-- 旧设置对话框的“打开”目录代码路径曾通过绿色版实机验证；当前齿轮入口展示新的自动备份设置页。DeSmuME 添加和重新绑定流程已完成代码接线，真实可见窗口验收待补。
+- 旧设置对话框的“打开”目录代码路径曾通过绿色版实机验证；当前齿轮入口展示新的自动备份设置页。游戏程序识别已完成代码接线，真实学习版快捷方式/目录窗口验收待补。
 - 设备 B 已完成云端接收、绑定假存档目录和手动安全恢复；恢复文件与仓库目标快照 SHA-256 一致。
 
 ## 第一性原则
@@ -97,7 +99,8 @@ SaveLink 的核心承诺是“不丢用户存档”。所有技术选择服从�
 | 快照存储 | `FsStore` 将目录树写入 `repository` | 当前不压缩；zip/restic 后置 |
 | 云端 HTTP | `reqwest 0.12 blocking + rustls` | 百度适配器流式上传/下载；HTTP 细节不进入同步业务层 |
 | 百度账号连接 | 系统浏览器 OAuth + loopback callback | `state` 校验后换 Token，凭据留在本机 AppData |
-| 目录选择 | `tauri-plugin-dialog` | 添加/编辑游戏选择目录 |
+| 文件/目录选择 | `tauri-plugin-dialog` | 选择游戏快捷方式、EXE、安装目录或存档目录 |
+| Windows 快捷方式 | `windows 0.61 / Shell COM` | 在独立 STA 线程只读解析 `.lnk` 目标，不启动游戏 |
 | 打开路径 | `tauri-plugin-opener` | 保留的设置组件只允许打开 AppData 范围内路径；当前入口隐藏 |
 
 ## 分层结构
@@ -167,6 +170,10 @@ discover_baidu_snapshots
 receive_baidu_snapshot
 list_snapshots
 scan_path
+scan_steam_games
+scan_program_game
+scan_desmume_games
+register_desmume_game
 add_game
 update_game
 create_snapshot
@@ -212,6 +219,8 @@ Windows 运行时数据：
 当前 SQLite 生产实现位于 `savelink-core/src/sqlite_repo.rs`。和早期设计不同，当前没有独立 `save_paths` 表；游戏路径以换行分隔文本存储在 `games` 表中。模型使用 `Vec<PathBuf>`，扫描、指纹、`FsStore`、恢复、云端协议、设备 B 绑定和前端展示均按完整路径数组运行；旧数据库中的单路径记录会迁移为一个来源。
 
 Steam 自动发现位于 `savelink-core/src/steam_discovery.rs`：通过注册表和 Steam appmanifest 枚举已安装应用，再按 AppID 查询随包 `src-tauri/resources/manifest.db`。绿色版同时携带 Manifest 来源说明和 Ludusavi 许可证。精确文件规则会归一到父目录后交给 SaveLink 的目录型存储；末尾 `<storeUserId>` 目录占位符只接受目录，规则结果还会收敛相同或父子嵌套路径。添加/编辑游戏及创建/恢复快照前会再次调用 `validate_save_paths`，把重叠来源作为安全错误拒绝。
+
+程序识别位于 `savelink-core/src/program_discovery.rs`：目录和 EXE 直接解析，Windows `.lnk` 通过 Shell COM 在独立 STA 线程读取目标。扫描严格限制在所选安装目录 3 层和最多 512 个目录，跳过目录链接，不遍历其他磁盘。身份优先读取 `steam_appid.txt` 及常见 AppID INI；没有 AppID 时，才用快捷方式、EXE 和目录名称做保守匹配。游戏身份确定后调用 `steam_discovery.rs` 的同一套 Manifest 查询、约束过滤、占位符展开和路径收敛逻辑；未匹配时返回空结果而不是猜测。
 
 DeSmuME 自动发现位于 `savelink-core/src/desmume_discovery.rs`：检查模拟器目录和可执行文件，读取 `[PathSettings]` 中的 ROM 目录，以带 canonical 路径去重的迭代遍历发现 `.nds`，解析 NDS Header Title/Game Code，并分块计算 ROM SHA-256。哈希使用堆上的 1 MiB 流式缓冲区，避免占满 Tauri 工作线程栈。ROM 的文件大小和修改时间会写入当前设备绑定，用于后续缓存哈希；缓存失效时重新计算。扫描是只读的，配置路径失效时明确要求用户重新选择，不静默改写配置。
 
@@ -455,7 +464,7 @@ Tauri 2 capability 需要：
 ## 当前技术债
 
 - `FsStore` 目录复制不压缩，空间占用和文件数量后续可能成为问题。
-- v0.4.0 真实 ROM 目录扫描和栈溢出修复已由用户复验；正式发布包仍需完成 DeSmuME 添加、快照、恢复及通用冒烟。
+- v0.4.0 已正式发布；程序识别仍需真实学习版快捷方式、EXE 和安装目录窗口验收。
 - Steam 自动发现的 Elden Ring 父子候选问题已修复，并通过自动测试、真实开发版和绿色版候选回归；真实多 Steam 游戏库机器仍待以后验收。
 - 真实恢复进度事件未接入前端；当前 Tauri 命令传空 progress 回调。
 - `startup_self_check` 已在 Tauri setup 中显式调用；真实窗口残留清理场景可在正式回归时补验收。
@@ -474,7 +483,8 @@ Tauri 2 capability 需要：
 | 阶段 2 自动化 | notify 文件监听、游戏退出后快照、保留策略 |
 | 阶段 3 游戏识别 | Ludusavi manifest / 常见游戏路径库 |
 | 阶段 4 云端 | POC、协议 v1、Fake/真实双设备传输、OAuth、上传/接收、独立绑定及安全恢复均已完成实机验收 |
-| 阶段 5 DeSmuME | ROM 发现、身份匹配、精确 `.dsv` 快照/恢复和云身份兼容已实现，待真实窗口验收；Yuzu 后置到 v0.5.0 |
+| 阶段 5 DeSmuME | ROM 发现、身份匹配、精确 `.dsv` 快照/恢复和云身份兼容已实现并随 v0.4.0 发布；Yuzu 后置到 v0.5.0 |
+| 阶段 6 游戏程序识别 | `.lnk`/EXE/目录身份和 Manifest 存档候选已实现，待真实学习版样本验收 |
 
 ## 当前结论
 

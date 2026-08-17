@@ -37,6 +37,23 @@ pub struct SteamDiscoveryReport {
     pub games: Vec<SteamDiscoveredGame>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ProgramManifestMatchKind {
+    AppId,
+    Name,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProgramManifestMatch {
+    pub name: String,
+    pub app_id: u32,
+    pub match_kind: ProgramManifestMatchKind,
+    pub save_paths: Vec<PathBuf>,
+    pub config_paths: Vec<PathBuf>,
+    pub current_system_unresolved_rules: usize,
+    pub other_environment_rules: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SteamDiscoveryError {
     SteamNotFound,
@@ -156,6 +173,70 @@ impl SteamDiscoveryService {
         Ok(report)
     }
 
+    pub(crate) fn scan_program_installation(
+        &self,
+        install_dir: &Path,
+        identity_hints: &[String],
+        detected_app_id: Option<u32>,
+    ) -> SteamDiscoveryResult<Vec<ProgramManifestMatch>> {
+        let connection = self.open_manifest_database()?;
+        let mut candidates = Vec::new();
+
+        if let Some(app_id) = detected_app_id {
+            for game in query_games_by_store_id(&connection, "steam", app_id)? {
+                candidates.push((game, app_id, ProgramManifestMatchKind::AppId, 100));
+            }
+        }
+        if candidates.is_empty() {
+            candidates = query_games_by_identity_hints(&connection, identity_hints)?;
+        }
+
+        let mut roots = vec![install_dir.to_path_buf()];
+        if let Ok(steam) = SteamDir::locate() {
+            let steam_root = steam.path().to_path_buf();
+            if normalized_path(&steam_root) != normalized_path(install_dir) {
+                roots.push(steam_root);
+            }
+        }
+        let game_dir_name = install_dir
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+
+        let mut matches = Vec::new();
+        let mut seen = HashSet::new();
+        candidates.sort_by(|left, right| right.3.cmp(&left.3));
+        for (source_game, app_id, match_kind, _) in candidates {
+            let game = resolve_alias(&connection, source_game)?;
+            if !seen.insert((game.name.to_ascii_lowercase(), app_id)) {
+                continue;
+            }
+            let rules = query_rules(&connection, game.id)?;
+            let mut scan = RuleScan::default();
+            for root in &roots {
+                let context =
+                    ResolutionContext::for_steam(root, install_dir, game_dir_name, app_id);
+                scan.merge(scan_rules(&rules, &context)?);
+            }
+            scan.finish();
+            matches.push(ProgramManifestMatch {
+                name: game.name,
+                app_id,
+                match_kind,
+                save_paths: scan.recommended.into_iter().collect(),
+                config_paths: scan.config_only.into_iter().collect(),
+                current_system_unresolved_rules: scan.unresolved_count,
+                other_environment_rules: scan.other_environment_rule_count,
+            });
+        }
+        matches.sort_by(|left, right| {
+            (left.match_kind != ProgramManifestMatchKind::AppId)
+                .cmp(&(right.match_kind != ProgramManifestMatchKind::AppId))
+                .then(left.name.to_lowercase().cmp(&right.name.to_lowercase()))
+        });
+        Ok(matches)
+    }
+
     fn open_manifest_database(&self) -> SteamDiscoveryResult<Connection> {
         if !self.manifest_database.is_file() {
             return Err(SteamDiscoveryError::ManifestDatabaseMissing(
@@ -179,7 +260,7 @@ impl SteamDiscoveryService {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct DbGame {
     id: i64,
     name: String,
@@ -260,6 +341,22 @@ struct RuleScan {
     other_environment_rule_count: usize,
 }
 
+impl RuleScan {
+    fn merge(&mut self, other: Self) {
+        self.recommended.extend(other.recommended);
+        self.config_only.extend(other.config_only);
+        self.unresolved_count = self.unresolved_count.max(other.unresolved_count);
+        self.other_environment_rule_count = self
+            .other_environment_rule_count
+            .max(other.other_environment_rule_count);
+    }
+
+    fn finish(&mut self) {
+        self.recommended = collapse_overlapping_paths(std::mem::take(&mut self.recommended));
+        self.config_only = collapse_overlapping_paths(std::mem::take(&mut self.config_only));
+    }
+}
+
 fn query_games_by_store_id(
     connection: &Connection,
     store: &str,
@@ -303,6 +400,94 @@ fn query_game(connection: &Connection, name: &str) -> SteamDiscoveryResult<Optio
         )
         .optional()
         .map_err(database_error)
+}
+
+fn query_games_by_identity_hints(
+    connection: &Connection,
+    identity_hints: &[String],
+) -> SteamDiscoveryResult<Vec<(DbGame, u32, ProgramManifestMatchKind, u8)>> {
+    let mut statement = connection
+        .prepare("SELECT id, name, alias FROM manifest_games ORDER BY name COLLATE NOCASE")
+        .map_err(database_error)?;
+    let games = statement
+        .query_map([], |row| {
+            Ok(DbGame {
+                id: row.get(0)?,
+                name: row.get(1)?,
+                alias: row.get(2)?,
+            })
+        })
+        .map_err(database_error)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(database_error)?;
+
+    let mut matches = Vec::new();
+    for game in games {
+        let score = identity_hints
+            .iter()
+            .map(|hint| identity_match_score(&game.name, hint))
+            .max()
+            .unwrap_or(0);
+        if score == 0 {
+            continue;
+        }
+        let app_id = match query_primary_steam_app_id(connection, game.id)? {
+            Some(app_id) => Some(app_id),
+            None if game.alias.is_some() => {
+                let canonical = resolve_alias(connection, game.clone())?;
+                query_primary_steam_app_id(connection, canonical.id)?
+            }
+            None => None,
+        };
+        if let Some(app_id) = app_id {
+            matches.push((game, app_id, ProgramManifestMatchKind::Name, score));
+        }
+    }
+    Ok(matches)
+}
+
+fn query_primary_steam_app_id(
+    connection: &Connection,
+    game_id: i64,
+) -> SteamDiscoveryResult<Option<u32>> {
+    let value = connection
+        .query_row(
+            "SELECT store_game_id
+             FROM manifest_store_ids
+             WHERE game_id = ?1 AND store = 'steam'
+             ORDER BY is_primary DESC, store_game_id
+             LIMIT 1",
+            params![game_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(database_error)?;
+    Ok(value.and_then(|value| value.parse().ok()))
+}
+
+fn identity_match_score(game_name: &str, hint: &str) -> u8 {
+    let game = compact_identity(game_name);
+    let hint = compact_identity(hint);
+    if game.is_empty() || hint.is_empty() {
+        return 0;
+    }
+    if game == hint {
+        return 100;
+    }
+    if game.chars().count().min(hint.chars().count()) >= 6
+        && (game.starts_with(&hint) || hint.starts_with(&game))
+    {
+        return 80;
+    }
+    0
+}
+
+fn compact_identity(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn resolve_alias(connection: &Connection, mut game: DbGame) -> SteamDiscoveryResult<DbGame> {
@@ -420,8 +605,7 @@ fn scan_rules(rules: &[DbRule], context: &ResolutionContext) -> SteamDiscoveryRe
             }
         }
     }
-    result.recommended = collapse_overlapping_paths(result.recommended);
-    result.config_only = collapse_overlapping_paths(result.config_only);
+    result.finish();
     Ok(result)
 }
 
