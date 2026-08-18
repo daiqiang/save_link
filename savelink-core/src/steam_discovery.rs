@@ -474,11 +474,6 @@ fn identity_match_score(game_name: &str, hint: &str) -> u8 {
     if game == hint {
         return 100;
     }
-    if game.chars().count().min(hint.chars().count()) >= 6
-        && (game.starts_with(&hint) || hint.starts_with(&game))
-    {
-        return 80;
-    }
     0
 }
 

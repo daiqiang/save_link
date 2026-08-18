@@ -285,6 +285,24 @@ fn n11_windows_shortcut_resolves_to_the_game_program() {
     assert_eq!(report.games[0].save_paths, vec![game_root.join("saves")]);
 }
 
+#[test]
+fn n12_program_name_does_not_match_an_unrelated_prefix() {
+    let temp = TempDir::new();
+    let game_root = temp.child("Arcane.Trigger.Build.21206983");
+    fs::create_dir_all(game_root.join("Processes")).unwrap();
+    fs::write(game_root.join("GunWizard.exe"), b"not-a-real-exe").unwrap();
+    fs::write(game_root.join("Processes/main1.mm"), b"save").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&game_root)
+        .unwrap();
+
+    assert_eq!(report.detected_app_id, None);
+    assert!(report.games.is_empty());
+}
+
 #[cfg(windows)]
 fn write_windows_shortcut(shortcut: &Path, target: &Path) {
     use std::os::windows::ffi::OsStrExt;
@@ -407,12 +425,19 @@ fn build_manifest_database(path: &Path) {
             [],
         )
         .unwrap();
+    connection
+        .execute(
+            "INSERT INTO manifest_games(id, name, alias) VALUES (5, 'Arcane', NULL)",
+            [],
+        )
+        .unwrap();
     for (game_id, store_id, primary) in [
         (1, "646570", 1),
         (2, "123456", 1),
         (2, "900001", 0),
         (3, "2778580", 1),
         (4, "999999", 1),
+        (5, "534870", 1),
     ] {
         connection
             .execute(
