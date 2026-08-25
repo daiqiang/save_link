@@ -5,6 +5,8 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{App, AppHandle, Manager, Window, WindowEvent};
 use tauri_plugin_notification::NotificationExt;
 
+use crate::commands::AppState;
+
 const MAIN_WINDOW_LABEL: &str = "main";
 const OPEN_MENU_ID: &str = "tray-open";
 const QUIT_MENU_ID: &str = "tray-quit";
@@ -28,7 +30,12 @@ pub fn setup(app: &mut App) -> tauri::Result<()> {
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id().as_ref() {
             OPEN_MENU_ID => show_main_window(app),
-            QUIT_MENU_ID => app.exit(0),
+            QUIT_MENU_ID => {
+                if let Some(state) = app.try_state::<AppState>() {
+                    state.save_discovery.shutdown();
+                }
+                app.exit(0);
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {

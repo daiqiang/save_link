@@ -104,6 +104,57 @@ export interface ProgramDiscoveryReport {
   games: ProgramDiscoveredGame[];
 }
 
+export type SaveDiscoveryPhase =
+  | "idle"
+  | "starting_watchers"
+  | "launching_game"
+  | "monitoring"
+  | "exit_grace_period"
+  | "analyzing"
+  | "awaiting_confirmation"
+  | "failed"
+  | "cancelled";
+
+export type FileActivityKind = "create" | "modify" | "delete" | "rename_from" | "rename_to";
+export type SaveCandidateConfidence = "high" | "medium" | "low";
+
+export interface ActivityFileSummary {
+  path: string;
+  kinds: FileActivityKind[];
+  event_count: number;
+  last_activity_unix_ms: number;
+  exists_after_monitoring: boolean;
+}
+
+export interface SaveDirectoryCandidate {
+  directory: string;
+  confidence: SaveCandidateConfidence;
+  score: number;
+  confirmable: boolean;
+  unsafe_reason: string | null;
+  event_count: number;
+  distinct_file_count: number;
+  last_activity_unix_ms: number;
+  files: ActivityFileSummary[];
+  positive_signals: string[];
+  downgrade_reasons: string[];
+}
+
+export interface SaveDiscoveryStatus {
+  phase: SaveDiscoveryPhase;
+  game_id: string | null;
+  game_name: string | null;
+  pid: number | null;
+  started_at_unix_ms: number | null;
+  launcher_fallback: boolean;
+  incomplete: boolean;
+  event_count: number;
+  dropped_event_count: number;
+  monitored_roots: string[];
+  candidates: SaveDirectoryCandidate[];
+  errors: string[];
+}
+
 export interface DesmumeGameMatch {
   game_id: string;
   game_name: string;

@@ -3,6 +3,7 @@ mod auto_backup;
 mod commands;
 mod desktop;
 mod oauth_config;
+mod save_discovery_runtime;
 
 use commands::AppState;
 use savelink_core::service::startup_self_check;
@@ -39,6 +40,10 @@ pub fn run() {
         .on_window_event(desktop::handle_window_event)
         .invoke_handler(tauri::generate_handler![
             commands::list_games,
+            commands::get_save_discovery_status,
+            commands::start_save_discovery,
+            commands::stop_save_discovery,
+            commands::cancel_save_discovery,
             commands::get_repository_path,
             commands::get_app_info,
             commands::get_auto_backup_settings,

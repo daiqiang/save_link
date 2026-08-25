@@ -17,6 +17,7 @@ import type {
   ProgramDiscoveryReport,
   RestoreResult,
   ScanResult,
+  SaveDiscoveryStatus,
   Snapshot,
   SteamDiscoveryReport,
 } from "./types";
@@ -115,6 +116,22 @@ export async function addGame(
   installDir: string,
 ): Promise<Game> {
   return invoke<Game>("add_game", { name, savePaths, executablePath, installDir });
+}
+
+export async function getSaveDiscoveryStatus(): Promise<SaveDiscoveryStatus> {
+  return invoke<SaveDiscoveryStatus>("get_save_discovery_status");
+}
+
+export async function startSaveDiscovery(gameId: string): Promise<SaveDiscoveryStatus> {
+  return invoke<SaveDiscoveryStatus>("start_save_discovery", { gameId });
+}
+
+export async function stopSaveDiscovery(): Promise<SaveDiscoveryStatus> {
+  return invoke<SaveDiscoveryStatus>("stop_save_discovery");
+}
+
+export async function cancelSaveDiscovery(): Promise<SaveDiscoveryStatus> {
+  return invoke<SaveDiscoveryStatus>("cancel_save_discovery");
 }
 
 export async function addProgramGame(

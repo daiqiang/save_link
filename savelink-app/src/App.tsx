@@ -4,7 +4,7 @@ import "./App.css";
 import { Icon } from "./lib/icons";
 import { formatSize, formatTimestamp, formatTimestampTime, REASON_LABEL } from "./lib/format";
 import * as api from "./lib/api";
-import type { Game, Snapshot } from "./lib/types";
+import type { Game, SaveDiscoveryStatus, Snapshot } from "./lib/types";
 import { ToastProvider, useToast } from "./components/Toast";
 import { AddGameDialog } from "./components/AddGameDialog";
 import type { AddGameMode } from "./components/AddGameDialog";
@@ -14,6 +14,15 @@ import { SnapshotDrawer } from "./components/SnapshotDrawer";
 import { CloudSnapshotsDialog } from "./components/CloudSnapshotsDialog";
 import { BindSavePathDialog } from "./components/BindSavePathDialog";
 import { SettingsDialog } from "./components/SettingsDialog";
+import { SaveDiscoveryPanel } from "./components/SaveDiscoveryPanel";
+
+const ACTIVE_DISCOVERY_PHASES = new Set([
+  "starting_watchers",
+  "launching_game",
+  "monitoring",
+  "exit_grace_period",
+  "analyzing",
+]);
 
 function SaveLink() {
   const toast = useToast();
@@ -24,6 +33,8 @@ function SaveLink() {
   const [cloudUploadingId, setCloudUploadingId] = useState<string | null>(null);
   const [profileLabel, setProfileLabel] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
+  const [discovery, setDiscovery] = useState<SaveDiscoveryStatus | null>(null);
+  const [discoveryAction, setDiscoveryAction] = useState(false);
 
   // 弹窗 / 抽屉 / 菜单状态
   const [addMode, setAddMode] = useState<AddGameMode | null>(null);
@@ -40,6 +51,9 @@ function SaveLink() {
   // 只渲染/操作属于当前所选游戏的快照，杜绝“看到或误操作到别的游戏快照”的串档风险。
   const shown = selected ? snapshots.filter((s) => s.game_id === selected.id) : [];
   const requiredBindingSourceCount = Math.max(1, ...shown.map((snapshot) => snapshot.source_count));
+  const discoveryActive = discovery ? ACTIVE_DISCOVERY_PHASES.has(discovery.phase) : false;
+  const selectedDiscovery = selected && discovery?.game_id === selected.id ? discovery : null;
+  const selectedDiscoveryActive = Boolean(selectedDiscovery && discoveryActive);
 
   const loadGames = useCallback(async () => {
     const gs = await api.listGames();
@@ -84,6 +98,57 @@ function SaveLink() {
       void unlisten.then((dispose) => dispose());
     };
   }, [refresh]);
+
+  useEffect(() => {
+    let disposed = false;
+    const unlisten = listen<SaveDiscoveryStatus>("save-discovery-status-changed", (event) => {
+      if (!disposed) setDiscovery(event.payload);
+    });
+    void api.getSaveDiscoveryStatus()
+      .then((status) => { if (!disposed) setDiscovery(status); })
+      .catch(() => undefined);
+    return () => {
+      disposed = true;
+      void unlisten.then((dispose) => dispose());
+    };
+  }, []);
+
+  async function startDiscovery() {
+    if (!selected || discoveryAction) return;
+    setDiscoveryAction(true);
+    try {
+      setDiscovery(await api.startSaveDiscovery(selected.id));
+    } catch (error) {
+      toast(String(error), "err");
+      await api.getSaveDiscoveryStatus().then(setDiscovery).catch(() => undefined);
+    } finally {
+      setDiscoveryAction(false);
+    }
+  }
+
+  async function stopDiscovery() {
+    if (discoveryAction) return;
+    setDiscoveryAction(true);
+    try {
+      setDiscovery(await api.stopSaveDiscovery());
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setDiscoveryAction(false);
+    }
+  }
+
+  async function cancelDiscovery() {
+    if (discoveryAction) return;
+    setDiscoveryAction(true);
+    try {
+      setDiscovery(await api.cancelSaveDiscovery());
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setDiscoveryAction(false);
+    }
+  }
 
   async function createSnapshot() {
     if (!selected) return;
@@ -178,7 +243,9 @@ function SaveLink() {
               <div className="game-name"><span className={`status-dot ${g.configuration_state === "configured" ? "ok" : "warn"}`} />{g.name}</div>
               <div className="game-sub">
                 {g.configuration_state !== "configured"
-                  ? `${g.snapshot_count} 个快照 · ${g.configuration_state === "pending_discovery"
+                  ? `${g.snapshot_count} 个快照 · ${discoveryActive && discovery?.game_id === g.id
+                    ? "正在查找存档"
+                    : g.configuration_state === "pending_discovery"
                     ? "待设置存档目录"
                     : g.emulator === "desmume" ? "尚未绑定 DeSmuME" : "尚未绑定存档目录"}`
                   : <>{g.snapshot_count} 个快照{g.last_snapshot_at ? ` · 最近 ${formatTimestampTime(g.last_snapshot_at)}` : ""}</>}
@@ -231,9 +298,20 @@ function SaveLink() {
 
             <div className="toolbar">
               {selected.configuration_state === "pending_discovery" ? <>
-                <button className="btn primary" disabled title="游戏活动监测将在下一阶段接入">
-                  <Icon.Search /> 启动游戏并查找存档
-                </button>
+                {selectedDiscoveryActive ? <>
+                  <button className="btn primary" onClick={stopDiscovery} disabled={discoveryAction}>
+                    <Icon.Search /> 停止并分析
+                  </button>
+                  <button className="btn" onClick={cancelDiscovery} disabled={discoveryAction}>
+                    <Icon.Close /> 取消监测
+                  </button>
+                </> : (
+                  <button className="btn primary" onClick={startDiscovery}
+                    disabled={discoveryAction || discoveryActive}
+                    title={discoveryActive ? `${discovery?.game_name ?? "另一款游戏"} 正在查找存档` : "启动游戏并查找存档"}>
+                    <Icon.Search /> {selectedDiscovery?.phase === "awaiting_confirmation" ? "重新监测" : "启动游戏并查找存档"}
+                  </button>
+                )}
                 <button className="btn" onClick={() => setBindingGame(selected)}>
                   <Icon.Folder /> 手动设置存档目录
                 </button>
@@ -250,8 +328,15 @@ function SaveLink() {
                   {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
                 </button>
               )}
-              <button className="btn" onClick={() => setEditingGame(selected)}><Icon.Edit /> 编辑游戏</button>
+              <button className="btn" onClick={() => setEditingGame(selected)} disabled={selectedDiscoveryActive}
+                title={selectedDiscoveryActive ? "请先停止或取消监测" : "编辑游戏"}>
+                <Icon.Edit /> 编辑游戏
+              </button>
             </div>
+
+            {selected.configuration_state === "pending_discovery" && selectedDiscovery && selectedDiscovery.phase !== "idle" && (
+              <SaveDiscoveryPanel status={selectedDiscovery} />
+            )}
 
             <div className="section-label">时间线</div>
             <div className="timeline">

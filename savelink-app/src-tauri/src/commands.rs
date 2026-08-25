@@ -5,7 +5,13 @@
 //!
 //! 对照 Java BS：这一层相当于 Spring Controller，core 相当于 Service 层。
 
-use crate::{auto_backup, oauth_config::baidu_oauth_config};
+use crate::{
+    auto_backup,
+    oauth_config::baidu_oauth_config,
+    save_discovery_runtime::{
+        SaveDiscoveryManager, SaveDiscoveryStartRequest, SaveDiscoveryStatus,
+    },
+};
 use savelink_core::baidu_oauth::{
     new_oauth_state, BaiduOAuthClient, FileBaiduTokenStore, OAuthCallbackListener,
     RefreshingBaiduTokenProvider,
@@ -89,6 +95,7 @@ pub struct AppState {
     pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdGen>,
     pub snapshot_operation_lock: Arc<Mutex<()>>,
+    pub save_discovery: SaveDiscoveryManager,
 }
 
 impl AppState {
@@ -130,6 +137,7 @@ impl AppState {
                 counter: std::sync::atomic::AtomicU64::new(0),
             }),
             snapshot_operation_lock: Arc::new(Mutex::new(())),
+            save_discovery: SaveDiscoveryManager::default(),
         })
     }
 
@@ -549,6 +557,61 @@ use tauri::{path::BaseDirectory, AppHandle, Manager, State};
 pub fn list_games(state: State<'_, AppState>) -> Result<Vec<GameDto>, String> {
     let games = state.repo.list_games().map_err(|e| e.to_string())?;
     Ok(games.iter().map(|g| game_to_dto(&state.repo, g)).collect())
+}
+
+#[tauri::command]
+pub fn get_save_discovery_status(
+    state: State<'_, AppState>,
+) -> Result<SaveDiscoveryStatus, String> {
+    state.save_discovery.status()
+}
+
+#[tauri::command]
+pub fn start_save_discovery(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    game_id: String,
+) -> Result<SaveDiscoveryStatus, String> {
+    let app_local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| format!("无法获取应用本地数据目录：{error}"))?;
+    let game = state
+        .repo
+        .get_game(&game_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "游戏不存在".to_string())?;
+    if game.configuration_state() != GameConfigurationState::PendingDiscovery {
+        return Err("只有尚未设置存档目录的普通 PC 游戏可以启动动态发现".into());
+    }
+    if game.emulator_identity.is_some() {
+        return Err("模拟器游戏不使用普通 PC 游戏的存档动态发现".into());
+    }
+    let launch_binding = game
+        .launch_binding
+        .clone()
+        .ok_or_else(|| "该游戏尚未绑定本机启动程序".to_string())?;
+    state.save_discovery.start(
+        app,
+        SaveDiscoveryStartRequest {
+            game_id: game.id,
+            game_name: game.name,
+            launch_binding,
+            data_dir: state.data_dir.clone(),
+            app_local_data_dir,
+            repository_dir: state.repository_dir.clone(),
+        },
+    )
+}
+
+#[tauri::command]
+pub fn stop_save_discovery(state: State<'_, AppState>) -> Result<SaveDiscoveryStatus, String> {
+    state.save_discovery.stop_and_analyze()
+}
+
+#[tauri::command]
+pub fn cancel_save_discovery(state: State<'_, AppState>) -> Result<SaveDiscoveryStatus, String> {
+    state.save_discovery.cancel()
 }
 
 #[tauri::command]
@@ -1547,6 +1610,7 @@ pub fn register_steam_game(
         {
             return Err(duplicate_game_message(conflict));
         }
+        state.save_discovery.ensure_game_mutable(&saved.id)?;
         saved.launch_binding = Some(launch_binding);
         saved.updated_at = state.clock.now_stamp();
         state
@@ -1587,6 +1651,7 @@ pub fn bind_program_to_game(
     install_dir: Option<String>,
     replace_existing: bool,
 ) -> Result<GameDto, String> {
+    state.save_discovery.ensure_game_mutable(&game_id)?;
     let launch_binding = validate_executable_binding(&executable_path, install_dir.as_deref())?;
     let _operation = acquire_snapshot_operation_guard(&state)?;
     let mut game = state
@@ -1627,6 +1692,7 @@ pub fn update_game(
     name: String,
     save_paths: Vec<String>,
 ) -> Result<GameDto, String> {
+    state.save_discovery.ensure_game_mutable(&game_id)?;
     if name.trim().is_empty() {
         return Err("游戏名称不能为空".into());
     }
@@ -1725,6 +1791,7 @@ pub fn delete_snapshot(state: State<'_, AppState>, snapshot_id: String) -> Resul
 
 #[tauri::command]
 pub fn delete_game(state: State<'_, AppState>, game_id: String) -> Result<(), String> {
+    state.save_discovery.ensure_game_mutable(&game_id)?;
     let _operation = acquire_snapshot_operation_guard(&state)?;
     state
         .snapshots()

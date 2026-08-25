@@ -20,6 +20,7 @@ pub mod error;
 pub mod model;
 pub mod program_discovery;
 pub mod repo;
+pub mod save_activity;
 pub mod scan;
 pub mod service;
 pub mod sqlite_repo;
