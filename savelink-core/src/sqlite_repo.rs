@@ -9,7 +9,8 @@ use crate::cloud_model::{CloudAccount, CloudGameBinding, CloudSnapshotRecord, Cl
 use crate::cloud_repo::CloudStateRepository;
 use crate::error::{Result, SaveLinkError};
 use crate::model::{
-    EmulatorGameIdentity, EmulatorLocalBinding, Game, Reason, SaveSource, Snapshot, SnapshotStatus,
+    EmulatorGameIdentity, EmulatorLocalBinding, Game, GameLaunchBinding, Reason, SaveSource,
+    Snapshot, SnapshotStatus,
 };
 use crate::repo::Repository;
 use crate::timestamp::normalize_timestamp;
@@ -88,6 +89,7 @@ impl SqliteRepo {
                 save_sources TEXT NOT NULL DEFAULT '[]',
                 emulator_identity TEXT,
                 emulator_binding TEXT,
+                launch_binding TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
              );
@@ -180,6 +182,10 @@ impl SqliteRepo {
         }
         if !table_has_column(conn, "games", "emulator_binding")? {
             conn.execute("ALTER TABLE games ADD COLUMN emulator_binding TEXT", [])
+                .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "games", "launch_binding")? {
+            conn.execute("ALTER TABLE games ADD COLUMN launch_binding TEXT", [])
                 .map_err(map_err)?;
         }
         Ok(())
@@ -380,7 +386,7 @@ fn decode_json_column<T: serde::de::DeserializeOwned>(
     })
 }
 
-const GAME_COLS: &str = "id, name, icon, repo_path, save_paths, save_sources, emulator_identity, emulator_binding, created_at, updated_at";
+const GAME_COLS: &str = "id, name, icon, repo_path, save_paths, save_sources, emulator_identity, emulator_binding, launch_binding, created_at, updated_at";
 
 fn row_to_game(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
     let repo_path: String = row.get(3)?;
@@ -388,6 +394,7 @@ fn row_to_game(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
     let save_sources_json: String = row.get(5)?;
     let identity_json: Option<String> = row.get(6)?;
     let binding_json: Option<String> = row.get(7)?;
+    let launch_binding_json: Option<String> = row.get(8)?;
     Ok(Game {
         id: row.get(0)?,
         name: row.get(1)?,
@@ -403,8 +410,12 @@ fn row_to_game(row: &rusqlite::Row<'_>) -> rusqlite::Result<Game> {
             .as_deref()
             .map(|value| decode_json_column::<EmulatorLocalBinding>(value, 7))
             .transpose()?,
-        created_at: row.get(8)?,
-        updated_at: row.get(9)?,
+        launch_binding: launch_binding_json
+            .as_deref()
+            .map(|value| decode_json_column::<GameLaunchBinding>(value, 8))
+            .transpose()?,
+        created_at: row.get(9)?,
+        updated_at: row.get(10)?,
     })
 }
 
@@ -485,11 +496,12 @@ impl Repository for SqliteRepo {
             .as_ref()
             .map(encode_json)
             .transpose()?;
+        let launch_binding = game.launch_binding.as_ref().map(encode_json).transpose()?;
         conn.execute(
             "INSERT INTO games (
                 id, name, icon, repo_path, save_paths, save_sources,
-                emulator_identity, emulator_binding, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                emulator_identity, emulator_binding, launch_binding, created_at, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 game.id,
                 game.name,
@@ -499,6 +511,7 @@ impl Repository for SqliteRepo {
                 save_sources,
                 emulator_identity,
                 emulator_binding,
+                launch_binding,
                 game.created_at,
                 game.updated_at,
             ],
@@ -545,10 +558,11 @@ impl Repository for SqliteRepo {
             .as_ref()
             .map(encode_json)
             .transpose()?;
+        let launch_binding = game.launch_binding.as_ref().map(encode_json).transpose()?;
         conn.execute(
             "UPDATE games SET name=?2, icon=?3, repo_path=?4, save_paths=?5,
                 save_sources=?6, emulator_identity=?7, emulator_binding=?8,
-                created_at=?9, updated_at=?10
+                launch_binding=?9, created_at=?10, updated_at=?11
              WHERE id=?1",
             params![
                 game.id,
@@ -559,6 +573,7 @@ impl Repository for SqliteRepo {
                 save_sources,
                 emulator_identity,
                 emulator_binding,
+                launch_binding,
                 game.created_at,
                 game.updated_at,
             ],

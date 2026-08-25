@@ -23,6 +23,7 @@
 | 1.16 | 代强 | 2026-08-15 | 确认 v0.4.0 ROM 扫描修复实测通过并统一发布版本元数据 |
 | 1.17 | 代强 | 2026-08-17 | 同步 v0.4.0 发布及游戏程序/快捷方式识别、Manifest 复用和扫描边界 |
 | 1.18 | Codex | 2026-08-18 | 收紧无 AppID 程序名称匹配；同步真实学习版三种入口及改动文件格式验收 |
+| 1.19 | Codex | 2026-08-25 | 同步待配置状态、普通 EXE/Steam 本机启动绑定、防重命令、旧库迁移和动态发现阶段 2 验收 |
 
 ## 文档用途
 
@@ -35,6 +36,7 @@
 - `SaveLink恢复与存储测试规格.md`：恢复/存储关键路径验收基准。
 - `SaveLink云端快照协议V1.md`：已定稿的云端目录、对象格式、同步流程和失败处理协议。
 - `百度网盘API-POC报告-20260714.md`：百度 OAuth/文件 API POC、2MiB 基准数据和云端物理格式决策证据。
+- `SaveLink游戏启动与存档动态发现方案.md`：当前主线的启动绑定、Windows 监听、PID 生命周期、候选分析和分阶段边界。
 - `savelink-app/手动测试计划.md`：人工验收步骤。
 - `SaveLink-MVP产品原型草案.md`、`SaveLink低保真原型图.md`、`SaveLink视觉与交互说明.md`：产品、页面、视觉气质。
 
@@ -67,12 +69,15 @@ save_link/
 - v0.2.0 启动立即检查、10 分钟轮询、自动快照上云和 30 条未锁定记录联合清理已接入，并已通过绿色版及真实百度主流程验收。
 - v0.4.0 DeSmuME 支持已接入：扫描 `desmume.ini`/ROM 目录、读取 NDS Header 身份、计算并缓存 ROM SHA-256、按目标 ROM 精确选择 `.dsv`，以及跨设备按目标设备 ROM 文件名恢复。
 - 游戏程序识别已接入：用户选择 Windows `.lnk`、EXE 或安装目录后，优先读取 AppID；无 AppID 时只接受归一化后的完整名称相等，再展示真实存在的存档候选；手动添加继续保留。
+- 待配置普通游戏已接入：真实 EXE 可以在存档目录未知时先登记；首页明确标记当前不会备份，创建/恢复/上传被拒绝，自动备份正常跳过。
+- 普通 PC 游戏新建时必须保存仅本机启动绑定；Steam 使用受控的 `steam.exe + -applaunch AppID`。EXE、安装目录、Steam AppID 和存档路径统一防重，已有旧游戏可补绑而不新增记录。
 
 当前验证状态：
 
-- `savelink-core`：109 个默认测试全绿；N 组在 Steam 发现基础上增加程序 AppID、精确名称兜底、目录配置、未知程序、名称前缀拒绝和真实 `.lnk` 往返，O/P/Q 组覆盖多目录、精确文件和 DeSmuME。J/L 已按需执行通过，Q5 真实 DeSmuME 测试默认忽略且已执行通过。
-- Tauri：自动上传状态选择测试 2 个全绿。
+- `savelink-core`：116 个默认测试全绿；J/L 已按需执行通过，Q5 真实 DeSmuME 测试默认忽略且已执行通过。
+- Tauri：自动上传状态和启动绑定/防重共 10 个测试全绿。
 - `npm run build`：前端构建通过。
+- `cargo fmt -- --check`：Tauri Rust 代码格式检查通过。
 - `build-installer.bat`：打包通过。
 - 旧设置对话框的“打开”目录代码路径曾通过绿色版实机验证；当前齿轮入口展示新的自动备份设置页。游戏程序识别已完成代码接线及真实学习版快捷方式、EXE、目录窗口验收。
 - 设备 B 已完成云端接收、绑定假存档目录和手动安全恢复；恢复文件与仓库目标快照 SHA-256 一致。
@@ -164,6 +169,8 @@ savelink-app/src/
 list_games
 get_repository_path
 get_app_info
+get_auto_backup_settings
+set_auto_backup_enabled
 get_baidu_connection_status
 connect_baidu
 upload_snapshot_to_baidu
@@ -176,6 +183,9 @@ scan_program_game
 scan_desmume_games
 register_desmume_game
 add_game
+add_program_game
+register_steam_game
+bind_program_to_game
 update_game
 create_snapshot
 update_snapshot_meta
@@ -223,6 +233,10 @@ Steam 自动发现位于 `savelink-core/src/steam_discovery.rs`：通过注册�
 
 程序识别位于 `savelink-core/src/program_discovery.rs`：目录和 EXE 直接解析，Windows `.lnk` 通过 Shell COM 在独立 STA 线程读取目标。扫描严格限制在所选安装目录 3 层和最多 512 个目录，跳过目录链接，不遍历其他磁盘。身份优先读取 `steam_appid.txt` 及常见 AppID INI；没有 AppID 时，快捷方式、EXE 和目录名称会去除空格、标点并转为小写，只有与 Manifest 游戏名完整相等才匹配，不接受前缀关系。游戏身份确定后调用 `steam_discovery.rs` 的同一套 Manifest 查询、约束过滤、占位符展开和路径收敛逻辑；未匹配时返回空结果而不是猜测。
 
+普通 PC 游戏的本机启动信息保存在可空 JSON 列 `games.launch_binding`，对应 `GameLaunchBinding { executable_path, install_dir, launch_arguments, steam_app_id }`。普通 EXE 的参数为空；Steam 参数只能由后端构造为 `-applaunch <AppID>`，AppID 也是跨 Steam 安装位置识别同一启动目标的依据。该列通过幂等 `ALTER TABLE` 迁移，路径和参数不会进入云端 `game.json`。配置状态不额外落列，而是从存档来源和本机绑定推导：有来源为 `Configured`，无来源但有启动绑定为 `PendingDiscovery`，两者都没有为 `PendingBinding`。
+
+添加入口在 Tauri 命令层做最终防重：`add_program_game` 创建普通 EXE 游戏，`register_steam_game` 创建或为存档路径已存在的旧游戏补 Steam 绑定，`bind_program_to_game` 为指定旧游戏补普通 EXE。普通程序按 EXE、安装目录和存档路径归属识别，Steam 按 AppID 和存档路径识别；所有入口仍复用存档目录相同/父子嵌套校验。
+
 DeSmuME 自动发现位于 `savelink-core/src/desmume_discovery.rs`：检查模拟器目录和可执行文件，读取 `[PathSettings]` 中的 ROM 目录，以带 canonical 路径去重的迭代遍历发现 `.nds`，解析 NDS Header Title/Game Code，并分块计算 ROM SHA-256。哈希使用堆上的 1 MiB 流式缓冲区，避免占满 Tauri 工作线程栈。ROM 的文件大小和修改时间会写入当前设备绑定，用于后续缓存哈希；缓存失效时重新计算。扫描是只读的，配置路径失效时明确要求用户重新选择，不静默改写配置。
 
 DeSmuME 使用 `SaveSource::Files` 表达共享 `Battery` 目录中的精确文件映射：例如设备 A 的 `zzjb2r ver0.99.dsv` 映射为快照内稳定的 `save.dsv`，设备 B 恢复时再映射为目标 ROM 文件名对应的 `.dsv`。`.dsv-01` 至 `.dsv-09` 不会冒充游戏内存档。SHA-256 相同是精确匹配；SHA 不同但 Header Title 与 Game Code 同时相同，只产生候选并要求用户确认。ROM 身份进入云端 `game.json`，模拟器根目录、ROM 路径和 Battery 路径只保存在本机绑定中。
@@ -238,6 +252,7 @@ DeSmuME 使用 `SaveSource::Files` 表达共享 `Battery` 目录中的精确文�
   - `save_sources`：当前实际参与扫描、快照和恢复的目录或精确文件来源
   - `emulator_identity`：可跨设备同步的模拟器/ROM 身份
   - `emulator_binding`：仅当前设备有效的模拟器根目录、ROM 路径及哈希缓存
+  - `launch_binding`：仅当前设备有效的普通 EXE/Steam 启动程序、安装目录、受控参数和可选 AppID
   - `created_at`
   - `updated_at`
 - `Snapshot`
@@ -469,6 +484,7 @@ Tauri 2 capability 需要：
 - Steam 自动发现的 Elden Ring 父子候选问题已修复，并通过自动测试、真实开发版和绿色版候选回归；真实多 Steam 游戏库机器仍待以后验收。
 - 真实恢复进度事件未接入前端；当前 Tauri 命令传空 progress 回调。
 - `startup_self_check` 已在 Tauri setup 中显式调用；真实窗口残留清理场景可在正式回归时补验收。
+- 动态发现阶段 3 尚未实现：POC 中的原生 `ReadDirectoryChangesW` 监听器、全局单会话、受控游戏启动、PID 生命周期和候选分析尚未迁入正式工程。
 - 设置入口已提供自动备份开关；帮助入口仍是占位。
 - 百度首次授权、过期前自动刷新和授权失效后重新连接已实现；解绑和凭据加密尚未接入。
 - 真实百度上传、发现、下载、接收、独立目录绑定和绑定后的安全恢复均已通过设备 B 实机验收。

@@ -272,7 +272,7 @@ fn aggregate_source_fingerprints(fingerprints: &[ScanResult]) -> Result<ScanResu
 pub fn validate_save_paths(save_paths: &[PathBuf]) -> Result<()> {
     for (index, first) in save_paths.iter().enumerate() {
         for second in save_paths.iter().skip(index + 1) {
-            if is_same_or_ancestor(first, second) || is_same_or_ancestor(second, first) {
+            if save_paths_overlap(first, second) {
                 return Err(SaveLinkError::OverlappingSavePaths {
                     first: first.clone(),
                     second: second.clone(),
@@ -283,15 +283,28 @@ pub fn validate_save_paths(save_paths: &[PathBuf]) -> Result<()> {
     Ok(())
 }
 
-fn is_same_or_ancestor(parent: &Path, candidate: &Path) -> bool {
+/// 两个路径相同，或任一方是另一方的祖先目录。
+pub fn save_paths_overlap(first: &Path, second: &Path) -> bool {
+    path_is_same_or_descendant(first, second) || path_is_same_or_descendant(second, first)
+}
+
+/// `candidate` 与 `parent` 相同，或位于 `parent` 目录之下。
+pub fn path_is_same_or_descendant(parent: &Path, candidate: &Path) -> bool {
     let parent = normalized_path_components(parent);
     let candidate = normalized_path_components(candidate);
     candidate.len() >= parent.len() && candidate.starts_with(&parent)
 }
 
 fn normalized_path_components(path: &Path) -> Vec<String> {
+    let mut normalized = path.to_string_lossy().replace('\\', "/");
+    let lowercase = normalized.to_ascii_lowercase();
+    if lowercase.starts_with("//?/unc/") {
+        normalized = format!("//{}", &normalized[8..]);
+    } else if lowercase.starts_with("//?/") {
+        normalized = normalized[4..].to_string();
+    }
     let mut components = Vec::new();
-    for component in path.to_string_lossy().replace('\\', "/").split('/') {
+    for component in normalized.split('/') {
         match component {
             "" | "." => {}
             ".." => {

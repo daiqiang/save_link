@@ -5,6 +5,8 @@ use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SaveLinkError {
+    /// 游戏尚未配置任何可保护的本机存档来源。
+    SaveSourcesNotConfigured,
     /// 存档目录不存在。
     SaveDirMissing,
     /// 存档目录无法访问（权限/IO）。
@@ -27,6 +29,9 @@ pub enum SaveLinkError {
 impl fmt::Display for SaveLinkError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            SaveLinkError::SaveSourcesNotConfigured => {
+                write!(f, "尚未设置存档目录，当前不能执行此操作")
+            }
             SaveLinkError::SaveDirMissing => write!(f, "存档目录不存在"),
             SaveLinkError::SaveDirUnreadable => write!(f, "无法访问该存档目录"),
             SaveLinkError::RestoreFailed { rolled_back } => {

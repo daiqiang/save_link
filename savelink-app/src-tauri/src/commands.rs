@@ -20,17 +20,21 @@ use savelink_core::cloud_service::{
 use savelink_core::desmume_discovery::{
     compare_rom_identity, DesmumeDiscoveredGame, DesmumeDiscoveryService, RomMatch,
 };
-use savelink_core::model::{CreateOutcome, Game, MissingDirChoice, Reason, Snapshot};
+use savelink_core::model::{
+    CreateOutcome, Game, GameConfigurationState, GameLaunchBinding, MissingDirChoice, Reason,
+    Snapshot,
+};
 use savelink_core::program_discovery::{
     ProgramDiscoveredGame, ProgramDiscoveryService, ProgramMatchKind, ProgramSelectionKind,
 };
 use savelink_core::repo::{Clock, IdGen, Repository};
+use savelink_core::scan::{path_is_same_or_descendant, save_paths_overlap};
 use savelink_core::service::{RestoreService, SnapshotService};
 use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::steam_discovery::{SteamDiscoveredGame, SteamDiscoveryService};
 use savelink_core::store::{FsStore, SnapshotStore};
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
@@ -180,6 +184,12 @@ pub struct GameDto {
     pub icon: Option<String>,
     pub save_paths: Vec<String>,
     pub emulator: Option<String>,
+    pub configuration_state: String,
+    pub launch_kind: Option<String>,
+    pub launch_executable_path: Option<String>,
+    pub launch_arguments: Vec<String>,
+    pub steam_app_id: Option<u32>,
+    pub install_dir: Option<String>,
     pub snapshot_count: usize,
     pub last_snapshot_at: Option<String>,
 }
@@ -263,6 +273,9 @@ pub struct SteamDiscoveredGameDto {
     pub current_system_unresolved_rules: usize,
     pub other_environment_rules: usize,
     pub already_added: bool,
+    pub existing_game_id: Option<String>,
+    pub existing_game_name: Option<String>,
+    pub can_bind_existing_launch: bool,
     /// 至少命中一个真实存档目录时即可直接添加；多目录会作为一个完整游戏共同保护。
     pub can_add_directly: bool,
 }
@@ -298,6 +311,11 @@ pub struct ProgramDiscoveryReportDto {
     pub detected_app_id: Option<u32>,
     pub app_id_source: Option<String>,
     pub identity_hints: Vec<String>,
+    pub suggested_name: String,
+    pub program_already_added: bool,
+    pub existing_game_id: Option<String>,
+    pub existing_game_name: Option<String>,
+    pub can_bind_existing_launch: bool,
     pub games: Vec<ProgramDiscoveredGameDto>,
 }
 
@@ -380,6 +398,17 @@ fn snapshot_to_dto_with_cloud(s: &Snapshot, cloud: Option<&CloudSnapshotRecord>)
 
 fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
     let snaps = repo.list_snapshots(&g.id).unwrap_or_default();
+    let launch_kind = if g.emulator_binding.is_some() {
+        Some("emulator".into())
+    } else {
+        g.launch_binding.as_ref().map(|binding| {
+            if binding.steam_app_id.is_some() {
+                "steam".into()
+            } else {
+                "executable".into()
+            }
+        })
+    };
     GameDto {
         id: g.id.clone(),
         name: g.name.clone(),
@@ -393,6 +422,30 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
             .emulator_identity
             .as_ref()
             .map(|identity| identity.emulator.clone()),
+        configuration_state: match g.configuration_state() {
+            GameConfigurationState::Configured => "configured",
+            GameConfigurationState::PendingDiscovery => "pending_discovery",
+            GameConfigurationState::PendingBinding => "pending_binding",
+        }
+        .into(),
+        launch_kind,
+        launch_executable_path: g
+            .launch_binding
+            .as_ref()
+            .map(|binding| binding.executable_path.to_string_lossy().to_string()),
+        launch_arguments: g
+            .launch_binding
+            .as_ref()
+            .map(|binding| binding.launch_arguments.clone())
+            .unwrap_or_default(),
+        steam_app_id: g
+            .launch_binding
+            .as_ref()
+            .and_then(|binding| binding.steam_app_id),
+        install_dir: g
+            .launch_binding
+            .as_ref()
+            .map(|binding| binding.install_dir.to_string_lossy().to_string()),
         snapshot_count: snaps.len(),
         last_snapshot_at: snaps.first().map(|s| s.created_at.clone()),
     }
@@ -857,10 +910,47 @@ pub fn scan_program_game(
         .scan(&PathBuf::from(selected_path))
         .map_err(|error| error.to_string())?;
     let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    let resolved_program_path = report.resolved_program_path.clone();
+    let candidate_save_paths = report
+        .games
+        .iter()
+        .flat_map(|game| game.save_paths.iter().cloned())
+        .collect::<Vec<_>>();
+    let existing_program_game = resolved_program_path.as_deref().and_then(|program_path| {
+        find_existing_program_game(
+            &existing,
+            program_path,
+            &report.install_dir,
+            &candidate_save_paths,
+        )
+    });
+    let program_already_added = existing_program_game.is_some();
+    let existing_game_id = existing_program_game.map(|game| game.id.clone());
+    let existing_game_name = existing_program_game.map(|game| game.name.clone());
+    let can_bind_existing_launch = existing_program_game
+        .is_some_and(|game| game.launch_binding.is_none() && game.emulator_identity.is_none());
+    let suggested_name = report
+        .games
+        .first()
+        .map(|game| game.name.clone())
+        .or_else(|| report.identity_hints.first().cloned())
+        .or_else(|| {
+            resolved_program_path
+                .as_ref()
+                .and_then(|path| path.file_stem())
+                .map(|value| value.to_string_lossy().to_string())
+        })
+        .or_else(|| {
+            report
+                .install_dir
+                .file_name()
+                .map(|value| value.to_string_lossy().to_string())
+        })
+        .unwrap_or_else(|| "未命名游戏".into());
     let games = report
         .games
         .into_iter()
-        .map(|game| program_game_to_dto(game, &existing))
+        .map(|game| program_game_to_dto(game, &existing, resolved_program_path.as_deref()))
         .collect();
     Ok(ProgramDiscoveryReportDto {
         selected_path: report.selected_path.to_string_lossy().to_string(),
@@ -870,15 +960,18 @@ pub fn scan_program_game(
             ProgramSelectionKind::Shortcut => "shortcut",
         }
         .into(),
-        resolved_program_path: report
-            .resolved_program_path
-            .map(|path| path.to_string_lossy().to_string()),
+        resolved_program_path: resolved_program_path.map(|path| path.to_string_lossy().to_string()),
         install_dir: report.install_dir.to_string_lossy().to_string(),
         detected_app_id: report.detected_app_id,
         app_id_source: report
             .app_id_source
             .map(|path| path.to_string_lossy().to_string()),
         identity_hints: report.identity_hints,
+        suggested_name,
+        program_already_added,
+        existing_game_id,
+        existing_game_name,
+        can_bind_existing_launch,
         games,
     })
 }
@@ -991,6 +1084,7 @@ pub fn register_desmume_game(
             save_sources: vec![save_source],
             emulator_identity: Some(discovered.identity),
             emulator_binding: Some(discovered.binding),
+            launch_binding: None,
             created_at: now.clone(),
             updated_at: now,
         };
@@ -1065,18 +1159,8 @@ fn resolve_manifest_database(app: &AppHandle) -> Result<PathBuf, String> {
 }
 
 fn steam_game_to_dto(game: SteamDiscoveredGame, existing: &[Game]) -> SteamDiscoveredGameDto {
-    let discovered_paths = game
-        .save_paths
-        .iter()
-        .map(|path| normalized_path(path))
-        .collect::<Vec<_>>();
-    let already_added = existing.iter().any(|saved| {
-        saved
-            .save_paths
-            .iter()
-            .map(|path| normalized_path(path))
-            .any(|path| discovered_paths.contains(&path))
-    });
+    let existing_game = find_existing_steam_game(existing, game.app_id, &game.save_paths);
+    let already_added = existing_game.is_some();
     SteamDiscoveredGameDto {
         name: game.name,
         steam_name: game.steam_name,
@@ -1095,22 +1179,32 @@ fn steam_game_to_dto(game: SteamDiscoveredGame, existing: &[Game]) -> SteamDisco
         current_system_unresolved_rules: game.current_system_unresolved_rules,
         other_environment_rules: game.other_environment_rules,
         already_added,
+        existing_game_id: existing_game.map(|saved| saved.id.clone()),
+        existing_game_name: existing_game.map(|saved| saved.name.clone()),
+        can_bind_existing_launch: existing_game.is_some_and(|saved| {
+            saved.launch_binding.is_none() && saved.emulator_identity.is_none()
+        }),
         can_add_directly: !game.save_paths.is_empty(),
     }
 }
 
-fn program_game_to_dto(game: ProgramDiscoveredGame, existing: &[Game]) -> ProgramDiscoveredGameDto {
-    let discovered_paths = game
-        .save_paths
-        .iter()
-        .map(|path| normalized_path(path))
-        .collect::<Vec<_>>();
+fn program_game_to_dto(
+    game: ProgramDiscoveredGame,
+    existing: &[Game],
+    resolved_program_path: Option<&std::path::Path>,
+) -> ProgramDiscoveredGameDto {
     let already_added = existing.iter().any(|saved| {
-        saved
-            .save_paths
-            .iter()
-            .map(|path| normalized_path(path))
-            .any(|path| discovered_paths.contains(&path))
+        let same_save_path = saved.save_paths.iter().any(|saved_path| {
+            game.save_paths
+                .iter()
+                .any(|path| save_paths_overlap(saved_path, path))
+        });
+        let same_program = resolved_program_path.is_some_and(|program_path| {
+            saved.launch_binding.as_ref().is_some_and(|binding| {
+                normalized_path(&binding.executable_path) == normalized_path(program_path)
+            })
+        });
+        same_save_path || same_program
     });
     ProgramDiscoveredGameDto {
         name: game.name,
@@ -1138,7 +1232,162 @@ fn program_game_to_dto(game: ProgramDiscoveredGame, existing: &[Game]) -> Progra
 }
 
 fn normalized_path(path: &std::path::Path) -> String {
-    path.to_string_lossy().replace('/', "\\").to_lowercase()
+    let mut normalized = path.to_string_lossy().replace('/', "\\");
+    let lowercase = normalized.to_ascii_lowercase();
+    if lowercase.starts_with("\\\\?\\unc\\") {
+        normalized = format!("\\\\{}", &normalized[8..]);
+    } else if lowercase.starts_with("\\\\?\\") {
+        normalized = normalized[4..].to_string();
+    }
+    normalized.to_lowercase()
+}
+
+fn find_save_path_conflict<'a>(
+    existing: &'a [Game],
+    candidate_paths: &[PathBuf],
+    excluded_game_id: Option<&str>,
+) -> Option<&'a Game> {
+    existing.iter().find(|game| {
+        excluded_game_id != Some(game.id.as_str())
+            && game.save_paths.iter().any(|saved_path| {
+                candidate_paths
+                    .iter()
+                    .any(|candidate| save_paths_overlap(saved_path, candidate))
+            })
+    })
+}
+
+fn find_existing_steam_game<'a>(
+    existing: &'a [Game],
+    app_id: u32,
+    candidate_paths: &[PathBuf],
+) -> Option<&'a Game> {
+    existing
+        .iter()
+        .find(|game| {
+            game.launch_binding
+                .as_ref()
+                .and_then(|binding| binding.steam_app_id)
+                == Some(app_id)
+        })
+        .or_else(|| find_save_path_conflict(existing, candidate_paths, None))
+}
+
+fn find_existing_program_game<'a>(
+    existing: &'a [Game],
+    executable_path: &Path,
+    install_dir: &Path,
+    candidate_save_paths: &[PathBuf],
+) -> Option<&'a Game> {
+    existing.iter().find(|game| {
+        let same_launch = game.launch_binding.as_ref().is_some_and(|binding| {
+            binding.steam_app_id.is_none()
+                && (normalized_path(&binding.executable_path) == normalized_path(executable_path)
+                    || normalized_path(&binding.install_dir) == normalized_path(install_dir))
+        });
+        let existing_save_inside_install = game
+            .save_paths
+            .iter()
+            .any(|save_path| path_is_same_or_descendant(install_dir, save_path));
+        let overlapping_save = game.save_paths.iter().any(|saved_path| {
+            candidate_save_paths
+                .iter()
+                .any(|candidate| save_paths_overlap(saved_path, candidate))
+        });
+        same_launch || existing_save_inside_install || overlapping_save
+    })
+}
+
+fn same_launch_target(first: &GameLaunchBinding, second: &GameLaunchBinding) -> bool {
+    match (first.steam_app_id, second.steam_app_id) {
+        (Some(first_app_id), Some(second_app_id)) => first_app_id == second_app_id,
+        (None, None) => {
+            normalized_path(&first.executable_path) == normalized_path(&second.executable_path)
+                || normalized_path(&first.install_dir) == normalized_path(&second.install_dir)
+        }
+        _ => false,
+    }
+}
+
+fn find_launch_binding_conflict<'a>(
+    existing: &'a [Game],
+    candidate: &GameLaunchBinding,
+    excluded_game_id: Option<&str>,
+) -> Option<&'a Game> {
+    existing.iter().find(|game| {
+        excluded_game_id != Some(game.id.as_str())
+            && game
+                .launch_binding
+                .as_ref()
+                .is_some_and(|binding| same_launch_target(binding, candidate))
+    })
+}
+
+fn validate_executable_binding(
+    executable_path: &str,
+    install_dir: Option<&str>,
+) -> Result<GameLaunchBinding, String> {
+    let executable_path = PathBuf::from(executable_path.trim());
+    if !executable_path.is_absolute() || !executable_path.is_file() {
+        return Err("请选择真实存在的游戏 EXE".into());
+    }
+    if !executable_path
+        .extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("exe"))
+    {
+        return Err("游戏启动文件必须是 EXE".into());
+    }
+    let executable_path =
+        std::fs::canonicalize(&executable_path).map_err(|error| error.to_string())?;
+    let install_dir = install_dir
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| executable_path.parent().map(Path::to_path_buf))
+        .ok_or_else(|| "无法确定游戏安装目录".to_string())?;
+    if !install_dir.is_absolute() || !install_dir.is_dir() {
+        return Err("游戏安装目录不存在或不是绝对路径".into());
+    }
+    let install_dir = std::fs::canonicalize(&install_dir).map_err(|error| error.to_string())?;
+    if !executable_path.starts_with(&install_dir) {
+        return Err("游戏 EXE 不在识别到的安装目录中".into());
+    }
+    Ok(GameLaunchBinding::executable(executable_path, install_dir))
+}
+
+fn validate_steam_binding(
+    steam_root: &str,
+    install_dir: &str,
+    app_id: u32,
+) -> Result<GameLaunchBinding, String> {
+    let steam_root = PathBuf::from(steam_root.trim());
+    let steam_executable = steam_root.join("steam.exe");
+    if !steam_executable.is_file() {
+        return Err("Steam 启动程序不存在，请重新选择 Steam 目录".into());
+    }
+    let install_dir = PathBuf::from(install_dir.trim());
+    if !install_dir.is_absolute() || !install_dir.is_dir() {
+        return Err("Steam 游戏安装目录不存在".into());
+    }
+    let steam_executable =
+        std::fs::canonicalize(steam_executable).map_err(|error| error.to_string())?;
+    let install_dir = std::fs::canonicalize(install_dir).map_err(|error| error.to_string())?;
+    Ok(GameLaunchBinding::steam(
+        steam_executable,
+        install_dir,
+        app_id,
+    ))
+}
+
+fn duplicate_game_message(game: &Game) -> String {
+    format!(
+        "这个游戏已作为“{}”添加到 SaveLink，请编辑现有游戏",
+        game.name
+    )
+}
+
+fn duplicate_save_path_message(game: &Game) -> String {
+    format!("存档目录已由“{}”管理，不能重复或嵌套添加", game.name)
 }
 
 #[tauri::command]
@@ -1146,6 +1395,8 @@ pub fn add_game(
     state: State<'_, AppState>,
     name: String,
     save_paths: Vec<String>,
+    executable_path: Option<String>,
+    install_dir: Option<String>,
 ) -> Result<GameDto, String> {
     if name.trim().is_empty() {
         return Err("游戏名称不能为空".into());
@@ -1153,6 +1404,10 @@ pub fn add_game(
     if save_paths.is_empty() {
         return Err("请至少选择一个存档目录".into());
     }
+    let launch_binding = validate_executable_binding(
+        executable_path.as_deref().unwrap_or_default(),
+        install_dir.as_deref(),
+    )?;
     let save_paths = save_paths
         .into_iter()
         .map(|path| path.trim().to_string())
@@ -1164,6 +1419,13 @@ pub fn add_game(
     }
     savelink_core::scan::validate_save_paths(&save_paths).map_err(|e| e.to_string())?;
     let _operation = acquire_snapshot_operation_guard(&state)?;
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    if let Some(conflict) = find_save_path_conflict(&existing, &save_paths, None) {
+        return Err(duplicate_save_path_message(conflict));
+    }
+    if let Some(conflict) = find_launch_binding_conflict(&existing, &launch_binding, None) {
+        return Err(duplicate_game_message(conflict));
+    }
     let now = state.clock.now_stamp();
     let game = Game {
         id: state.ids.new_id("game"),
@@ -1174,6 +1436,7 @@ pub fn add_game(
         save_sources: Vec::new(),
         emulator_identity: None,
         emulator_binding: None,
+        launch_binding: Some(launch_binding),
         created_at: now.clone(),
         updated_at: now,
     };
@@ -1181,6 +1444,179 @@ pub fn add_game(
         .repo
         .insert_game(game.clone())
         .map_err(|e| e.to_string())?;
+    Ok(game_to_dto(&state.repo, &game))
+}
+
+#[tauri::command]
+pub fn add_program_game(
+    state: State<'_, AppState>,
+    name: String,
+    save_paths: Vec<String>,
+    executable_path: String,
+    install_dir: String,
+) -> Result<GameDto, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("游戏名称不能为空".into());
+    }
+    let launch_binding = validate_executable_binding(&executable_path, Some(&install_dir))?;
+    let save_paths = save_paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    if !save_paths.is_empty() {
+        savelink_core::scan::validate_save_paths(&save_paths).map_err(|error| error.to_string())?;
+    }
+
+    let _operation = acquire_snapshot_operation_guard(&state)?;
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    if let Some(conflict) = find_existing_program_game(
+        &existing,
+        &launch_binding.executable_path,
+        &launch_binding.install_dir,
+        &save_paths,
+    ) {
+        return Err(duplicate_game_message(conflict));
+    }
+    if let Some(conflict) = find_launch_binding_conflict(&existing, &launch_binding, None) {
+        return Err(duplicate_game_message(conflict));
+    }
+    let now = state.clock.now_stamp();
+    let game = Game {
+        id: state.ids.new_id("game"),
+        name: name.to_string(),
+        icon: None,
+        repo_path: PathBuf::new(),
+        save_paths,
+        save_sources: Vec::new(),
+        emulator_identity: None,
+        emulator_binding: None,
+        launch_binding: Some(launch_binding),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    state
+        .repo
+        .insert_game(game.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(game_to_dto(&state.repo, &game))
+}
+
+#[tauri::command]
+pub fn register_steam_game(
+    state: State<'_, AppState>,
+    name: String,
+    save_paths: Vec<String>,
+    steam_root: String,
+    install_dir: String,
+    app_id: u32,
+) -> Result<GameDto, String> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err("游戏名称不能为空".into());
+    }
+    let save_paths = save_paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    if save_paths.is_empty() {
+        return Err("请至少选择一个存档目录".into());
+    }
+    savelink_core::scan::validate_save_paths(&save_paths).map_err(|error| error.to_string())?;
+    let launch_binding = validate_steam_binding(&steam_root, &install_dir, app_id)?;
+
+    let _operation = acquire_snapshot_operation_guard(&state)?;
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    if let Some(saved) = find_save_path_conflict(&existing, &save_paths, None) {
+        if saved.emulator_identity.is_some() {
+            return Err(duplicate_save_path_message(saved));
+        }
+        let mut saved = saved.clone();
+        if let Some(current) = saved.launch_binding.as_ref() {
+            if same_launch_target(current, &launch_binding) {
+                return Ok(game_to_dto(&state.repo, &saved));
+            }
+            return Err(duplicate_game_message(&saved));
+        }
+        if let Some(conflict) =
+            find_launch_binding_conflict(&existing, &launch_binding, Some(saved.id.as_str()))
+        {
+            return Err(duplicate_game_message(conflict));
+        }
+        saved.launch_binding = Some(launch_binding);
+        saved.updated_at = state.clock.now_stamp();
+        state
+            .repo
+            .update_game(saved.clone())
+            .map_err(|error| error.to_string())?;
+        return Ok(game_to_dto(&state.repo, &saved));
+    }
+    if let Some(conflict) = find_launch_binding_conflict(&existing, &launch_binding, None) {
+        return Err(duplicate_game_message(conflict));
+    }
+    let now = state.clock.now_stamp();
+    let game = Game {
+        id: state.ids.new_id("game"),
+        name: name.to_string(),
+        icon: None,
+        repo_path: PathBuf::new(),
+        save_paths,
+        save_sources: Vec::new(),
+        emulator_identity: None,
+        emulator_binding: None,
+        launch_binding: Some(launch_binding),
+        created_at: now.clone(),
+        updated_at: now,
+    };
+    state
+        .repo
+        .insert_game(game.clone())
+        .map_err(|error| error.to_string())?;
+    Ok(game_to_dto(&state.repo, &game))
+}
+
+#[tauri::command]
+pub fn bind_program_to_game(
+    state: State<'_, AppState>,
+    game_id: String,
+    executable_path: String,
+    install_dir: Option<String>,
+    replace_existing: bool,
+) -> Result<GameDto, String> {
+    let launch_binding = validate_executable_binding(&executable_path, install_dir.as_deref())?;
+    let _operation = acquire_snapshot_operation_guard(&state)?;
+    let mut game = state
+        .repo
+        .get_game(&game_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "游戏不存在".to_string())?;
+    if game.emulator_identity.is_some() {
+        return Err("模拟器游戏请通过对应模拟器重新绑定".into());
+    }
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    if let Some(conflict) =
+        find_launch_binding_conflict(&existing, &launch_binding, Some(game.id.as_str()))
+    {
+        return Err(duplicate_game_message(conflict));
+    }
+    if let Some(current) = game.launch_binding.as_ref() {
+        if same_launch_target(current, &launch_binding) {
+            return Ok(game_to_dto(&state.repo, &game));
+        }
+        if !replace_existing {
+            return Err("该游戏已有启动方式，请在编辑游戏中确认更换".into());
+        }
+    }
+    game.launch_binding = Some(launch_binding);
+    game.updated_at = state.clock.now_stamp();
+    state
+        .repo
+        .update_game(game.clone())
+        .map_err(|error| error.to_string())?;
     Ok(game_to_dto(&state.repo, &game))
 }
 
@@ -1224,11 +1660,19 @@ pub fn update_game(
             return Err("模拟器游戏请通过 DeSmuME 重新扫描和绑定，不能直接修改存档目录".into());
         }
     } else {
-        if trimmed_paths.is_empty() {
+        if trimmed_paths.is_empty() && (game.is_configured() || game.launch_binding.is_none()) {
             return Err("请至少选择一个存档目录".into());
         }
-        savelink_core::scan::validate_save_paths(&trimmed_paths).map_err(|e| e.to_string())?;
-        game.save_paths = trimmed_paths;
+        if !trimmed_paths.is_empty() {
+            savelink_core::scan::validate_save_paths(&trimmed_paths).map_err(|e| e.to_string())?;
+            let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+            if let Some(conflict) =
+                find_save_path_conflict(&existing, &trimmed_paths, Some(game.id.as_str()))
+            {
+                return Err(duplicate_save_path_message(conflict));
+            }
+            game.save_paths = trimmed_paths;
+        }
     }
     game.name = name.trim().to_string();
     game.updated_at = state.clock.now_stamp();
@@ -1335,4 +1779,184 @@ pub fn restore_snapshot_with_choice(
         target_id: out.target_id,
         restored: out.restored,
     })
+}
+
+#[cfg(test)]
+mod duplicate_game_tests {
+    use super::*;
+
+    fn game(
+        name: &str,
+        save_paths: Vec<PathBuf>,
+        launch_binding: Option<GameLaunchBinding>,
+    ) -> Game {
+        Game {
+            id: format!("game-{name}"),
+            name: name.into(),
+            icon: None,
+            repo_path: PathBuf::new(),
+            save_paths,
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
+            launch_binding,
+            created_at: "2026-08-25T00:00:00Z".into(),
+            updated_at: "2026-08-25T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn legacy_game_with_install_local_save_blocks_program_duplicate() {
+        let existing = vec![game(
+            "奥术扳机",
+            vec![PathBuf::from(r"C:\Games\Arcane.Trigger\Processes")],
+            None,
+        )];
+
+        let conflict = find_existing_program_game(
+            &existing,
+            Path::new(r"\\?\C:\Games\Arcane.Trigger\GunWizard.exe"),
+            Path::new(r"\\?\C:\Games\Arcane.Trigger"),
+            &[],
+        );
+
+        assert_eq!(conflict.map(|game| game.name.as_str()), Some("奥术扳机"));
+    }
+
+    #[test]
+    fn unrelated_sibling_install_does_not_block_program() {
+        let existing = vec![game(
+            "Other Game",
+            vec![PathBuf::from(r"C:\Games\Other\Save")],
+            None,
+        )];
+
+        assert!(find_existing_program_game(
+            &existing,
+            Path::new(r"C:\Games\Arcane.Trigger\GunWizard.exe"),
+            Path::new(r"C:\Games\Arcane.Trigger"),
+            &[],
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn save_path_conflict_detects_cross_game_parent_child_paths() {
+        let existing = vec![game(
+            "Existing",
+            vec![PathBuf::from(r"C:\Saves\Game")],
+            None,
+        )];
+        let candidate = vec![PathBuf::from(r"C:\Saves\Game\Profile")];
+
+        assert_eq!(
+            find_save_path_conflict(&existing, &candidate, None).map(|game| game.name.as_str()),
+            Some("Existing")
+        );
+        assert!(
+            find_save_path_conflict(&existing, &candidate, Some(existing[0].id.as_str())).is_none()
+        );
+    }
+
+    #[test]
+    fn normalized_path_ignores_windows_verbatim_prefix() {
+        assert_eq!(
+            normalized_path(Path::new(r"C:\Games\Arcane\game.exe")),
+            normalized_path(Path::new(r"\\?\C:\Games\Arcane\game.exe"))
+        );
+    }
+
+    #[test]
+    fn steam_app_id_is_the_launch_binding_identity() {
+        let existing = vec![game(
+            "Elden Ring",
+            Vec::new(),
+            Some(GameLaunchBinding::steam(
+                PathBuf::from(r"C:\Steam\steam.exe"),
+                PathBuf::from(r"C:\SteamLibrary\steamapps\common\Elden Ring"),
+                1245620,
+            )),
+        )];
+        let candidate = GameLaunchBinding::steam(
+            PathBuf::from(r"D:\Steam\steam.exe"),
+            PathBuf::from(r"D:\Library\steamapps\common\Elden Ring"),
+            1245620,
+        );
+
+        assert_eq!(
+            find_launch_binding_conflict(&existing, &candidate, None)
+                .map(|game| game.name.as_str()),
+            Some("Elden Ring")
+        );
+    }
+
+    #[test]
+    fn ordinary_executable_matches_legacy_game_by_install_local_save() {
+        let existing = vec![game(
+            "Arcane Trigger",
+            vec![PathBuf::from(r"C:\Games\Arcane.Trigger\Processes")],
+            None,
+        )];
+        let candidate = GameLaunchBinding::executable(
+            PathBuf::from(r"C:\Games\Arcane.Trigger\GunWizard.exe"),
+            PathBuf::from(r"C:\Games\Arcane.Trigger"),
+        );
+
+        assert_eq!(
+            find_existing_program_game(
+                &existing,
+                &candidate.executable_path,
+                &candidate.install_dir,
+                &[],
+            )
+            .map(|game| game.name.as_str()),
+            Some("Arcane Trigger")
+        );
+    }
+
+    #[test]
+    fn existing_launch_binding_is_not_marked_as_available_for_rebinding() {
+        let existing = vec![game(
+            "Already Bound",
+            vec![PathBuf::from(r"C:\Saves\Already Bound")],
+            Some(GameLaunchBinding::executable(
+                PathBuf::from(r"C:\Games\Already Bound\game.exe"),
+                PathBuf::from(r"C:\Games\Already Bound"),
+            )),
+        )];
+        let found = find_existing_program_game(
+            &existing,
+            Path::new(r"C:\Games\Already Bound\game.exe"),
+            Path::new(r"C:\Games\Already Bound"),
+            &[],
+        );
+
+        assert!(found.is_some());
+        assert!(!found.is_some_and(|game| {
+            game.launch_binding.is_none() && game.emulator_identity.is_none()
+        }));
+    }
+
+    #[test]
+    fn steam_discovery_detects_existing_app_id_after_save_path_changes() {
+        let existing = vec![game(
+            "Elden Ring",
+            vec![PathBuf::from(r"D:\Moved Saves\Elden Ring")],
+            Some(GameLaunchBinding::steam(
+                PathBuf::from(r"C:\Steam\steam.exe"),
+                PathBuf::from(r"C:\Steam\steamapps\common\ELDEN RING"),
+                1245620,
+            )),
+        )];
+
+        assert_eq!(
+            find_existing_steam_game(
+                &existing,
+                1245620,
+                &[PathBuf::from(r"C:\Users\User\AppData\Roaming\EldenRing")],
+            )
+            .map(|game| game.name.as_str()),
+            Some("Elden Ring")
+        );
+    }
 }

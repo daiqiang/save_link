@@ -70,6 +70,7 @@ fn selected_game(root: &Path, local_name: &str, clock: &dyn Clock) -> Game {
         }],
         emulator_identity: None,
         emulator_binding: None,
+        launch_binding: None,
         created_at: now.clone(),
         updated_at: now,
     }

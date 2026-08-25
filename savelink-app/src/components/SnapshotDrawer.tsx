@@ -116,8 +116,8 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
           </div>
         </div>
         <div className="drawer-foot">
-          <button className="btn primary" disabled={game.save_paths.length === 0}
-            title={game.save_paths.length === 0 ? "请先绑定本机存档目录" : "恢复这个版本"}
+          <button className="btn primary" disabled={game.configuration_state !== "configured"}
+            title={game.configuration_state !== "configured" ? "请先设置本机存档目录" : "恢复这个版本"}
             onClick={() => requestAction("restore")}>
             <Icon.RotateCcw /> 恢复这个版本
           </button>

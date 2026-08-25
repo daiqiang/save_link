@@ -115,6 +115,7 @@ fn b3b_restore_small_file_snapshot_keeps_files_in_chinese_path() {
         save_sources: Vec::new(),
         emulator_identity: None,
         emulator_binding: None,
+        launch_binding: None,
         created_at: h.clock.now_stamp(),
         updated_at: h.clock.now_stamp(),
     };

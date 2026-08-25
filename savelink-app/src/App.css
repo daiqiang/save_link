@@ -313,6 +313,12 @@ button {
   align-items: center; justify-content: center; gap: 9px; color: var(--color-text-3); text-align: center; }
 .program-discovery-empty strong { color: var(--color-text); font-size: 14px; }
 .program-discovery-empty span { max-width: 480px; font-size: 12px; }
+.program-name-field { width: min(420px, 100%); display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.program-name-field label { color: var(--color-text-2); font-size: 12px; }
+.program-discovery-empty .steam-path-group { width: min(520px, 100%); text-align: left; }
+.program-name-input { min-width: 0; height: 34px; font-weight: 600; }
+.program-path-choice { margin-top: 12px; display: flex; align-items: center; gap: 8px; color: var(--color-text-2); font-size: 12.5px; cursor: pointer; }
+.program-path-choice input { width: 15px; height: 15px; accent-color: var(--color-accent); }
 .steam-scan-head { min-height: 58px; display: flex; align-items: center; gap: 8px; padding: 9px 20px;
   border-bottom: 1px solid var(--color-border); background: #fafbfc; }
 .steam-scan-head > div { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }

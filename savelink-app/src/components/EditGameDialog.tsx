@@ -17,6 +17,7 @@ interface Props {
 export function EditGameDialog({ game, onClose, onSaved, onDeleted, onRebindDesmume }: Props) {
   const toast = useToast();
   const isDesmume = game.emulator === "desmume";
+  const isPendingProgram = game.configuration_state === "pending_discovery";
   const [name, setName] = useState(game.name);
   const [paths, setPaths] = useState(game.save_paths.length > 0 ? game.save_paths : [""]);
   const [scan, setScan] = useState<{ index: number; state: "idle" | "loading" | "done" | "err"; text: string }>({
@@ -54,7 +55,7 @@ export function EditGameDialog({ game, onClose, onSaved, onDeleted, onRebindDesm
   async function save() {
     if (!name.trim()) return toast("请填写游戏名称", "err");
     const savePaths = paths.map((value) => value.trim()).filter(Boolean);
-    if (!isDesmume && savePaths.length === 0) return toast("请至少选择一个存档目录", "err");
+    if (!isDesmume && !isPendingProgram && savePaths.length === 0) return toast("请至少选择一个存档目录", "err");
     setSaving(true);
     try {
       const updated = await api.updateGame(game.id, name.trim(), isDesmume ? game.save_paths : savePaths);
@@ -170,7 +171,7 @@ export function EditGameDialog({ game, onClose, onSaved, onDeleted, onRebindDesm
                 <span className="ic"><Icon.Alert /></span>
                 <div>
                   将从 SaveLink 中移除「{game.name}」及其全部快照记录和备份文件。<br />
-                  不会删除真实存档目录。
+                  不会删除真实存档目录、游戏程序或安装目录。
                 </div>
               </div>
               <div className="target-box">

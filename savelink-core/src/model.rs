@@ -68,6 +68,50 @@ pub struct EmulatorLocalBinding {
     pub local_rom: RomIdentity,
 }
 
+/// 当前设备上的普通 PC 游戏启动绑定。路径和启动参数仅保存在本机，不进入云协议。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameLaunchBinding {
+    pub executable_path: PathBuf,
+    pub install_dir: PathBuf,
+    #[serde(default)]
+    pub launch_arguments: Vec<String>,
+    #[serde(default)]
+    pub steam_app_id: Option<u32>,
+}
+
+impl GameLaunchBinding {
+    pub fn executable(executable_path: PathBuf, install_dir: PathBuf) -> Self {
+        Self {
+            executable_path,
+            install_dir,
+            launch_arguments: Vec::new(),
+            steam_app_id: None,
+        }
+    }
+
+    pub fn steam(
+        steam_executable_path: PathBuf,
+        install_dir: PathBuf,
+        app_id: u32,
+    ) -> Self {
+        Self {
+            executable_path: steam_executable_path,
+            install_dir,
+            launch_arguments: vec!["-applaunch".into(), app_id.to_string()],
+            steam_app_id: Some(app_id),
+        }
+    }
+}
+
+/// 游戏在当前设备上的存档配置状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GameConfigurationState {
+    Configured,
+    PendingDiscovery,
+    PendingBinding,
+}
+
 /// 快照创建原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Reason {
@@ -108,6 +152,8 @@ pub struct Game {
     pub emulator_identity: Option<EmulatorGameIdentity>,
     /// 当前设备的 ROM 绑定；云端下载后在用户完成本机绑定前为空。
     pub emulator_binding: Option<EmulatorLocalBinding>,
+    /// 当前设备的普通 PC 游戏启动绑定；用于启动游戏和动态发现存档。
+    pub launch_binding: Option<GameLaunchBinding>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -123,6 +169,20 @@ impl Game {
             .cloned()
             .map(|path| SaveSource::Directory { path })
             .collect()
+    }
+
+    pub fn configuration_state(&self) -> GameConfigurationState {
+        if !self.effective_save_sources().is_empty() {
+            GameConfigurationState::Configured
+        } else if self.launch_binding.is_some() {
+            GameConfigurationState::PendingDiscovery
+        } else {
+            GameConfigurationState::PendingBinding
+        }
+    }
+
+    pub fn is_configured(&self) -> bool {
+        self.configuration_state() == GameConfigurationState::Configured
     }
 }
 

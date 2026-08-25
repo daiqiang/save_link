@@ -16,8 +16,10 @@ use savelink_core::cloud_store::{
     CloudEntry, CloudFile, CloudObjectStore, CloudStoreError, CloudStoreResult,
     FakeCloudObjectStore, PutMode,
 };
+use savelink_core::error::SaveLinkError;
 use savelink_core::model::{
-    EmulatorGameIdentity, Game, Reason, RomIdentity, ScanResult, Snapshot, SnapshotStatus,
+    EmulatorGameIdentity, Game, GameLaunchBinding, Reason, RomIdentity, ScanResult, Snapshot,
+    SnapshotStatus,
 };
 use savelink_core::repo::{Clock, Repository};
 use savelink_core::scan;
@@ -132,6 +134,7 @@ fn seed_device_a(device: &Device, contents: &[(&str, &[u8])]) -> PathBuf {
             save_sources: Vec::new(),
             emulator_identity: None,
             emulator_binding: None,
+            launch_binding: None,
             created_at: "2026-07-14T18:00:00+08:00".into(),
             updated_at: "2026-07-14T18:00:00+08:00".into(),
         })
@@ -185,6 +188,7 @@ fn seed_multi_source_device_a(device: &Device) -> (Vec<PathBuf>, ScanResult) {
             save_sources: Vec::new(),
             emulator_identity: None,
             emulator_binding: None,
+            launch_binding: None,
             created_at: "2026-07-14T18:00:00+08:00".into(),
             updated_at: "2026-07-14T18:00:00+08:00".into(),
         })
@@ -834,6 +838,75 @@ fn h15_existing_game_document_is_upgraded_with_emulator_identity() {
     assert!(landed.emulator_binding.is_none());
     assert!(landed.save_paths.is_empty());
     assert!(landed.save_sources.is_empty());
+}
+
+#[test]
+fn h16_local_launch_paths_never_enter_cloud_game_document() {
+    let (_tmp, cloud, _codec, device_a, _device_b) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"private-path-test")]);
+    let install_dir = device_a.root.join("secret-launch-marker-install");
+    fs::create_dir_all(&install_dir).unwrap();
+    let executable_path = install_dir.join("secret-launch-marker.exe");
+    fs::write(&executable_path, b"fake executable").unwrap();
+    let mut game = device_a.repo.get_game("game_1").unwrap().unwrap();
+    game.launch_binding = Some(GameLaunchBinding::executable(executable_path, install_dir));
+    device_a.repo.update_game(game).unwrap();
+
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    let local_document = device_a.root.join("launch-private-game.json");
+    cloud
+        .get_file(&game_path("game_1").unwrap(), &local_document)
+        .unwrap();
+    let json = fs::read_to_string(local_document).unwrap();
+    assert!(!json.contains("secret-launch-marker"));
+    assert!(!json.contains("launch_binding"));
+    assert!(!json.contains("executable_path"));
+    assert!(!json.contains("install_dir"));
+}
+
+#[test]
+fn h17_pending_game_cannot_start_manual_cloud_upload() {
+    let (_tmp, cloud, _codec, device_a, _device_b) = setup();
+    let install_dir = device_a.root.join("pending-install");
+    fs::create_dir_all(&install_dir).unwrap();
+    let executable_path = install_dir.join("pending.exe");
+    fs::write(&executable_path, b"fake executable").unwrap();
+    device_a
+        .repo
+        .insert_game(Game {
+            id: "pending_game".into(),
+            name: "Pending Game".into(),
+            icon: None,
+            repo_path: PathBuf::new(),
+            save_paths: Vec::new(),
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
+            launch_binding: Some(GameLaunchBinding::executable(executable_path, install_dir)),
+            created_at: "2026-08-24T10:00:00Z".into(),
+            updated_at: "2026-08-24T10:00:00Z".into(),
+        })
+        .unwrap();
+
+    let error = device_a
+        .service
+        .upload_snapshot("pending_game", "missing")
+        .unwrap_err();
+    assert!(matches!(
+        &error,
+        CloudSyncError::Local(SaveLinkError::SaveSourcesNotConfigured)
+    ));
+    assert_eq!(error.code(), "save_sources_not_configured");
+    assert!(
+        cloud
+            .stat_file(&savelink_core::cloud_protocol::manifest_path())
+            .unwrap()
+            .is_none(),
+        "拒绝待配置游戏时不应先写入任何云端对象"
+    );
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

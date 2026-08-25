@@ -108,8 +108,46 @@ export async function registerDesmumeGame(
   });
 }
 
-export async function addGame(name: string, savePaths: string[]): Promise<Game> {
-  return invoke<Game>("add_game", { name, savePaths });
+export async function addGame(
+  name: string,
+  savePaths: string[],
+  executablePath: string,
+  installDir: string,
+): Promise<Game> {
+  return invoke<Game>("add_game", { name, savePaths, executablePath, installDir });
+}
+
+export async function addProgramGame(
+  name: string,
+  savePaths: string[],
+  executablePath: string,
+  installDir: string,
+): Promise<Game> {
+  return invoke<Game>("add_program_game", { name, savePaths, executablePath, installDir });
+}
+
+export async function registerSteamGame(
+  name: string,
+  savePaths: string[],
+  steamRoot: string,
+  installDir: string,
+  appId: number,
+): Promise<Game> {
+  return invoke<Game>("register_steam_game", { name, savePaths, steamRoot, installDir, appId });
+}
+
+export async function bindProgramToGame(
+  gameId: string,
+  executablePath: string,
+  installDir: string | null,
+  replaceExisting: boolean,
+): Promise<Game> {
+  return invoke<Game>("bind_program_to_game", {
+    gameId,
+    executablePath,
+    installDir,
+    replaceExisting,
+  });
 }
 
 export async function updateGame(gameId: string, name: string, savePaths: string[]): Promise<Game> {

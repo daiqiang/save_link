@@ -13,6 +13,7 @@ use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::store::{FsStore, SnapshotStore};
 use savelink_core::testkit::{write_files, TempDir};
 use std::fs;
+use std::path::PathBuf;
 
 #[test]
 fn o1_multi_source_fingerprint_changes_when_either_root_changes() {
@@ -209,4 +210,14 @@ fn o5_overlapping_sources_are_rejected_before_scanning() {
         reverse,
         SaveLinkError::OverlappingSavePaths { .. }
     ));
+}
+
+#[test]
+fn o6_path_overlap_treats_windows_verbatim_prefix_as_the_same_path() {
+    let regular = PathBuf::from(r"C:\Games\Arcane Trigger\Processes");
+    let verbatim = PathBuf::from(r"\\?\C:\Games\Arcane Trigger\Processes");
+    let child = PathBuf::from(r"\\?\C:\Games\Arcane Trigger\Processes\Save");
+
+    assert!(scan::save_paths_overlap(&regular, &verbatim));
+    assert!(scan::path_is_same_or_descendant(&regular, &child));
 }

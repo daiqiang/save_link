@@ -15,12 +15,20 @@ export type CloudSyncStatus =
   | "delete_failed"
   | "remote_deleted";
 
+export type GameConfigurationState = "configured" | "pending_discovery" | "pending_binding";
+
 export interface Game {
   id: string;
   name: string;
   icon: string | null;
   save_paths: string[];
   emulator: string | null;
+  configuration_state: GameConfigurationState;
+  launch_kind: "executable" | "steam" | "emulator" | null;
+  launch_executable_path: string | null;
+  launch_arguments: string[];
+  steam_app_id: number | null;
+  install_dir: string | null;
   snapshot_count: number;
   last_snapshot_at: string | null;
 }
@@ -54,6 +62,9 @@ export interface SteamDiscoveredGame {
   current_system_unresolved_rules: number;
   other_environment_rules: number;
   already_added: boolean;
+  existing_game_id: string | null;
+  existing_game_name: string | null;
+  can_bind_existing_launch: boolean;
   can_add_directly: boolean;
 }
 
@@ -85,6 +96,11 @@ export interface ProgramDiscoveryReport {
   detected_app_id: number | null;
   app_id_source: string | null;
   identity_hints: string[];
+  suggested_name: string;
+  program_already_added: boolean;
+  existing_game_id: string | null;
+  existing_game_name: string | null;
+  can_bind_existing_launch: boolean;
   games: ProgramDiscoveredGame[];
 }
 

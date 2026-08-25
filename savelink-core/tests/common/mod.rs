@@ -74,6 +74,7 @@ impl Harness {
             save_sources: Vec::new(),
             emulator_identity: None,
             emulator_binding: None,
+            launch_binding: None,
             created_at: clock.now_stamp(),
             updated_at: clock.now_stamp(),
         };

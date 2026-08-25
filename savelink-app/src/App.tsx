@@ -87,7 +87,7 @@ function SaveLink() {
 
   async function createSnapshot() {
     if (!selected) return;
-    if (selected.save_paths.length === 0) return toast("请先绑定本机存档目录", "warn");
+    if (selected.configuration_state !== "configured") return toast("请先设置本机存档目录", "warn");
     setCreating(true);
     try {
       const s = await api.createSnapshot(selected.id, null);
@@ -109,6 +109,7 @@ function SaveLink() {
   }
 
   async function uploadToCloud(s: Snapshot) {
+    if (selected?.configuration_state !== "configured") return toast("请先设置本机存档目录", "warn");
     if (cloudUploadingId || s.cloud_status === "uploaded" || s.cloud_status === "downloaded") return;
     setCloudUploadingId(s.id);
     try {
@@ -174,10 +175,12 @@ function SaveLink() {
             onClick={() => setSelectedId(g.id)}>
             <div className="game-cover">{g.name[0] ?? "游"}</div>
             <div className="game-meta">
-              <div className="game-name"><span className={`status-dot ${g.save_paths.length > 0 ? "ok" : "warn"}`} />{g.name}</div>
+              <div className="game-name"><span className={`status-dot ${g.configuration_state === "configured" ? "ok" : "warn"}`} />{g.name}</div>
               <div className="game-sub">
-                {g.save_paths.length === 0
-                  ? `${g.snapshot_count} 个快照 · ${g.emulator === "desmume" ? "尚未绑定 DeSmuME" : "尚未绑定存档目录"}`
+                {g.configuration_state !== "configured"
+                  ? `${g.snapshot_count} 个快照 · ${g.configuration_state === "pending_discovery"
+                    ? "待设置存档目录"
+                    : g.emulator === "desmume" ? "尚未绑定 DeSmuME" : "尚未绑定存档目录"}`
                   : <>{g.snapshot_count} 个快照{g.last_snapshot_at ? ` · 最近 ${formatTimestampTime(g.last_snapshot_at)}` : ""}</>}
               </div>
             </div>
@@ -197,16 +200,24 @@ function SaveLink() {
               <div className="cover">{selected.name[0] ?? "游"}</div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <h1>{selected.name}</h1>
-                {selected.save_paths.length > 0 ? (
+                {selected.configuration_state === "configured" ? (
                   <div className="game-paths">
                     {selected.save_paths.map((path, index) => (
                       <div className="path" key={index}><Icon.Folder size={14} /><span className="mono">{path}</span></div>
                     ))}
                   </div>
                 ) : (
-                  <div className="path"><Icon.Folder size={14} /><span className="mono">
-                    {selected.emulator === "desmume" ? "尚未绑定本机 DeSmuME ROM" : "尚未绑定本机存档目录"}
-                  </span></div>
+                  <div className="game-paths">
+                    <div className="path"><Icon.Folder size={14} /><span className="mono">
+                      {selected.configuration_state === "pending_discovery"
+                        ? "尚未设置存档目录，当前不会创建备份"
+                        : selected.emulator === "desmume" ? "尚未绑定本机 DeSmuME ROM" : "尚未绑定本机存档目录"}
+                    </span></div>
+                    {selected.launch_executable_path && (
+                      <div className="path" title={selected.launch_executable_path}><Icon.Gamepad size={14} />
+                        <span className="mono">{selected.launch_executable_path}</span></div>
+                    )}
+                  </div>
                 )}
               </div>
             </div>
@@ -219,7 +230,14 @@ function SaveLink() {
             </div>
 
             <div className="toolbar">
-              {selected.save_paths.length === 0 ? (
+              {selected.configuration_state === "pending_discovery" ? <>
+                <button className="btn primary" disabled title="游戏活动监测将在下一阶段接入">
+                  <Icon.Search /> 启动游戏并查找存档
+                </button>
+                <button className="btn" onClick={() => setBindingGame(selected)}>
+                  <Icon.Folder /> 手动设置存档目录
+                </button>
+              </> : selected.configuration_state === "pending_binding" ? (
                 <button className="btn primary" onClick={() => selected.emulator === "desmume"
                   ? setAddMode("desmume")
                   : setBindingGame(selected)}>
@@ -237,14 +255,17 @@ function SaveLink() {
 
             <div className="section-label">时间线</div>
             <div className="timeline">
-              {shown.length === 0 && <div className="empty-tl">{selected.save_paths.length === 0
-                ? selected.emulator === "desmume" ? "尚未绑定本机 DeSmuME ROM。" : "尚未绑定本机存档目录。"
+              {shown.length === 0 && <div className="empty-tl">{selected.configuration_state !== "configured"
+                ? selected.configuration_state === "pending_discovery"
+                  ? "尚未设置存档目录，当前不会创建备份。"
+                  : selected.emulator === "desmume" ? "尚未绑定本机 DeSmuME ROM。" : "尚未绑定本机存档目录。"
                 : "还没有快照。点击「创建快照」保存当前存档状态。"}</div>}
               {shown.map((s) => {
                 const cloudBusy = cloudUploadingId === s.id;
                 const cloudUploaded = s.cloud_status === "uploaded" || s.cloud_status === "downloaded";
                 const cloudFailed = s.cloud_status === "error";
-                const restorePathsReady = selected.save_paths.length >= s.source_count;
+                const restorePathsReady = selected.configuration_state === "configured"
+                  && selected.save_paths.length >= s.source_count;
                 const cloudTitle = cloudBusy
                   ? "正在上传到百度网盘"
                   : cloudUploaded
@@ -282,7 +303,7 @@ function SaveLink() {
                       title={cloudTitle}
                       aria-label={cloudTitle}
                       aria-busy={cloudBusy}
-                      disabled={cloudUploadingId !== null || cloudUploaded}
+                      disabled={selected.configuration_state !== "configured" || cloudUploadingId !== null || cloudUploaded}
                       onClick={() => uploadToCloud(s)}
                     >
                       {cloudBusy

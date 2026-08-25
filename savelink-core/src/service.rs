@@ -67,6 +67,9 @@ impl SnapshotService {
             .repo
             .get_game(game_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("game not found: {game_id}")))?;
+        if !game.is_configured() {
+            return Err(SaveLinkError::SaveSourcesNotConfigured);
+        }
 
         let save_sources = game.effective_save_sources();
         scan::validate_save_sources(&save_sources)?;
@@ -315,6 +318,9 @@ impl RestoreService {
             .repo
             .get_game(game_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("game not found: {game_id}")))?;
+        if !game.is_configured() {
+            return Err(SaveLinkError::SaveSourcesNotConfigured);
+        }
         let target = self
             .repo
             .get_snapshot(snapshot_id)?
@@ -513,6 +519,9 @@ impl RestoreService {
             .repo
             .get_game(game_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("game not found: {game_id}")))?;
+        if !game.is_configured() {
+            return Err(SaveLinkError::SaveSourcesNotConfigured);
+        }
         let target = self
             .repo
             .get_snapshot(snapshot_id)?

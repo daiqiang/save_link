@@ -102,6 +102,7 @@ fn f3_game_update_survives_reopen() {
             save_sources: Vec::new(),
             emulator_identity: None,
             emulator_binding: None,
+            launch_binding: None,
             created_at: "2026-06-23 00:00".into(),
             updated_at: "2026-06-23 00:00".into(),
         };

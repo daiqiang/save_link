@@ -36,6 +36,7 @@ pub enum CloudSyncError {
 impl CloudSyncError {
     pub fn code(&self) -> &'static str {
         match self {
+            Self::Local(SaveLinkError::SaveSourcesNotConfigured) => "save_sources_not_configured",
             Self::Local(_) => "local_store_failed",
             Self::Store(error) => match error {
                 CloudStoreError::AuthRequired => "auth_required",
@@ -355,11 +356,14 @@ where
         game_id: &str,
         snapshot_id: &str,
     ) -> CloudSyncResult<UploadOutcome> {
-        self.ensure_manifest()?;
         let game = self
             .repo
             .get_game(game_id)?
             .ok_or_else(|| CloudSyncError::InvalidState(format!("游戏不存在: {game_id}")))?;
+        if !game.is_configured() {
+            return Err(SaveLinkError::SaveSourcesNotConfigured.into());
+        }
+        self.ensure_manifest()?;
         let snapshot = self
             .repo
             .get_snapshot(snapshot_id)?
@@ -757,6 +761,7 @@ where
                     save_sources: Vec::new(),
                     emulator_identity: document.emulator_identity.clone(),
                     emulator_binding: None,
+                    launch_binding: None,
                     created_at,
                     updated_at,
                 })?;
