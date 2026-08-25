@@ -3,8 +3,9 @@ use savelink_core::save_activity::{
     analyze_save_activity, FileActivityEvent, FileActivityKind, SaveActivityAnalysisContext,
     SaveDirectoryCandidate,
 };
-use savelink_core::scan::path_is_same_or_descendant;
+use savelink_core::scan::{path_is_same_or_descendant, validate_save_paths};
 use serde::Serialize;
+use std::collections::{BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -17,6 +18,11 @@ const STATUS_EVENT: &str = "save-discovery-status-changed";
 const WATCH_BUFFER_SIZE: u32 = 64 * 1024;
 const EVENT_LIMIT: usize = 20_000;
 const READY_TIMEOUT: Duration = Duration::from_secs(3);
+const RECONCILIATION_CLOCK_SKEW: Duration = Duration::from_secs(2);
+const IDENTITY_SEARCH_MAX_DEPTH: usize = 4;
+const IDENTITY_SEARCH_MAX_DIRECTORIES: usize = 20_000;
+const IDENTITY_SUBTREE_MAX_DIRECTORIES: usize = 10_000;
+const RECONCILIATION_EVENT_LIMIT: usize = 2_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -28,6 +34,7 @@ pub enum SaveDiscoveryPhase {
     ExitGracePeriod,
     Analyzing,
     AwaitingConfirmation,
+    Confirming,
     Failed,
     Cancelled,
 }
@@ -41,6 +48,7 @@ impl SaveDiscoveryPhase {
                 | Self::Monitoring
                 | Self::ExitGracePeriod
                 | Self::Analyzing
+                | Self::Confirming
         )
     }
 }
@@ -363,6 +371,40 @@ impl SaveDiscoveryManager {
         self.status()
     }
 
+    pub fn begin_confirmation(
+        &self,
+        game_id: &str,
+        requested_paths: &[PathBuf],
+    ) -> Result<Vec<PathBuf>, String> {
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "存档发现状态锁已损坏".to_string())?;
+        let selected = validate_confirmation_paths(&status, game_id, requested_paths)?;
+        status.phase = SaveDiscoveryPhase::Confirming;
+        Ok(selected)
+    }
+
+    pub fn abort_confirmation(&self, game_id: &str) {
+        if let Ok(mut status) = self.status.lock() {
+            if status.phase == SaveDiscoveryPhase::Confirming
+                && status.game_id.as_deref() == Some(game_id)
+            {
+                status.phase = SaveDiscoveryPhase::AwaitingConfirmation;
+            }
+        }
+    }
+
+    pub fn complete_confirmation(&self, game_id: &str) {
+        if let Ok(mut status) = self.status.lock() {
+            if status.phase == SaveDiscoveryPhase::Confirming
+                && status.game_id.as_deref() == Some(game_id)
+            {
+                *status = SaveDiscoveryStatus::default();
+            }
+        }
+    }
+
     fn send_control(&self, control: SessionControl) -> Result<(), String> {
         let inner = self
             .inner
@@ -391,6 +433,57 @@ impl SaveDiscoveryManager {
             let _ = worker.join();
         }
     }
+}
+
+fn validate_confirmation_paths(
+    status: &SaveDiscoveryStatus,
+    game_id: &str,
+    requested_paths: &[PathBuf],
+) -> Result<Vec<PathBuf>, String> {
+    if status.phase != SaveDiscoveryPhase::AwaitingConfirmation {
+        return Err("当前没有等待确认的存档发现结果".into());
+    }
+    if status.game_id.as_deref() != Some(game_id) {
+        return Err("候选目录不属于当前游戏，请重新监测".into());
+    }
+    if status.incomplete {
+        return Err("本次监测结果不完整，不能确认目录，请重新监测".into());
+    }
+    if requested_paths.is_empty() {
+        return Err("请至少选择一个候选存档目录".into());
+    }
+
+    let mut seen = BTreeSet::new();
+    let mut selected = Vec::with_capacity(requested_paths.len());
+    for requested in requested_paths {
+        let key = normalized_path(requested);
+        if !seen.insert(key.clone()) {
+            return Err("不能重复选择同一个候选存档目录".into());
+        }
+        let candidate = status
+            .candidates
+            .iter()
+            .find(|candidate| normalized_path(&candidate.directory) == key)
+            .ok_or_else(|| "选择的目录不属于本次监测候选，请重新监测".to_string())?;
+        if !candidate.confirmable || candidate.unsafe_reason.is_some() {
+            return Err("所选候选目录范围不安全，不能直接确认".into());
+        }
+        if !candidate.directory.is_dir() {
+            return Err(format!(
+                "候选目录已不存在，请重新监测：{}",
+                candidate.directory.display()
+            ));
+        }
+        let canonical = std::fs::canonicalize(&candidate.directory).map_err(|error| {
+            format!(
+                "无法读取候选目录 {}：{error}",
+                candidate.directory.display()
+            )
+        })?;
+        selected.push(display_path(&canonical));
+    }
+    validate_save_paths(&selected).map_err(|error| error.to_string())?;
+    Ok(selected)
 }
 
 impl Drop for SaveDiscoveryManager {
@@ -518,7 +611,15 @@ fn analyze_and_publish(
         current.pid = None;
     });
     watchers.stop();
-    let events = collector.events();
+    let mut events = collector.events();
+    let started_at_unix_ms = status
+        .lock()
+        .ok()
+        .and_then(|current| current.started_at_unix_ms)
+        .unwrap_or(0);
+    let reconciliation =
+        reconcile_recent_identity_files(&analysis_context, started_at_unix_ms, now_unix_ms());
+    events.extend(reconciliation.events);
     let dropped = collector.dropped();
     let mut errors = health.errors();
     if dropped > 0 {
@@ -526,10 +627,13 @@ fn analyze_and_publish(
             "文件变化事件超过内存上限，已丢弃 {dropped} 条；本次结果不完整"
         ));
     }
+    if reconciliation.incomplete {
+        errors.extend(reconciliation.errors);
+    }
     let candidates = analyze_save_activity(&events, &analysis_context);
     update_status(&status, &emitter, |current| {
         current.phase = SaveDiscoveryPhase::AwaitingConfirmation;
-        current.incomplete = health.is_incomplete() || dropped > 0;
+        current.incomplete = health.is_incomplete() || dropped > 0 || reconciliation.incomplete;
         current.event_count = events.len();
         current.dropped_event_count = dropped;
         current.candidates = candidates;
@@ -732,6 +836,220 @@ fn display_path(path: &Path) -> PathBuf {
 }
 
 #[derive(Default)]
+struct ReconciliationResult {
+    events: Vec<FileActivityEvent>,
+    errors: Vec<String>,
+    incomplete: bool,
+}
+
+fn reconcile_recent_identity_files(
+    context: &SaveActivityAnalysisContext,
+    started_at_unix_ms: u64,
+    ended_at_unix_ms: u64,
+) -> ReconciliationResult {
+    let identity_keys = discovery_identity_keys(context);
+    if identity_keys.is_empty() || started_at_unix_ms == 0 {
+        return ReconciliationResult::default();
+    }
+    let earliest = started_at_unix_ms
+        .saturating_sub(RECONCILIATION_CLOCK_SKEW.as_millis().min(u64::MAX as u128) as u64);
+    let latest = ended_at_unix_ms
+        .saturating_add(RECONCILIATION_CLOCK_SKEW.as_millis().min(u64::MAX as u128) as u64);
+    let mut result = ReconciliationResult::default();
+    let mut identity_roots = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut queue = VecDeque::new();
+    for root in &context.watched_roots {
+        queue.push_back((root.clone(), 0_usize));
+    }
+
+    while let Some((directory, depth)) = queue.pop_front() {
+        if visited.len() >= IDENTITY_SEARCH_MAX_DIRECTORIES {
+            result.incomplete = true;
+            result.errors.push(format!(
+                "存档目录补查超过 {IDENTITY_SEARCH_MAX_DIRECTORIES} 个目录，本次结果不完整"
+            ));
+            break;
+        }
+        if is_excluded_runtime_path(&directory, &context.excluded_roots) {
+            continue;
+        }
+        let key = normalized_path(&directory);
+        if !visited.insert(key) {
+            continue;
+        }
+        if directory_matches_identity(&directory, &identity_keys) {
+            identity_roots.push(directory);
+            continue;
+        }
+        if depth >= IDENTITY_SEARCH_MAX_DEPTH {
+            continue;
+        }
+        let Ok(entries) = sorted_directory_entries(&directory) else {
+            continue;
+        };
+        for entry in entries {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_dir() && !file_type.is_symlink() {
+                queue.push_back((entry.path(), depth + 1));
+            }
+        }
+    }
+
+    let mut scanned_directories = BTreeSet::new();
+    for root in identity_roots {
+        collect_recent_files(
+            &root,
+            context,
+            earliest,
+            latest,
+            &mut scanned_directories,
+            &mut result,
+        );
+        if result.incomplete {
+            break;
+        }
+    }
+    result
+}
+
+fn collect_recent_files(
+    root: &Path,
+    context: &SaveActivityAnalysisContext,
+    earliest_unix_ms: u64,
+    latest_unix_ms: u64,
+    visited: &mut BTreeSet<String>,
+    result: &mut ReconciliationResult,
+) {
+    let mut queue = VecDeque::from([root.to_path_buf()]);
+    while let Some(directory) = queue.pop_front() {
+        if visited.len() >= IDENTITY_SUBTREE_MAX_DIRECTORIES {
+            result.incomplete = true;
+            result.errors.push(format!(
+                "游戏相关目录补查超过 {IDENTITY_SUBTREE_MAX_DIRECTORIES} 个目录，本次结果不完整"
+            ));
+            return;
+        }
+        if is_excluded_runtime_path(&directory, &context.excluded_roots)
+            || !visited.insert(normalized_path(&directory))
+        {
+            continue;
+        }
+        let entries = match sorted_directory_entries(&directory) {
+            Ok(entries) => entries,
+            Err(error) => {
+                result.incomplete = true;
+                result.errors.push(format!(
+                    "无法补查游戏相关目录 {}：{error}",
+                    display_path(&directory).display()
+                ));
+                return;
+            }
+        };
+        for entry in entries {
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
+            if file_type.is_symlink() {
+                continue;
+            }
+            if file_type.is_dir() {
+                queue.push_back(entry.path());
+                continue;
+            }
+            if !file_type.is_file() {
+                continue;
+            }
+            let Ok(modified) = entry.metadata().and_then(|metadata| metadata.modified()) else {
+                continue;
+            };
+            let modified_unix_ms = modified
+                .duration_since(UNIX_EPOCH)
+                .map(|duration| duration.as_millis().min(u64::MAX as u128) as u64)
+                .unwrap_or(0);
+            if modified_unix_ms < earliest_unix_ms || modified_unix_ms > latest_unix_ms {
+                continue;
+            }
+            if result.events.len() >= RECONCILIATION_EVENT_LIMIT {
+                result.incomplete = true;
+                result.errors.push(format!(
+                    "近期文件补查超过 {RECONCILIATION_EVENT_LIMIT} 条，本次结果不完整"
+                ));
+                return;
+            }
+            result.events.push(FileActivityEvent {
+                path: display_path(&entry.path()),
+                kind: FileActivityKind::Observed,
+                observed_at_unix_ms: modified_unix_ms,
+            });
+        }
+    }
+}
+
+fn sorted_directory_entries(directory: &Path) -> std::io::Result<Vec<std::fs::DirEntry>> {
+    let mut entries = std::fs::read_dir(directory)?.collect::<Result<Vec<_>, _>>()?;
+    entries.sort_by_key(|entry| normalized_path(&entry.path()));
+    Ok(entries)
+}
+
+fn discovery_identity_keys(context: &SaveActivityAnalysisContext) -> BTreeSet<String> {
+    let mut values = vec![context.game_name.as_str()];
+    if let Some(stem) = context.executable_stem.as_deref() {
+        values.push(stem);
+    }
+    if let Some(install_name) = context
+        .install_dir
+        .as_deref()
+        .and_then(Path::file_name)
+        .and_then(|value| value.to_str())
+    {
+        values.push(install_name);
+    }
+    values
+        .into_iter()
+        .map(compact_identity)
+        .filter(|value| identity_key_is_specific(value))
+        .collect()
+}
+
+fn identity_key_is_specific(value: &str) -> bool {
+    value.chars().count() >= 4
+        && !matches!(
+            value,
+            "game" | "launcher" | "start" | "client" | "win32" | "win64" | "shipping"
+        )
+}
+
+fn directory_matches_identity(directory: &Path, identity_keys: &BTreeSet<String>) -> bool {
+    let Some(name) = directory.file_name().and_then(|value| value.to_str()) else {
+        return false;
+    };
+    let name = compact_identity(name);
+    identity_keys.iter().any(|identity| {
+        name == *identity
+            || (identity.chars().count() >= 6
+                && name.chars().count() >= 6
+                && (name.starts_with(identity) || identity.starts_with(&name)))
+    })
+}
+
+fn compact_identity(value: &str) -> String {
+    value
+        .chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn is_excluded_runtime_path(path: &Path, excluded_roots: &[PathBuf]) -> bool {
+    excluded_roots
+        .iter()
+        .any(|root| path_is_same_or_descendant(root, path))
+}
+
+#[derive(Default)]
 struct WatchHealth {
     incomplete: AtomicBool,
     errors: Mutex<Vec<String>>,
@@ -834,9 +1152,10 @@ mod windows_native {
         },
         Storage::FileSystem::{
             CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OVERLAPPED,
-            FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME,
-            FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            FILE_LIST_DIRECTORY, FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION,
+            FILE_NOTIFY_CHANGE_DIR_NAME, FILE_NOTIFY_CHANGE_FILE_NAME,
+            FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_DELETE,
+            FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         },
         System::{
             Com::CoTaskMemFree,
@@ -1070,6 +1389,7 @@ mod windows_native {
                     1,
                     FILE_NOTIFY_CHANGE_FILE_NAME
                         | FILE_NOTIFY_CHANGE_DIR_NAME
+                        | FILE_NOTIFY_CHANGE_ATTRIBUTES
                         | FILE_NOTIFY_CHANGE_SIZE
                         | FILE_NOTIFY_CHANGE_LAST_WRITE
                         | FILE_NOTIFY_CHANGE_CREATION,
@@ -1356,6 +1676,42 @@ mod tests {
         }
     }
 
+    fn candidate(
+        directory: PathBuf,
+        confirmable: bool,
+        unsafe_reason: Option<&str>,
+    ) -> SaveDirectoryCandidate {
+        SaveDirectoryCandidate {
+            directory,
+            confidence: savelink_core::save_activity::SaveCandidateConfidence::High,
+            score: 100,
+            confirmable,
+            unsafe_reason: unsafe_reason.map(str::to_string),
+            event_count: 1,
+            distinct_file_count: 1,
+            last_activity_unix_ms: 1,
+            files: Vec::new(),
+            positive_signals: Vec::new(),
+            downgrade_reasons: Vec::new(),
+        }
+    }
+
+    fn set_confirmation_status(
+        manager: &SaveDiscoveryManager,
+        candidates: Vec<SaveDirectoryCandidate>,
+        incomplete: bool,
+    ) {
+        *manager.status.lock().unwrap() = SaveDiscoveryStatus {
+            phase: SaveDiscoveryPhase::AwaitingConfirmation,
+            game_id: Some("test-game".into()),
+            game_name: Some("Test Game".into()),
+            started_at_unix_ms: Some(1),
+            incomplete,
+            candidates,
+            ..SaveDiscoveryStatus::default()
+        };
+    }
+
     fn wait_for_phase(
         manager: &SaveDiscoveryManager,
         phase: SaveDiscoveryPhase,
@@ -1402,6 +1758,89 @@ mod tests {
     }
 
     #[test]
+    fn reconciliation_recovers_recent_identity_files_and_preserves_noise_ranking() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-data")
+            .join(format!("savelink-reconcile-recent-{}", now_unix_ms()));
+        let game_root = root.join("Incrementalist").join("Hole Is Mine");
+        let release = game_root
+            .join("Save")
+            .join("Steam")
+            .join("test-user")
+            .join("Release");
+        let analytics = game_root
+            .join("Unity")
+            .join("Analytics")
+            .join("ArchivedEvents");
+        let unrelated = root.join("Other App").join("Save");
+        fs::create_dir_all(&release).unwrap();
+        fs::create_dir_all(&analytics).unwrap();
+        fs::create_dir_all(&unrelated).unwrap();
+        let started_at = now_unix_ms();
+        fs::write(release.join("GameProgress.hole"), b"progress").unwrap();
+        fs::write(release.join("GameProgress.hole.bac"), b"progress").unwrap();
+        fs::write(analytics.join("event.json"), b"analytics").unwrap();
+        fs::write(unrelated.join("unrelated.sav"), b"unrelated").unwrap();
+        let context = SaveActivityAnalysisContext {
+            game_name: "我是洞洞王".into(),
+            executable_stem: Some("Hole Is Mine".into()),
+            install_dir: Some(PathBuf::from(r"D:\Games\Hole Is Mine")),
+            watched_roots: vec![root.clone()],
+            excluded_roots: Vec::new(),
+        };
+
+        let reconciliation = reconcile_recent_identity_files(&context, started_at, now_unix_ms());
+        let candidates = analyze_save_activity(&reconciliation.events, &context);
+
+        assert!(!reconciliation.incomplete, "{:?}", reconciliation.errors);
+        assert!(reconciliation
+            .events
+            .iter()
+            .all(|event| !event.path.starts_with(&unrelated)));
+        let save = candidates
+            .iter()
+            .find(|candidate| candidate.directory == release)
+            .unwrap();
+        assert_eq!(
+            save.confidence,
+            savelink_core::save_activity::SaveCandidateConfidence::High
+        );
+        assert!(candidates.iter().any(|candidate| {
+            candidate.directory == analytics
+                && candidate.confidence
+                    == savelink_core::save_activity::SaveCandidateConfidence::Low
+        }));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reconciliation_refuses_generic_identity_keys() {
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-data")
+            .join(format!("savelink-reconcile-generic-{}", now_unix_ms()));
+        let save = root.join("Game").join("Save");
+        fs::create_dir_all(&save).unwrap();
+        fs::write(save.join("slot.sav"), b"save").unwrap();
+        let context = SaveActivityAnalysisContext {
+            game_name: "测试".into(),
+            executable_stem: Some("game".into()),
+            install_dir: Some(PathBuf::from(r"D:\Games\bin")),
+            watched_roots: vec![root.clone()],
+            excluded_roots: Vec::new(),
+        };
+
+        let result = reconcile_recent_identity_files(&context, now_unix_ms(), now_unix_ms());
+
+        assert!(result.events.is_empty());
+        assert!(!result.incomplete);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn collector_marks_events_over_the_limit_as_dropped() {
         let collector = EventCollector::new(1, Vec::new());
         for index in 0..2 {
@@ -1414,6 +1853,138 @@ mod tests {
 
         assert_eq!(collector.len(), 1);
         assert_eq!(collector.dropped(), 1);
+    }
+
+    #[test]
+    fn confirmation_accepts_multiple_sibling_candidates_and_completes() {
+        let root = temp_root("confirm-multiple");
+        let first = root.join("profile-a");
+        let second = root.join("profile-b");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let manager = test_manager();
+        set_confirmation_status(
+            &manager,
+            vec![
+                candidate(first.clone(), true, None),
+                candidate(second.clone(), true, None),
+            ],
+            false,
+        );
+
+        let selected = manager
+            .begin_confirmation("test-game", &[first.clone(), second.clone()])
+            .unwrap();
+
+        assert_eq!(selected.len(), 2);
+        assert!(selected
+            .iter()
+            .all(|path| !path.to_string_lossy().starts_with(r"\\?\")));
+        assert_eq!(
+            manager.status().unwrap().phase,
+            SaveDiscoveryPhase::Confirming
+        );
+        manager.complete_confirmation("test-game");
+        assert_eq!(manager.status().unwrap().phase, SaveDiscoveryPhase::Idle);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn confirmation_rejects_incomplete_results() {
+        let root = temp_root("confirm-incomplete");
+        let path = root.join("save");
+        fs::create_dir_all(&path).unwrap();
+        let manager = test_manager();
+        set_confirmation_status(&manager, vec![candidate(path.clone(), true, None)], true);
+
+        let error = manager
+            .begin_confirmation("test-game", std::slice::from_ref(&path))
+            .unwrap_err();
+
+        assert!(error.contains("结果不完整"));
+        assert_eq!(
+            manager.status().unwrap().phase,
+            SaveDiscoveryPhase::AwaitingConfirmation
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn confirmation_rejects_unknown_and_unsafe_candidates() {
+        let root = temp_root("confirm-membership");
+        let safe = root.join("safe");
+        let unsafe_path = root.join("unsafe");
+        let unknown = root.join("unknown");
+        fs::create_dir_all(&safe).unwrap();
+        fs::create_dir_all(&unsafe_path).unwrap();
+        fs::create_dir_all(&unknown).unwrap();
+        let manager = test_manager();
+        set_confirmation_status(
+            &manager,
+            vec![
+                candidate(safe, true, None),
+                candidate(unsafe_path.clone(), false, Some("范围过大")),
+            ],
+            false,
+        );
+
+        assert!(manager
+            .begin_confirmation("test-game", &[unknown])
+            .unwrap_err()
+            .contains("不属于本次监测候选"));
+        assert!(manager
+            .begin_confirmation("test-game", &[unsafe_path])
+            .unwrap_err()
+            .contains("范围不安全"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn confirmation_rejects_duplicate_and_nested_candidates() {
+        let root = temp_root("confirm-overlap");
+        let parent = root.join("save");
+        let child = parent.join("profile");
+        fs::create_dir_all(&child).unwrap();
+        let manager = test_manager();
+        set_confirmation_status(
+            &manager,
+            vec![
+                candidate(parent.clone(), true, None),
+                candidate(child.clone(), true, None),
+            ],
+            false,
+        );
+
+        assert!(manager
+            .begin_confirmation("test-game", &[parent.clone(), parent.clone()])
+            .unwrap_err()
+            .contains("重复选择"));
+        assert!(manager
+            .begin_confirmation("test-game", &[parent, child])
+            .unwrap_err()
+            .contains("相同或相互嵌套"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn aborted_confirmation_returns_to_candidate_selection() {
+        let root = temp_root("confirm-abort");
+        let path = root.join("save");
+        fs::create_dir_all(&path).unwrap();
+        let manager = test_manager();
+        set_confirmation_status(&manager, vec![candidate(path.clone(), true, None)], false);
+
+        manager
+            .begin_confirmation("test-game", std::slice::from_ref(&path))
+            .unwrap();
+        manager.abort_confirmation("test-game");
+
+        assert_eq!(
+            manager.status().unwrap().phase,
+            SaveDiscoveryPhase::AwaitingConfirmation
+        );
+        assert_eq!(manager.status().unwrap().candidates.len(), 1);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]

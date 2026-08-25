@@ -66,6 +66,22 @@ pub fn trigger(app: AppHandle) {
         });
 }
 
+/// 已有自动快照产生后，只续做云同步与保留策略，不扫描其他游戏创建快照。
+pub fn trigger_sync(app: AppHandle) {
+    let _ = std::thread::Builder::new()
+        .name("savelink-auto-sync-trigger".into())
+        .spawn(move || {
+            let state = app.state::<AppState>();
+            match sync_pending_and_prune(&state) {
+                Ok(true) => {
+                    let _ = app.emit(AUTO_BACKUP_CHANGED_EVENT, ());
+                }
+                Ok(false) => {}
+                Err(error) => eprintln!("自动云同步或快照清理失败: {error}"),
+            }
+        });
+}
+
 fn run_once_if_enabled(app: &AppHandle) -> Result<Option<AutoBackupReport>, String> {
     let state = app.state::<AppState>();
     if !enabled(&state.cloud_repo)? {

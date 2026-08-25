@@ -22,6 +22,7 @@ const ACTIVE_DISCOVERY_PHASES = new Set([
   "monitoring",
   "exit_grace_period",
   "analyzing",
+  "confirming",
 ]);
 
 function SaveLink() {
@@ -145,6 +146,30 @@ function SaveLink() {
       setDiscovery(await api.cancelSaveDiscovery());
     } catch (error) {
       toast(String(error), "err");
+    } finally {
+      setDiscoveryAction(false);
+    }
+  }
+
+  async function confirmDiscovery(savePaths: string[]) {
+    if (!selected || discoveryAction || savePaths.length === 0) return;
+    setDiscoveryAction(true);
+    try {
+      const result = await api.confirmSaveDiscoveryPaths(selected.id, savePaths);
+      if (result.first_backup === "created") {
+        toast("存档目录已设置，并已创建第一个自动快照", "ok");
+      } else if (result.first_backup === "no_change") {
+        toast("存档目录已设置；已有相同内容的快照，未重复创建", "ok");
+      } else if (result.first_backup === "disabled") {
+        toast("存档目录已设置；自动备份已关闭，未创建快照", "warn");
+      } else {
+        toast(`存档目录已设置，但首次自动备份失败：${result.backup_error ?? "未知错误"}`, "warn");
+      }
+      await refresh();
+      await api.getSaveDiscoveryStatus().then(setDiscovery).catch(() => undefined);
+    } catch (error) {
+      toast(String(error), "err");
+      await api.getSaveDiscoveryStatus().then(setDiscovery).catch(() => undefined);
     } finally {
       setDiscoveryAction(false);
     }
@@ -335,7 +360,11 @@ function SaveLink() {
             </div>
 
             {selected.configuration_state === "pending_discovery" && selectedDiscovery && selectedDiscovery.phase !== "idle" && (
-              <SaveDiscoveryPanel status={selectedDiscovery} />
+              <SaveDiscoveryPanel
+                status={selectedDiscovery}
+                busy={discoveryAction}
+                onConfirm={confirmDiscovery}
+              />
             )}
 
             <div className="section-label">时间线</div>

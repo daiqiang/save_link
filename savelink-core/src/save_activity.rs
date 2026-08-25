@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 const DEDUP_WINDOW_MS: u64 = 250;
 const MAX_CANDIDATES: usize = 50;
 const MAX_FILES_PER_CANDIDATE: usize = 20;
+const MAX_OBSERVED_FILES_PER_DIRECTORY: usize = 100;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -17,6 +18,7 @@ pub enum FileActivityKind {
     Delete,
     RenameFrom,
     RenameTo,
+    Observed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -92,7 +94,7 @@ pub fn analyze_save_activity(
     let mut sorted = events
         .iter()
         .filter(|event| !is_excluded(&event.path, &context.excluded_roots))
-        .cloned()
+        .flat_map(expand_directory_event)
         .collect::<Vec<_>>();
     sorted.sort_by(|left, right| {
         left.observed_at_unix_ms
@@ -152,12 +154,51 @@ pub fn analyze_save_activity(
         right
             .confirmable
             .cmp(&left.confirmable)
+            .then_with(|| confidence_rank(right.confidence).cmp(&confidence_rank(left.confidence)))
             .then_with(|| right.score.cmp(&left.score))
             .then_with(|| right.last_activity_unix_ms.cmp(&left.last_activity_unix_ms))
             .then_with(|| normalized_path(&left.directory).cmp(&normalized_path(&right.directory)))
     });
     candidates.truncate(MAX_CANDIDATES);
     candidates
+}
+
+fn expand_directory_event(event: &FileActivityEvent) -> Vec<FileActivityEvent> {
+    if !event.path.is_dir() {
+        return vec![event.clone()];
+    }
+
+    let Ok(entries) = std::fs::read_dir(&event.path) else {
+        return Vec::new();
+    };
+    let mut files = entries
+        .filter_map(|entry| entry.ok())
+        .filter_map(|entry| {
+            entry
+                .file_type()
+                .ok()
+                .filter(|file_type| file_type.is_file())
+                .map(|_| entry.path())
+        })
+        .collect::<Vec<_>>();
+    files.sort_by_key(|path| normalized_path(path));
+    files
+        .into_iter()
+        .take(MAX_OBSERVED_FILES_PER_DIRECTORY)
+        .map(|path| FileActivityEvent {
+            path,
+            kind: FileActivityKind::Observed,
+            observed_at_unix_ms: event.observed_at_unix_ms,
+        })
+        .collect()
+}
+
+fn confidence_rank(confidence: SaveCandidateConfidence) -> u8 {
+    match confidence {
+        SaveCandidateConfidence::High => 3,
+        SaveCandidateConfidence::Medium => 2,
+        SaveCandidateConfidence::Low => 1,
+    }
 }
 
 fn rank_group(
@@ -201,17 +242,24 @@ fn rank_group(
         score += 4;
         positive_signals.push("本次游玩修改了已有文件".into());
     }
-    if has_save_path_hint(&group.directory) {
+    let save_path_hint = has_save_path_hint(&group.directory);
+    if save_path_hint {
         score += 10;
         positive_signals.push("路径包含常见存档层级".into());
     }
-    if path_matches_game_identity(&group.directory, context) {
+    let game_identity_match = path_matches_game_identity(&group.directory, context);
+    if game_identity_match {
         score += 12;
         positive_signals.push("路径与游戏名称或程序名称相关".into());
     }
-    if has_companion_backup_pair(&group.files) {
+    let companion_backup_pair = has_companion_backup_pair(&group.files);
+    if companion_backup_pair {
         score += 8;
         positive_signals.push("同目录出现主文件和备份文件".into());
+    }
+    let has_domain_signal = save_path_hint || game_identity_match || companion_backup_pair;
+    if !has_domain_signal {
+        downgrade_reasons.push("路径与当前游戏或常见存档结构缺少直接关联".into());
     }
 
     let noisy_files = group
@@ -219,14 +267,16 @@ fn rank_group(
         .iter()
         .filter(|file| is_noisy_file(&file.path))
         .count();
-    if noisy_files == distinct_file_count && distinct_file_count > 0 {
+    let only_noisy_files = noisy_files == distinct_file_count && distinct_file_count > 0;
+    if only_noisy_files {
         score -= 18;
         downgrade_reasons.push("仅检测到日志、运行时或统计文件".into());
     } else if noisy_files > 0 {
         score -= 4;
         downgrade_reasons.push("部分变化来自日志或运行时文件".into());
     }
-    if has_noise_path_component(&group.directory) {
+    let noisy_directory = has_noise_path_component(&group.directory);
+    if noisy_directory {
         score -= 14;
         downgrade_reasons.push("路径位于缓存、日志、临时或崩溃数据目录".into());
     }
@@ -241,9 +291,11 @@ fn rank_group(
         score -= 25;
         downgrade_reasons.push(reason.clone());
     }
-    let confidence = if confirmable && score >= 30 {
+    let confidence = if !confirmable || noisy_directory || only_noisy_files || !has_domain_signal {
+        SaveCandidateConfidence::Low
+    } else if score >= 30 {
         SaveCandidateConfidence::High
-    } else if confirmable && score >= 15 {
+    } else if score >= 15 {
         SaveCandidateConfidence::Medium
     } else {
         SaveCandidateConfidence::Low
@@ -354,9 +406,12 @@ fn has_noise_path_component(path: &Path) -> bool {
             "log",
             "logs",
             "analytics",
+            "archivedevents",
             "crashpad",
+            "insights",
             "shader",
             "shaders",
+            "shadervariantanalytics",
             "sentry",
             "temp",
             "tmp",
@@ -524,6 +579,130 @@ mod tests {
             .downgrade_reasons
             .iter()
             .any(|reason| reason.contains("日志")));
+    }
+
+    #[test]
+    fn busy_game_analytics_directory_cannot_become_high_confidence() {
+        let events = (0..6)
+            .flat_map(|index| {
+                let path = format!(
+                    r"C:\Users\Tester\AppData\LocalLow\Incrementalist\Hole Is Mine\Unity\session\Analytics\ArchivedEvents\event-{index}"
+                );
+                [
+                    event(&path, FileActivityKind::Create, 1_000 + index * 100),
+                    event(&path, FileActivityKind::Modify, 1_050 + index * 100),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let candidates = analyze_save_activity(&events, &context());
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].score >= 30);
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::Low);
+        assert!(candidates[0]
+            .downgrade_reasons
+            .iter()
+            .any(|reason| reason.contains("缓存")));
+    }
+
+    #[test]
+    fn unity_insights_and_shader_analytics_are_low_confidence() {
+        let events = vec![
+            event(
+                r"C:\Users\Tester\AppData\LocalLow\Studio\Hole Is Mine\Unity\Insights\ArchivedEvents\Session\session_end_event",
+                FileActivityKind::Observed,
+                1_000,
+            ),
+            event(
+                r"C:\Users\Tester\AppData\LocalLow\Studio\Hole Is Mine\Unity\ShaderVariantAnalytics\ShaderRuntimeInfoEvent.json",
+                FileActivityKind::Observed,
+                1_100,
+            ),
+        ];
+
+        let candidates = analyze_save_activity(&events, &context());
+
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .all(|candidate| candidate.confidence == SaveCandidateConfidence::Low));
+        assert!(candidates.iter().all(|candidate| candidate
+            .downgrade_reasons
+            .iter()
+            .any(|reason| reason.contains("缓存"))));
+    }
+
+    #[test]
+    fn unrelated_busy_background_directory_is_low_confidence() {
+        let events = (0..5)
+            .flat_map(|index| {
+                let path = format!(
+                    r"C:\Users\Tester\AppData\Local\Microsoft\Edge\User Data\Default\entry-{index}.dat"
+                );
+                [
+                    event(&path, FileActivityKind::Create, 1_000 + index * 100),
+                    event(&path, FileActivityKind::Modify, 1_050 + index * 100),
+                ]
+            })
+            .collect::<Vec<_>>();
+
+        let candidates = analyze_save_activity(&events, &context());
+
+        assert_eq!(candidates.len(), 1);
+        assert!(candidates[0].score >= 30);
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::Low);
+        assert!(candidates[0]
+            .downgrade_reasons
+            .iter()
+            .any(|reason| reason.contains("缺少直接关联")));
+    }
+
+    #[test]
+    fn existing_directory_notifications_expand_to_direct_files_without_selecting_parent() {
+        let unique = format!(
+            "savelink-save-activity-directory-event-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let root = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-data")
+            .join(unique)
+            .join("Hole Is Mine");
+        let release = root.join("Save").join("Release");
+        std::fs::create_dir_all(&release).unwrap();
+        let progress = release.join("progress.hole");
+        std::fs::write(&progress, b"progress").unwrap();
+        std::fs::write(release.join("progress.hole.bac"), b"progress").unwrap();
+        let context = SaveActivityAnalysisContext {
+            game_name: "Hole Is Mine".into(),
+            executable_stem: Some("HoleIsMine".into()),
+            install_dir: None,
+            watched_roots: vec![root.clone()],
+            excluded_roots: Vec::new(),
+        };
+        let events = vec![FileActivityEvent {
+            path: release.clone(),
+            kind: FileActivityKind::Modify,
+            observed_at_unix_ms: 1_000,
+        }];
+
+        let candidates = analyze_save_activity(&events, &context);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].directory, release);
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::High);
+        assert_eq!(candidates[0].distinct_file_count, 2);
+        assert!(candidates[0]
+            .files
+            .iter()
+            .all(|file| file.kinds == vec![FileActivityKind::Observed]));
+        let _ = std::fs::remove_dir_all(root.parent().unwrap());
     }
 
     #[test]

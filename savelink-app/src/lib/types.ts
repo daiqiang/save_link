@@ -112,10 +112,11 @@ export type SaveDiscoveryPhase =
   | "exit_grace_period"
   | "analyzing"
   | "awaiting_confirmation"
+  | "confirming"
   | "failed"
   | "cancelled";
 
-export type FileActivityKind = "create" | "modify" | "delete" | "rename_from" | "rename_to";
+export type FileActivityKind = "create" | "modify" | "delete" | "rename_from" | "rename_to" | "observed";
 export type SaveCandidateConfidence = "high" | "medium" | "low";
 
 export interface ActivityFileSummary {
@@ -153,6 +154,15 @@ export interface SaveDiscoveryStatus {
   monitored_roots: string[];
   candidates: SaveDirectoryCandidate[];
   errors: string[];
+}
+
+export type FirstBackupOutcome = "disabled" | "created" | "no_change" | "failed";
+
+export interface ConfirmSaveDiscoveryPathsResult {
+  game: Game;
+  first_backup: FirstBackupOutcome;
+  snapshot: Snapshot | null;
+  backup_error: string | null;
 }
 
 export interface DesmumeGameMatch {

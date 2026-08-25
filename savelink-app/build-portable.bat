@@ -131,7 +131,7 @@ if errorlevel 1 (
   goto fail
 )
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; Compress-Archive -LiteralPath $env:PORTABLE_DIR -DestinationPath $env:ZIP_PATH -Force; $hash=(Get-FileHash -LiteralPath $env:ZIP_PATH -Algorithm SHA256).Hash; Set-Content -LiteralPath $env:HASH_PATH -Value ($hash + '  ' + [IO.Path]::GetFileName($env:ZIP_PATH)) -Encoding ascii; Write-Host ('    SHA-256: ' + $hash)"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; Compress-Archive -LiteralPath $env:PORTABLE_DIR -DestinationPath $env:ZIP_PATH -Force; $stream=[IO.File]::OpenRead($env:ZIP_PATH); try { $sha=[Security.Cryptography.SHA256]::Create(); try { $hash=[BitConverter]::ToString($sha.ComputeHash($stream)).Replace('-','') } finally { $sha.Dispose() } } finally { $stream.Dispose() }; Set-Content -LiteralPath $env:HASH_PATH -Value ($hash + '  ' + [IO.Path]::GetFileName($env:ZIP_PATH)) -Encoding ascii; Write-Host ('    SHA-256: ' + $hash)"
 if errorlevel 1 (
   echo     ERROR: failed to create the portable zip or checksum.
   goto fail

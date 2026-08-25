@@ -232,6 +232,23 @@ pub struct AutoBackupSettingsDto {
     pub interval_minutes: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FirstBackupOutcomeDto {
+    Disabled,
+    Created,
+    NoChange,
+    Failed,
+}
+
+#[derive(Serialize)]
+pub struct ConfirmSaveDiscoveryPathsDto {
+    pub game: GameDto,
+    pub first_backup: FirstBackupOutcomeDto,
+    pub snapshot: Option<SnapshotDto>,
+    pub backup_error: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct BaiduConnectionDto {
     pub connected: bool,
@@ -424,7 +441,7 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
         save_paths: g
             .save_paths
             .iter()
-            .map(|p| p.to_string_lossy().to_string())
+            .map(|path| display_path_string(path))
             .collect(),
         emulator: g
             .emulator_identity
@@ -440,7 +457,7 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
         launch_executable_path: g
             .launch_binding
             .as_ref()
-            .map(|binding| binding.executable_path.to_string_lossy().to_string()),
+            .map(|binding| display_path_string(&binding.executable_path)),
         launch_arguments: g
             .launch_binding
             .as_ref()
@@ -453,10 +470,22 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
         install_dir: g
             .launch_binding
             .as_ref()
-            .map(|binding| binding.install_dir.to_string_lossy().to_string()),
+            .map(|binding| display_path_string(&binding.install_dir)),
         snapshot_count: snaps.len(),
         last_snapshot_at: snaps.first().map(|s| s.created_at.clone()),
     }
+}
+
+fn display_path_string(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    let lowercase = value.to_ascii_lowercase();
+    if lowercase.starts_with("\\\\?\\unc\\") {
+        return format!("\\\\{}", &value[8..]);
+    }
+    if lowercase.starts_with("\\\\?\\") {
+        return value[4..].to_string();
+    }
+    value.into_owned()
 }
 
 pub(crate) fn baidu_connection_status(
@@ -612,6 +641,92 @@ pub fn stop_save_discovery(state: State<'_, AppState>) -> Result<SaveDiscoverySt
 #[tauri::command]
 pub fn cancel_save_discovery(state: State<'_, AppState>) -> Result<SaveDiscoveryStatus, String> {
     state.save_discovery.cancel()
+}
+
+#[tauri::command]
+pub fn confirm_save_discovery_paths(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    game_id: String,
+    save_paths: Vec<String>,
+) -> Result<ConfirmSaveDiscoveryPathsDto, String> {
+    let requested_paths = save_paths
+        .into_iter()
+        .map(|path| PathBuf::from(path.trim()))
+        .collect::<Vec<_>>();
+    let selected_paths = state
+        .save_discovery
+        .begin_confirmation(&game_id, &requested_paths)?;
+
+    match confirm_save_discovery_paths_inner(&state, &game_id, selected_paths) {
+        Ok(result) => {
+            state.save_discovery.complete_confirmation(&game_id);
+            if result.first_backup == FirstBackupOutcomeDto::Created {
+                auto_backup::trigger_sync(app);
+            }
+            Ok(result)
+        }
+        Err(error) => {
+            state.save_discovery.abort_confirmation(&game_id);
+            Err(error)
+        }
+    }
+}
+
+fn confirm_save_discovery_paths_inner(
+    state: &AppState,
+    game_id: &str,
+    save_paths: Vec<PathBuf>,
+) -> Result<ConfirmSaveDiscoveryPathsDto, String> {
+    let _operation = acquire_snapshot_operation_guard(state)?;
+    let mut game = state
+        .repo
+        .get_game(game_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "游戏不存在".to_string())?;
+    if game.configuration_state() != GameConfigurationState::PendingDiscovery
+        || game.emulator_identity.is_some()
+    {
+        return Err("只有尚未设置存档目录的普通 PC 游戏可以确认监测结果".into());
+    }
+    savelink_core::scan::validate_save_paths(&save_paths).map_err(|error| error.to_string())?;
+    let existing = state.repo.list_games().map_err(|error| error.to_string())?;
+    if let Some(conflict) = find_save_path_conflict(&existing, &save_paths, Some(game.id.as_str()))
+    {
+        return Err(duplicate_save_path_message(conflict));
+    }
+    let auto_backup_enabled = auto_backup::enabled(&state.cloud_repo)?;
+
+    game.save_paths = save_paths;
+    game.updated_at = state.clock.now_stamp();
+    state
+        .repo
+        .update_game(game.clone())
+        .map_err(|error| error.to_string())?;
+
+    let (first_backup, snapshot, backup_error) = if !auto_backup_enabled {
+        (FirstBackupOutcomeDto::Disabled, None, None)
+    } else {
+        match state
+            .snapshots()
+            .create_snapshot(game_id, None, Reason::Auto)
+        {
+            Ok(CreateOutcome::Created(snapshot)) => (
+                FirstBackupOutcomeDto::Created,
+                Some(snapshot_to_dto(&snapshot)),
+                None,
+            ),
+            Ok(CreateOutcome::NoChange) => (FirstBackupOutcomeDto::NoChange, None, None),
+            Err(error) => (FirstBackupOutcomeDto::Failed, None, Some(error.to_string())),
+        }
+    };
+
+    Ok(ConfirmSaveDiscoveryPathsDto {
+        game: game_to_dto(&state.repo, &game),
+        first_backup,
+        snapshot,
+        backup_error,
+    })
 }
 
 #[tauri::command]
@@ -1934,6 +2049,18 @@ mod duplicate_game_tests {
     }
 
     #[test]
+    fn display_path_string_removes_windows_verbatim_prefix() {
+        assert_eq!(
+            display_path_string(Path::new(r"\\?\C:\Games\Arcane\game.exe")),
+            r"C:\Games\Arcane\game.exe"
+        );
+        assert_eq!(
+            display_path_string(Path::new(r"\\?\UNC\server\share\save")),
+            r"\\server\share\save"
+        );
+    }
+
+    #[test]
     fn steam_app_id_is_the_launch_binding_identity() {
         let existing = vec![game(
             "Elden Ring",
@@ -2025,5 +2152,189 @@ mod duplicate_game_tests {
             .map(|game| game.name.as_str()),
             Some("Elden Ring")
         );
+    }
+}
+
+#[cfg(test)]
+mod save_discovery_confirmation_tests {
+    use super::*;
+    use std::fs;
+
+    fn temp_root(name: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "savelink-confirm-command-{name}-{}-{nanos}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        root
+    }
+
+    fn pending_game(id: &str, root: &Path) -> Game {
+        Game {
+            id: id.into(),
+            name: "Discovery Game".into(),
+            icon: None,
+            repo_path: PathBuf::new(),
+            save_paths: Vec::new(),
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
+            launch_binding: Some(GameLaunchBinding::executable(
+                root.join("game.exe"),
+                root.to_path_buf(),
+            )),
+            created_at: "2026-08-25T00:00:00Z".into(),
+            updated_at: "2026-08-25T00:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn confirmed_paths_create_the_first_auto_backup() {
+        let root = temp_root("created");
+        let save = root.join("save");
+        fs::create_dir_all(&save).unwrap();
+        fs::write(save.join("slot.dat"), b"v1").unwrap();
+        let state = AppState::init(&root.join("data")).unwrap();
+        state
+            .repo
+            .insert_game(pending_game("game-created", &root))
+            .unwrap();
+
+        let result =
+            confirm_save_discovery_paths_inner(&state, "game-created", vec![save.clone()]).unwrap();
+
+        assert_eq!(result.first_backup, FirstBackupOutcomeDto::Created);
+        assert_eq!(
+            result
+                .snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.reason.as_str()),
+            Some("auto")
+        );
+        assert_eq!(result.game.configuration_state, "configured");
+        assert_eq!(state.repo.list_snapshots("game-created").unwrap().len(), 1);
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn disabled_auto_backup_saves_paths_without_a_snapshot() {
+        let root = temp_root("disabled");
+        let save = root.join("save");
+        fs::create_dir_all(&save).unwrap();
+        let state = AppState::init(&root.join("data")).unwrap();
+        auto_backup::set_enabled(&state.cloud_repo, false).unwrap();
+        state
+            .repo
+            .insert_game(pending_game("game-disabled", &root))
+            .unwrap();
+
+        let result =
+            confirm_save_discovery_paths_inner(&state, "game-disabled", vec![save]).unwrap();
+
+        assert_eq!(result.first_backup, FirstBackupOutcomeDto::Disabled);
+        assert!(result.snapshot.is_none());
+        assert!(state
+            .repo
+            .list_snapshots("game-disabled")
+            .unwrap()
+            .is_empty());
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn unchanged_first_backup_is_reported_without_a_duplicate() {
+        let root = temp_root("no-change");
+        let save = root.join("save");
+        fs::create_dir_all(&save).unwrap();
+        fs::write(save.join("slot.dat"), b"same").unwrap();
+        let state = AppState::init(&root.join("data")).unwrap();
+        let mut game = pending_game("game-no-change", &root);
+        game.save_paths = vec![save.clone()];
+        state.repo.insert_game(game.clone()).unwrap();
+        state
+            .snapshots()
+            .create_snapshot(&game.id, None, Reason::Auto)
+            .unwrap();
+        game.save_paths.clear();
+        state.repo.update_game(game).unwrap();
+
+        let result =
+            confirm_save_discovery_paths_inner(&state, "game-no-change", vec![save]).unwrap();
+
+        assert_eq!(result.first_backup, FirstBackupOutcomeDto::NoChange);
+        assert!(result.snapshot.is_none());
+        assert_eq!(
+            state.repo.list_snapshots("game-no-change").unwrap().len(),
+            1
+        );
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_backup_failure_keeps_the_confirmed_paths() {
+        let root = temp_root("failed");
+        let missing = root.join("removed-after-validation");
+        let state = AppState::init(&root.join("data")).unwrap();
+        state
+            .repo
+            .insert_game(pending_game("game-failed", &root))
+            .unwrap();
+
+        let result =
+            confirm_save_discovery_paths_inner(&state, "game-failed", vec![missing.clone()])
+                .unwrap();
+
+        assert_eq!(result.first_backup, FirstBackupOutcomeDto::Failed);
+        assert!(result.backup_error.is_some());
+        assert_eq!(
+            state
+                .repo
+                .get_game("game-failed")
+                .unwrap()
+                .unwrap()
+                .save_paths,
+            vec![missing]
+        );
+        drop(state);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cross_game_path_conflict_does_not_modify_the_pending_game() {
+        let root = temp_root("conflict");
+        let save = root.join("save");
+        let child = save.join("profile");
+        fs::create_dir_all(&child).unwrap();
+        let state = AppState::init(&root.join("data")).unwrap();
+        let mut existing = pending_game("existing", &root);
+        existing.name = "Existing Game".into();
+        existing.save_paths = vec![save];
+        state.repo.insert_game(existing).unwrap();
+        state
+            .repo
+            .insert_game(pending_game("pending", &root))
+            .unwrap();
+
+        let error = confirm_save_discovery_paths_inner(&state, "pending", vec![child])
+            .err()
+            .expect("父子目录冲突应被拒绝");
+
+        assert!(error.contains("Existing Game"));
+        assert!(state
+            .repo
+            .get_game("pending")
+            .unwrap()
+            .unwrap()
+            .save_paths
+            .is_empty());
+        drop(state);
+        let _ = fs::remove_dir_all(root);
     }
 }

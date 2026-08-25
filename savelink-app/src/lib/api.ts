@@ -12,6 +12,7 @@ import type {
   CloudUploadResult,
   CloudReceiveResult,
   CloudSnapshot,
+  ConfirmSaveDiscoveryPathsResult,
   DesmumeDiscoveryReport,
   Game,
   ProgramDiscoveryReport,
@@ -132,6 +133,16 @@ export async function stopSaveDiscovery(): Promise<SaveDiscoveryStatus> {
 
 export async function cancelSaveDiscovery(): Promise<SaveDiscoveryStatus> {
   return invoke<SaveDiscoveryStatus>("cancel_save_discovery");
+}
+
+export async function confirmSaveDiscoveryPaths(
+  gameId: string,
+  savePaths: string[],
+): Promise<ConfirmSaveDiscoveryPathsResult> {
+  return invoke<ConfirmSaveDiscoveryPathsResult>("confirm_save_discovery_paths", {
+    gameId,
+    savePaths,
+  });
 }
 
 export async function addProgramGame(

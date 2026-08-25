@@ -228,7 +228,11 @@ button {
   min-width: 0; padding: 12px 13px; border: 1px solid var(--color-border);
   border-radius: var(--radius); background: var(--color-surface);
 }
+.discovery-candidate.selected { border-color: var(--color-accent); box-shadow: inset 3px 0 var(--color-accent); }
 .discovery-candidate-head { display: flex; align-items: center; gap: 10px; }
+.discovery-candidate-head.selectable { cursor: pointer; }
+.discovery-candidate-head.disabled { cursor: default; }
+.discovery-candidate-head input { width: 16px; height: 16px; margin: 0; flex: none; accent-color: var(--color-accent); }
 .discovery-candidate-path { min-width: 0; flex: 1; display: flex; align-items: center; gap: 7px; }
 .discovery-candidate-path svg { flex: none; color: var(--color-text-3); }
 .discovery-candidate-path span {
@@ -247,6 +251,13 @@ button {
 }
 .discovery-candidate-details[open] summary { margin-bottom: 2px; }
 .discovery-candidate-details .discovery-signals { margin-top: 6px; }
+.discovery-low-confidence-group {
+  border-top: 1px solid var(--color-border); padding-top: 8px;
+}
+.discovery-low-confidence-group > summary {
+  width: max-content; color: var(--color-text-2); font-size: 12.5px; font-weight: 600; cursor: pointer;
+}
+.discovery-low-confidence-list { display: flex; flex-direction: column; gap: 9px; margin-top: 9px; }
 .discovery-signals { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
 .discovery-signals span { padding: 2px 6px; border-radius: 4px; font-size: 10.5px; }
 .discovery-signals .positive { color: #167143; background: #edf8f1; }
@@ -256,6 +267,11 @@ button {
 .discovery-file + .discovery-file { border-top: 1px solid #f0f1f3; }
 .discovery-file-path { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: ui-monospace, Menlo, Consolas, monospace; color: var(--color-text-2); }
 .discovery-file > span:last-child { color: var(--color-text-3); white-space: nowrap; }
+.discovery-confirm-actions {
+  min-height: 48px; display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding-top: 10px; border-top: 1px solid var(--color-border);
+}
+.discovery-confirm-actions > span { color: var(--color-text-3); font-size: 12px; }
 
 .section-label {
   font-size: 12px; font-weight: 600; color: var(--color-text-3);

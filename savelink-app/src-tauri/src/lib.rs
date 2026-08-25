@@ -44,6 +44,7 @@ pub fn run() {
             commands::start_save_discovery,
             commands::stop_save_discovery,
             commands::cancel_save_discovery,
+            commands::confirm_save_discovery_paths,
             commands::get_repository_path,
             commands::get_app_info,
             commands::get_auto_backup_settings,
