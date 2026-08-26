@@ -4,6 +4,7 @@
 
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
+| 1.2 | Codex | 2026-08-26 | 根据《暗黑地牢》RUNE 学习版真实样本，补充 RUNE/CODEX 根目录监听及数字 AppId 游戏级容器归并，RUNE 真实复验通过 |
 | 1.1 | Codex | 2026-08-25 | 完成普通 EXE/Steam 启动绑定、跨添加方式防重、旧真实游戏数据修复，以及阶段 3 至阶段 5 的原生监听、候选分析、受限补查、候选确认、首次自动备份接管和真实游戏验收 |
 | 1.0 | Codex | 2026-08-24 | 确定产品流程、状态机和数据边界，完成阶段 1 Windows 技术验证及阶段 2 待配置游戏模型、迁移、接口、界面和安全回归 |
 
@@ -241,8 +242,11 @@ SQLite `games` 表增加一个可空 JSON 字段或两个可空路径字段。�
 4. `%APPDATA%`。
 5. 当前用户 Documents。
 6. 当前用户 Saved Games。
+7. 公共文档下实际存在的已知 Steam 模拟器数据根目录，第一批为 `Steam\RUNE` 和 `Steam\CODEX`。
 
 Documents 和 Saved Games 应优先通过 Windows Known Folder API 获取，不依赖固定英文目录名。
+
+公共文档同样通过 Windows Known Folder API 定位。只监听实际存在的模拟器根目录并递归覆盖其 AppID 子目录，不监听整个 Public Documents，也不依赖先找到或解析游戏目录中的模拟器配置。对 `RUNE`/`CODEX` 两个已知根，紧跟的纯数字目录是游戏 AppId 容器；子树内任何变化都归并为整个 `<AppId>` 候选。`%APPDATA%` 已经覆盖 Goldberg、FLT 等位于 Roaming 下的数据，不重复建立嵌套监听器。
 
 必须排除 SaveLink 自己的数据目录和快照仓库，避免自动备份或云同步事件反过来污染发现结果。
 
@@ -481,6 +485,7 @@ cancel_save_discovery
 - 候选结果在本阶段只读，不写入 SQLite、不创建快照、不启动自动备份；低可信候选默认折叠，高中可信候选展示评分依据和变化文件。
 - 2026-08-25 自动验证：`savelink-core` 121 项通过、3 项环境型测试忽略；Tauri 16 项通过；`npm.cmd run build` 通过；本次涉及的 Rust 文件独立 `rustfmt --check` 通过。Tauri 全目标严格 Clippy 零告警；核心库排除 7 类既有历史告警后全目标通过，本阶段新增分析器未增加 Clippy 告警。
 - 2026-08-25 隔离窗口回归：假游戏产生 `.hole` 和 `.hole.bac` 后，真实存档目录稳定排名第一；正常退出经过 5 秒宽限期自动分析；关闭主窗口到托盘期间监测继续，第二实例请求唤起窗口后结果仍在；取消监测会清空 PID 和候选；未绑定候选、未创建快照、未改写游戏记录；SaveLink 自身 WebView 活动不再进入候选。
+- 2026-08-26 《暗黑地牢》RUNE 学习版暴露公共文档根目录未被监听：真实文件在 `Public Documents\Steam\RUNE\262060` 下连续变化，但候选中完全缺失。实现已改为条件性监听现有 `RUNE`/`CODEX` 根目录，并将数字 AppId 下的不同直接父目录事件归并为一个游戏级候选。RUNE 真实样本中 `filemappings.ini` 在 `remote` 外也随进度变化，所以不得将保护边界缩小为 `remote`。RUNE/CODEX、不同 AppId 隔离及未知模拟器不误归并均已有自动回归。随后用户使用新绿色版真实游玩并退出，界面只推荐 `C:\Users\Public\Documents\Steam\RUNE\262060`，未出现子目录并列推荐，RUNE 真实复验通过（未留截图）。
 
 ### 阶段 4：确认目录与自动备份接管（已完成，2026-08-25）
 
@@ -580,6 +585,8 @@ cancel_save_discovery
 
 - `Hole Is Mine` 的 `GameProgress.hole`、`Achievements.hole`、`Settings.hole` 所在目录进入高可信候选。
 - `Player.log`、Unity Analytics、Shader 缓存和 GSE `playtime.txt` 被正确降权。
+- RUNE/CODEX 标准根目录下的 `<纯数字 AppId>` 是游戏级候选；`remote`/`profile_*`/`backup` 变化必须归并到 AppId 容器，不得作为并列推荐项。
+- 未知模拟器或一般路径下父子目录同时高可信时，仍全部展示并由用户二选一，不套用 AppId 特殊归并。
 - 用户可以看见推荐依据，并能拒绝所有候选后重新监测。
 
 ## 不在第一版范围
@@ -595,6 +602,6 @@ cancel_save_discovery
 
 ## 下一步
 
-阶段 1 至阶段 5 已完成，`Hole Is Mine` 的真实动态发现、人工确认和首份自动快照闭环已通过。项目级状态文档、交接、架构、功能状态和手动测试计划已经同步；最终 NSIS、MSI 和绿色版已重新生成，隔离 profile 启动、关闭到托盘、单实例恢复窗口和退出清理回归通过。
+阶段 1 至阶段 5 已完成，`Hole Is Mine` 的真实动态发现、人工确认和首份自动快照闭环已通过。《暗黑地牢》RUNE 样本暴露的公共文档监测缺口已完成代码修复、自动回归和真实游戏复验，所有子树变化最终只推荐 `Public Documents\Steam\RUNE\262060`。后续仅待有 CODEX 真实样本时复验相同标准布局。
 
 下一步由用户决定是否提交本阶段基线。其他学习版样本用于后续扩大兼容覆盖；始终不对真实游戏存档执行自动确认或未经用户授权的恢复。

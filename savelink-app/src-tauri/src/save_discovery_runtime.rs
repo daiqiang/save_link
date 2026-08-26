@@ -23,6 +23,7 @@ const IDENTITY_SEARCH_MAX_DEPTH: usize = 4;
 const IDENTITY_SEARCH_MAX_DIRECTORIES: usize = 20_000;
 const IDENTITY_SUBTREE_MAX_DIRECTORIES: usize = 10_000;
 const RECONCILIATION_EVENT_LIMIT: usize = 2_000;
+const PUBLIC_STEAM_EMULATOR_DIRECTORIES: [&str; 2] = ["RUNE", "CODEX"];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -242,6 +243,7 @@ impl SaveDiscoveryManager {
         if roots.is_empty() {
             return Err("没有可用的存档活动监测目录".into());
         }
+        let emulator_roots = monitored_emulator_roots(&roots);
         replace_status(
             &self.status,
             &emitter,
@@ -307,6 +309,7 @@ impl SaveDiscoveryManager {
                 .map(|value| value.to_string_lossy().into_owned()),
             install_dir: Some(request.launch_binding.install_dir),
             watched_roots: roots,
+            known_emulator_roots: emulator_roots,
             excluded_roots: vec![
                 request.data_dir,
                 request.app_local_data_dir,
@@ -777,6 +780,7 @@ fn discovery_roots(binding: &GameLaunchBinding) -> Result<Vec<PathBuf>, String> 
         candidates.push(app_data);
     }
     candidates.extend(known_save_folders());
+    candidates.extend(known_emulator_roots());
 
     let mut roots: Vec<PathBuf> = Vec::new();
     for candidate in candidates {
@@ -799,6 +803,30 @@ fn discovery_roots(binding: &GameLaunchBinding) -> Result<Vec<PathBuf>, String> 
         return Err("游戏安装目录不可用于活动监测".into());
     }
     Ok(roots)
+}
+
+fn public_steam_emulator_root_candidates(public_documents: &Path) -> Vec<PathBuf> {
+    let steam = public_documents.join("Steam");
+    PUBLIC_STEAM_EMULATOR_DIRECTORIES
+        .into_iter()
+        .map(|directory| steam.join(directory))
+        .collect()
+}
+
+fn monitored_emulator_roots(roots: &[PathBuf]) -> Vec<PathBuf> {
+    retain_monitored_emulator_roots(roots, &known_emulator_roots())
+}
+
+fn retain_monitored_emulator_roots(roots: &[PathBuf], known: &[PathBuf]) -> Vec<PathBuf> {
+    let known = known
+        .iter()
+        .map(|root| normalized_path(root))
+        .collect::<BTreeSet<_>>();
+    roots
+        .iter()
+        .filter(|root| known.contains(&normalized_path(root)))
+        .cloned()
+        .collect()
 }
 
 fn env_absolute_path(name: &str) -> Option<PathBuf> {
@@ -1163,7 +1191,8 @@ mod windows_native {
             IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED},
         },
         UI::Shell::{
-            FOLDERID_Documents, FOLDERID_SavedGames, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+            FOLDERID_Documents, FOLDERID_PublicDocuments, FOLDERID_SavedGames,
+            SHGetKnownFolderPath, KF_FLAG_DEFAULT,
         },
     };
 
@@ -1571,6 +1600,13 @@ mod windows_native {
             .collect()
     }
 
+    pub(super) fn known_emulator_roots() -> Vec<PathBuf> {
+        known_folder(FOLDERID_PublicDocuments)
+            .into_iter()
+            .flat_map(|documents| public_steam_emulator_root_candidates(&documents))
+            .collect()
+    }
+
     fn known_folder(folder_id: windows_sys::core::GUID) -> Option<PathBuf> {
         unsafe {
             let mut path_ptr = ptr::null_mut();
@@ -1600,7 +1636,7 @@ mod windows_native {
 }
 
 #[cfg(windows)]
-use windows_native::{known_save_folders, NativeWatchSession};
+use windows_native::{known_emulator_roots, known_save_folders, NativeWatchSession};
 
 #[cfg(not(windows))]
 struct NativeWatchSession;
@@ -1621,6 +1657,11 @@ impl NativeWatchSession {
 
 #[cfg(not(windows))]
 fn known_save_folders() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+#[cfg(not(windows))]
+fn known_emulator_roots() -> Vec<PathBuf> {
     Vec::new()
 }
 
@@ -1758,6 +1799,79 @@ mod tests {
     }
 
     #[test]
+    fn public_steam_emulator_roots_are_narrow_and_group_specific() {
+        let public_documents = PathBuf::from(r"C:\Users\Public\Documents");
+        let known = public_steam_emulator_root_candidates(&public_documents);
+        assert_eq!(
+            known,
+            vec![
+                public_documents.join("Steam").join("RUNE"),
+                public_documents.join("Steam").join("CODEX"),
+            ]
+        );
+
+        let ordinary_rune = PathBuf::from(r"D:\Games\Steam\RUNE");
+        let monitored = vec![
+            PathBuf::from(r"C:\Users\Tester\AppData\LocalLow"),
+            known[0].clone(),
+            ordinary_rune,
+        ];
+        assert_eq!(
+            retain_monitored_emulator_roots(&monitored, &known),
+            vec![known[0].clone()]
+        );
+    }
+
+    #[test]
+    fn native_watcher_captures_activity_in_emulator_app_subtree() {
+        let temp = std::env::current_dir()
+            .unwrap()
+            .join("target")
+            .join("test-data")
+            .join(format!("savelink-emulator-subtree-{}", now_unix_ms()));
+        let root = temp.join("Steam").join("RUNE");
+        fs::create_dir_all(&root).unwrap();
+        let collector = Arc::new(EventCollector::new(100, Vec::new()));
+        let health = Arc::new(WatchHealth::default());
+        let session = NativeWatchSession::start(
+            std::slice::from_ref(&root),
+            collector.clone(),
+            health.clone(),
+            16 * 1024,
+        )
+        .unwrap();
+        let save = root
+            .join("262060")
+            .join("remote")
+            .join("profile_0")
+            .join("persist.game.json");
+        fs::create_dir_all(save.parent().unwrap()).unwrap();
+        fs::write(&save, b"progress").unwrap();
+        thread::sleep(Duration::from_millis(250));
+        session.stop();
+
+        let events = collector.events();
+        assert!(events.iter().any(|event| event.path == save));
+        assert!(!health.is_incomplete());
+        let context = SaveActivityAnalysisContext {
+            game_name: "Darkest Dungeon".into(),
+            executable_stem: Some("Darkest".into()),
+            install_dir: None,
+            watched_roots: vec![root.clone()],
+            known_emulator_roots: vec![root.clone()],
+            excluded_roots: Vec::new(),
+        };
+        let candidates = analyze_save_activity(&events, &context);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].directory, root.join("262060"));
+        assert_eq!(
+            candidates[0].confidence,
+            savelink_core::save_activity::SaveCandidateConfidence::High
+        );
+        let _ = fs::remove_dir_all(temp);
+    }
+
+    #[test]
     fn reconciliation_recovers_recent_identity_files_and_preserves_noise_ranking() {
         let root = std::env::current_dir()
             .unwrap()
@@ -1788,6 +1902,7 @@ mod tests {
             executable_stem: Some("Hole Is Mine".into()),
             install_dir: Some(PathBuf::from(r"D:\Games\Hole Is Mine")),
             watched_roots: vec![root.clone()],
+            known_emulator_roots: Vec::new(),
             excluded_roots: Vec::new(),
         };
 
@@ -1830,6 +1945,7 @@ mod tests {
             executable_stem: Some("game".into()),
             install_dir: Some(PathBuf::from(r"D:\Games\bin")),
             watched_roots: vec![root.clone()],
+            known_emulator_roots: Vec::new(),
             excluded_roots: Vec::new(),
         };
 

@@ -34,6 +34,7 @@ pub struct SaveActivityAnalysisContext {
     pub executable_stem: Option<String>,
     pub install_dir: Option<PathBuf>,
     pub watched_roots: Vec<PathBuf>,
+    pub known_emulator_roots: Vec<PathBuf>,
     pub excluded_roots: Vec<PathBuf>,
 }
 
@@ -135,7 +136,8 @@ pub fn analyze_save_activity(
         else {
             continue;
         };
-        let directory = parent.to_path_buf();
+        let directory = known_emulator_app_container(&file.path, context)
+            .unwrap_or_else(|| parent.to_path_buf());
         groups
             .entry(normalized_path(&directory))
             .or_insert_with(|| CandidateGroup {
@@ -252,12 +254,19 @@ fn rank_group(
         score += 12;
         positive_signals.push("路径与游戏名称或程序名称相关".into());
     }
+    let known_emulator_container = known_emulator_app_container(&group.directory, context)
+        .is_some_and(|container| normalized_path(&container) == normalized_path(&group.directory));
+    if known_emulator_container {
+        score += 24;
+        positive_signals.push("路径是已知 Steam 模拟器的游戏级数据目录".into());
+    }
     let companion_backup_pair = has_companion_backup_pair(&group.files);
     if companion_backup_pair {
         score += 8;
         positive_signals.push("同目录出现主文件和备份文件".into());
     }
-    let has_domain_signal = save_path_hint || game_identity_match || companion_backup_pair;
+    let has_domain_signal =
+        save_path_hint || game_identity_match || known_emulator_container || companion_backup_pair;
     if !has_domain_signal {
         downgrade_reasons.push("路径与当前游戏或常见存档结构缺少直接关联".into());
     }
@@ -334,6 +343,28 @@ fn is_excluded(path: &Path, excluded_roots: &[PathBuf]) -> bool {
         .any(|root| path_is_same_or_descendant(root, path))
 }
 
+fn known_emulator_app_container(
+    path: &Path,
+    context: &SaveActivityAnalysisContext,
+) -> Option<PathBuf> {
+    context.known_emulator_roots.iter().find_map(|root| {
+        if !path_is_same_or_descendant(root, path) {
+            return None;
+        }
+
+        let root_key = normalized_path(root);
+        let path_key = normalized_path(path);
+        let relative = path_key
+            .strip_prefix(&root_key)
+            .map(|value| value.trim_start_matches('\\'))?;
+        let app_id = relative.split('\\').next()?;
+        if app_id.is_empty() || !app_id.chars().all(|character| character.is_ascii_digit()) {
+            return None;
+        }
+        Some(root.join(app_id))
+    })
+}
+
 fn unsafe_candidate_reason(
     directory: &Path,
     context: &SaveActivityAnalysisContext,
@@ -376,7 +407,7 @@ fn compact_identity(value: &str) -> String {
 fn has_save_path_hint(path: &Path) -> bool {
     path.components().any(|component| {
         let value = component.as_os_str().to_string_lossy().to_ascii_lowercase();
-        [
+        let exact_match = [
             "save",
             "saves",
             "saved",
@@ -389,7 +420,14 @@ fn has_save_path_hint(path: &Path) -> bool {
             "slots",
             "release",
         ]
-        .contains(&value.as_str())
+        .contains(&value.as_str());
+        exact_match || has_numbered_path_prefix(&value, "profile_")
+    })
+}
+
+fn has_numbered_path_prefix(value: &str, prefix: &str) -> bool {
+    value.strip_prefix(prefix).is_some_and(|suffix| {
+        !suffix.is_empty() && suffix.chars().all(|character| character.is_ascii_digit())
     })
 }
 
@@ -492,6 +530,7 @@ mod tests {
             executable_stem: Some("HoleIsMine".into()),
             install_dir: Some(PathBuf::from(r"C:\Games\Hole Is Mine")),
             watched_roots: vec![PathBuf::from(r"C:\Users\Tester\AppData\LocalLow")],
+            known_emulator_roots: Vec::new(),
             excluded_roots: vec![PathBuf::from(r"C:\SaveLink")],
         }
     }
@@ -659,6 +698,149 @@ mod tests {
     }
 
     #[test]
+    fn numbered_profile_directory_is_a_save_structure_signal() {
+        let events = vec![
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\262060\remote\profile_0\persist.game.json",
+                FileActivityKind::Modify,
+                1_000,
+            ),
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\262060\remote\profile_0\persist.roster.json",
+                FileActivityKind::Modify,
+                1_100,
+            ),
+        ];
+
+        let candidates = analyze_save_activity(&events, &context());
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::High);
+        assert!(candidates[0]
+            .positive_signals
+            .iter()
+            .any(|signal| signal.contains("常见存档层级")));
+        assert!(!candidates[0]
+            .downgrade_reasons
+            .iter()
+            .any(|reason| reason.contains("缺少直接关联")));
+    }
+
+    #[test]
+    fn rune_activity_is_aggregated_to_the_numeric_app_container() {
+        let root = PathBuf::from(r"C:\Users\Public\Documents\Steam\RUNE");
+        let mut context = context();
+        context.watched_roots = vec![root.clone()];
+        context.known_emulator_roots = vec![root.clone()];
+        let events = vec![
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\262060\filemappings.ini",
+                FileActivityKind::Modify,
+                1_000,
+            ),
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\262060\remote\profile_0\persist.game.json",
+                FileActivityKind::Modify,
+                1_100,
+            ),
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\262060\remote\profile_0\backup\persist.game.json",
+                FileActivityKind::Create,
+                1_200,
+            ),
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\262060\remote\profile_9\persist.game.json",
+                FileActivityKind::Modify,
+                1_300,
+            ),
+        ];
+
+        let candidates = analyze_save_activity(&events, &context);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].directory, root.join("262060"));
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::High);
+        assert_eq!(candidates[0].distinct_file_count, 4);
+        assert!(candidates[0]
+            .positive_signals
+            .iter()
+            .any(|signal| signal.contains("游戏级数据目录")));
+    }
+
+    #[test]
+    fn codex_activity_uses_the_same_numeric_app_container_boundary() {
+        let root = PathBuf::from(r"C:\Users\Public\Documents\Steam\CODEX");
+        let mut context = context();
+        context.watched_roots = vec![root.clone()];
+        context.known_emulator_roots = vec![root.clone()];
+        let events = vec![event(
+            r"C:\Users\Public\Documents\Steam\CODEX\4508020\remote\slot_1.sav",
+            FileActivityKind::Modify,
+            1_000,
+        )];
+
+        let candidates = analyze_save_activity(&events, &context);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].directory, root.join("4508020"));
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::High);
+        assert!(candidates[0]
+            .positive_signals
+            .iter()
+            .any(|signal| signal.contains("游戏级数据目录")));
+    }
+
+    #[test]
+    fn unregistered_rune_named_roots_keep_generic_direct_parent_candidates() {
+        let root = PathBuf::from(r"D:\Games\Steam\RUNE");
+        let mut context = context();
+        context.watched_roots = vec![root];
+        let events = vec![event(
+            r"D:\Games\Steam\RUNE\262060\remote\profile_0\persist.game.json",
+            FileActivityKind::Modify,
+            1_000,
+        )];
+
+        let candidates = analyze_save_activity(&events, &context);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(
+            candidates[0].directory,
+            PathBuf::from(r"D:\Games\Steam\RUNE\262060\remote\profile_0")
+        );
+    }
+
+    #[test]
+    fn separate_emulator_app_ids_remain_separate_candidates() {
+        let root = PathBuf::from(r"C:\Users\Public\Documents\Steam\RUNE");
+        let mut context = context();
+        context.watched_roots = vec![root.clone()];
+        context.known_emulator_roots = vec![root.clone()];
+        let events = vec![
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\262060\remote\profile_0\persist.game.json",
+                FileActivityKind::Modify,
+                1_000,
+            ),
+            event(
+                r"C:\Users\Public\Documents\Steam\RUNE\4508020\remote\slot.sav",
+                FileActivityKind::Modify,
+                1_100,
+            ),
+        ];
+
+        let candidates = analyze_save_activity(&events, &context);
+
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.directory == root.join("262060")));
+        assert!(candidates
+            .iter()
+            .any(|candidate| candidate.directory == root.join("4508020")));
+    }
+
+    #[test]
     fn existing_directory_notifications_expand_to_direct_files_without_selecting_parent() {
         let unique = format!(
             "savelink-save-activity-directory-event-{}-{}",
@@ -684,6 +866,7 @@ mod tests {
             executable_stem: Some("HoleIsMine".into()),
             install_dir: None,
             watched_roots: vec![root.clone()],
+            known_emulator_roots: Vec::new(),
             excluded_roots: Vec::new(),
         };
         let events = vec![FileActivityEvent {
