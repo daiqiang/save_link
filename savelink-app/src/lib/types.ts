@@ -95,6 +95,7 @@ export interface ProgramDiscoveryReport {
   install_dir: string;
   detected_app_id: number | null;
   app_id_source: string | null;
+  ignored_app_id_game_names: string[];
   identity_hints: string[];
   suggested_name: string;
   program_already_added: boolean;

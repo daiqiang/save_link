@@ -177,6 +177,7 @@ fn n6_program_executable_uses_nearby_app_id_for_exact_manifest_match() {
     assert_eq!(report.resolved_program_path, Some(executable));
     assert_eq!(report.install_dir, game_root);
     assert_eq!(report.detected_app_id, Some(2778580));
+    assert!(report.ignored_app_id_game_names.is_empty());
     assert_eq!(report.games.len(), 1);
     assert_eq!(report.games[0].name, "Elden Ring");
     assert_eq!(report.games[0].match_kind, ProgramMatchKind::AppId);
@@ -208,7 +209,7 @@ fn n7_program_name_is_a_conservative_fallback_when_app_id_is_missing() {
 #[test]
 fn n8_program_directory_reads_app_id_from_common_ini_format() {
     let temp = TempDir::new();
-    let game_root = temp.child("ExtraGame");
+    let game_root = temp.child("Extra ID Game");
     fs::create_dir_all(game_root.join("userdata")).unwrap();
     fs::write(
         game_root.join("ColdClientLoader.ini"),
@@ -224,6 +225,7 @@ fn n8_program_directory_reads_app_id_from_common_ini_format() {
 
     assert_eq!(report.selection_kind, ProgramSelectionKind::Directory);
     assert_eq!(report.detected_app_id, Some(900001));
+    assert!(report.ignored_app_id_game_names.is_empty());
     assert_eq!(report.games.len(), 1);
     assert_eq!(report.games[0].match_kind, ProgramMatchKind::AppId);
     assert_eq!(report.games[0].save_paths, vec![game_root.join("userdata")]);
@@ -301,6 +303,51 @@ fn n12_program_name_does_not_match_an_unrelated_prefix() {
 
     assert_eq!(report.detected_app_id, None);
     assert!(report.games.is_empty());
+}
+
+#[test]
+fn n13_unrelated_nearby_app_id_is_ignored_for_program_identity() {
+    let temp = TempDir::new();
+    let game_root = temp.child("HowManyDudes");
+    let executable = game_root.join("HowManyDudes.exe");
+    fs::create_dir_all(&game_root).unwrap();
+    fs::write(&executable, b"not-a-real-exe").unwrap();
+    fs::write(game_root.join("steam_appid.txt"), b"2778580").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&executable)
+        .unwrap();
+
+    assert_eq!(report.detected_app_id, Some(2778580));
+    assert_eq!(report.ignored_app_id_game_names, vec!["Elden Ring"]);
+    assert_eq!(report.identity_hints.first().unwrap(), "HowManyDudes");
+    assert!(report.games.is_empty());
+}
+
+#[test]
+fn n14_unrelated_app_id_falls_back_to_an_exact_program_name() {
+    let temp = TempDir::new();
+    let game_root = temp.child("SlayTheSpire");
+    let executable = game_root.join("SlayTheSpire.exe");
+    fs::create_dir_all(game_root.join("saves")).unwrap();
+    fs::write(&executable, b"not-a-real-exe").unwrap();
+    fs::write(game_root.join("steam_appid.txt"), b"2778580").unwrap();
+    fs::write(game_root.join("saves/slot.dat"), b"save").unwrap();
+
+    let database = temp.path().join("manifest.db");
+    build_manifest_database(&database);
+    let report = ProgramDiscoveryService::new(&database)
+        .scan(&executable)
+        .unwrap();
+
+    assert_eq!(report.detected_app_id, Some(2778580));
+    assert_eq!(report.ignored_app_id_game_names, vec!["Elden Ring"]);
+    assert_eq!(report.games.len(), 1);
+    assert_eq!(report.games[0].name, "Slay the Spire");
+    assert_eq!(report.games[0].match_kind, ProgramMatchKind::Name);
+    assert_eq!(report.games[0].save_paths, vec![game_root.join("saves")]);
 }
 
 #[cfg(windows)]

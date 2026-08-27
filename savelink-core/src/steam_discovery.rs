@@ -466,15 +466,16 @@ fn query_primary_steam_app_id(
 }
 
 fn identity_match_score(game_name: &str, hint: &str) -> u8 {
-    let game = compact_identity(game_name);
-    let hint = compact_identity(hint);
-    if game.is_empty() || hint.is_empty() {
-        return 0;
-    }
-    if game == hint {
+    if identities_match(game_name, hint) {
         return 100;
     }
     0
+}
+
+pub(crate) fn identities_match(game_name: &str, hint: &str) -> bool {
+    let game = compact_identity(game_name);
+    let hint = compact_identity(hint);
+    !game.is_empty() && game == hint
 }
 
 fn compact_identity(value: &str) -> String {

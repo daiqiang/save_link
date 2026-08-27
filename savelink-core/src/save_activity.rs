@@ -265,8 +265,7 @@ fn rank_group(
         score += 8;
         positive_signals.push("同目录出现主文件和备份文件".into());
     }
-    let has_domain_signal =
-        save_path_hint || game_identity_match || known_emulator_container || companion_backup_pair;
+    let has_domain_signal = save_path_hint || game_identity_match || known_emulator_container;
     if !has_domain_signal {
         downgrade_reasons.push("路径与当前游戏或常见存档结构缺少直接关联".into());
     }
@@ -369,6 +368,9 @@ fn unsafe_candidate_reason(
     directory: &Path,
     context: &SaveActivityAnalysisContext,
 ) -> Option<String> {
+    if is_known_browser_profile_directory(directory) {
+        return Some("该目录属于浏览器用户资料，包含登录和浏览数据，不能作为游戏存档确认".into());
+    }
     if context
         .install_dir
         .as_ref()
@@ -384,6 +386,24 @@ fn unsafe_candidate_reason(
         return Some("该目录是监测根目录，范围过大，不能直接确认".into());
     }
     None
+}
+
+fn is_known_browser_profile_directory(path: &Path) -> bool {
+    let path = format!("{}\\", normalized_path(path));
+    [
+        r"\microsoft\edge\user data\",
+        r"\google\chrome\user data\",
+        r"\google\chrome beta\user data\",
+        r"\google\chrome sxs\user data\",
+        r"\bravesoftware\brave-browser\user data\",
+        r"\vivaldi\user data\",
+        r"\chromium\user data\",
+        r"\opera software\opera stable\",
+        r"\opera software\opera gx stable\",
+        r"\mozilla\firefox\profiles\",
+    ]
+    .iter()
+    .any(|marker| path.contains(marker))
 }
 
 fn path_matches_game_identity(path: &Path, context: &SaveActivityAnalysisContext) -> bool {
@@ -689,12 +709,85 @@ mod tests {
         let candidates = analyze_save_activity(&events, &context());
 
         assert_eq!(candidates.len(), 1);
-        assert!(candidates[0].score >= 30);
         assert_eq!(candidates[0].confidence, SaveCandidateConfidence::Low);
+        assert!(!candidates[0].confirmable);
+        assert!(candidates[0]
+            .unsafe_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("浏览器用户资料")));
         assert!(candidates[0]
             .downgrade_reasons
             .iter()
-            .any(|reason| reason.contains("缺少直接关联")));
+            .any(|reason| reason.contains("浏览器用户资料")));
+    }
+
+    #[test]
+    fn chromium_profiles_cannot_be_promoted_by_main_and_backup_files() {
+        for root in [
+            r"C:\Users\Tester\AppData\Local\Microsoft\Edge\User Data\Default",
+            r"C:\Users\Tester\AppData\Local\Google\Chrome\User Data\Default",
+        ] {
+            let events = [
+                ("Bookmarks", FileActivityKind::Modify),
+                ("Bookmarks.bak", FileActivityKind::Create),
+                ("Affiliation Database", FileActivityKind::Modify),
+                ("DIPS", FileActivityKind::Modify),
+                ("Extension Cookies", FileActivityKind::Modify),
+            ]
+            .into_iter()
+            .enumerate()
+            .map(|(index, (name, kind))| {
+                event(&format!(r"{root}\{name}"), kind, 1_000 + index as u64 * 100)
+            })
+            .collect::<Vec<_>>();
+
+            let candidates = analyze_save_activity(&events, &context());
+
+            assert_eq!(candidates.len(), 1);
+            assert!(candidates[0]
+                .positive_signals
+                .iter()
+                .any(|signal| signal.contains("主文件和备份文件")));
+            assert!(candidates[0]
+                .downgrade_reasons
+                .iter()
+                .any(|reason| reason.contains("缺少直接关联")));
+            assert_eq!(candidates[0].confidence, SaveCandidateConfidence::Low);
+            assert!(!candidates[0].confirmable);
+            assert!(candidates[0]
+                .unsafe_reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("浏览器用户资料")));
+        }
+    }
+
+    #[test]
+    fn game_related_main_and_backup_files_remain_high_confidence() {
+        let events = vec![
+            event(
+                r"C:\Users\Tester\AppData\Local\HowManyDudes\123\Game\save_data.json",
+                FileActivityKind::Modify,
+                1_000,
+            ),
+            event(
+                r"C:\Users\Tester\AppData\Local\HowManyDudes\123\Game\save_data.json.bak",
+                FileActivityKind::Create,
+                1_100,
+            ),
+        ];
+        let mut context = context();
+        context.game_name = "HowManyDudes".into();
+        context.executable_stem = Some("HowManyDudes".into());
+
+        let candidates = analyze_save_activity(&events, &context);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::High);
+        assert!(candidates[0].confirmable);
+        assert!(candidates[0]
+            .positive_signals
+            .iter()
+            .any(|signal| signal.contains("游戏名称")));
     }
 
     #[test]

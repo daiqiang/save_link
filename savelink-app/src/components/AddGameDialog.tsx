@@ -127,11 +127,6 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
     if (typeof picked === "string") await scanProgram(picked);
   }
 
-  async function pickProgramDir() {
-    const picked = await open({ directory: true, multiple: false, title: "选择游戏安装目录" });
-    if (typeof picked === "string") await scanProgram(picked);
-  }
-
   function selectProgram(key: string) {
     setSelectedProgramKey(key);
     if (program.status !== "done") return;
@@ -350,7 +345,6 @@ export function AddGameDialog({ onClose, onCreated, initialMode = "steam" }: Pro
             useDiscoveredPaths={useDiscoveredPaths}
             onUseDiscoveredPathsChange={setUseDiscoveredPaths}
             onPickFile={pickProgramFile}
-            onPickDir={pickProgramDir}
             onRefresh={() => program.status === "done" && scanProgram(program.report.selected_path)}
           />
         ) : mode === "desmume" ? (
@@ -455,7 +449,6 @@ function ProgramDiscoveryBody({
   selectedKey,
   onSelect,
   onPickFile,
-  onPickDir,
   onRefresh,
   name,
   onNameChange,
@@ -466,7 +459,6 @@ function ProgramDiscoveryBody({
   selectedKey: string | null;
   onSelect: (key: string) => void;
   onPickFile: () => void;
-  onPickDir: () => void;
   onRefresh: () => void;
   name: string;
   onNameChange: (value: string) => void;
@@ -480,7 +472,6 @@ function ProgramDiscoveryBody({
         <strong>从游戏程序识别存档</strong>
         <div className="program-pick-actions">
           <button className="btn primary" onClick={onPickFile}><Icon.FileSearch /> 快捷方式或 EXE</button>
-          <button className="btn" onClick={onPickDir}><Icon.Folder /> 游戏目录</button>
         </div>
       </div>
     );
@@ -496,7 +487,6 @@ function ProgramDiscoveryBody({
         <span className="steam-error">{state.message}</span>
         <div className="program-pick-actions">
           <button className="btn primary" onClick={onPickFile}><Icon.FileSearch /> 重新选择程序</button>
-          <button className="btn" onClick={onPickDir}><Icon.Folder /> 选择游戏目录</button>
         </div>
       </div>
     );
@@ -513,8 +503,14 @@ function ProgramDiscoveryBody({
         </div>
         <button className="iconbtn" title="重新识别" onClick={onRefresh}><Icon.RotateCcw /></button>
         <button className="btn sm" onClick={onPickFile}><Icon.FileSearch /> 程序</button>
-        <button className="btn sm" onClick={onPickDir}><Icon.Folder /> 目录</button>
       </div>
+      {state.report.ignored_app_id_game_names.length > 0 && (
+        <div className="hint muted"><Icon.Alert /><span>
+          检测到配置 AppID {state.report.detected_app_id ?? "未知"}（规则库对应
+          {state.report.ignored_app_id_game_names.join("、")}），但与程序或目录名称不一致，
+          已忽略该身份和存档规则。
+        </span></div>
+      )}
       {state.report.games.length === 0 ? (
         <div className="program-discovery-empty">
           <Icon.Search size={26} />

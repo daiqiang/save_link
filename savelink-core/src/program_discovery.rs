@@ -4,7 +4,7 @@
 //! 缺失时再使用快捷方式、可执行文件和目录名称保守匹配 Ludusavi Manifest。
 
 use crate::steam_discovery::{
-    ProgramManifestMatchKind, SteamDiscoveryError, SteamDiscoveryService,
+    identities_match, ProgramManifestMatchKind, SteamDiscoveryError, SteamDiscoveryService,
 };
 use std::collections::{HashSet, VecDeque};
 use std::fmt;
@@ -48,6 +48,7 @@ pub struct ProgramDiscoveryReport {
     pub install_dir: PathBuf,
     pub detected_app_id: Option<u32>,
     pub app_id_source: Option<PathBuf>,
+    pub ignored_app_id_game_names: Vec<String>,
     pub identity_hints: Vec<String>,
     pub games: Vec<ProgramDiscoveredGame>,
 }
@@ -127,18 +128,45 @@ impl ProgramDiscoveryService {
             }
         }
 
-        let mut hints = Vec::new();
-        push_hint(&mut hints, selected_path.file_stem());
+        let mut trusted_identity_hints = Vec::new();
+        push_hint(&mut trusted_identity_hints, selected_path.file_stem());
         if let Some(program_path) = selection.program_path.as_deref() {
-            push_hint(&mut hints, program_path.file_stem());
+            push_hint(&mut trusted_identity_hints, program_path.file_stem());
         }
-        push_hint(&mut hints, install_dir.file_name());
+        push_hint(&mut trusted_identity_hints, install_dir.file_name());
+
+        let mut hints = trusted_identity_hints.clone();
         for hint in installation_scan.executable_hints {
             push_hint_text(&mut hints, hint);
         }
 
-        let games = SteamDiscoveryService::new(&self.manifest_database)
-            .scan_program_installation(&install_dir, &hints, app_id)?
+        let discovery = SteamDiscoveryService::new(&self.manifest_database);
+        let mut manifest_matches =
+            discovery.scan_program_installation(&install_dir, &hints, app_id)?;
+        let mut ignored_app_id_game_names = Vec::new();
+        if manifest_matches
+            .iter()
+            .any(|game| game.match_kind == ProgramManifestMatchKind::AppId)
+        {
+            manifest_matches.retain(|game| {
+                let corroborated = trusted_identity_hints
+                    .iter()
+                    .any(|hint| identities_match(&game.name, hint));
+                if !corroborated {
+                    ignored_app_id_game_names.push(game.name.clone());
+                }
+                corroborated
+            });
+            ignored_app_id_game_names.sort_by_key(|name| name.to_lowercase());
+            ignored_app_id_game_names.dedup_by(|left, right| left.eq_ignore_ascii_case(right));
+
+            if manifest_matches.is_empty() {
+                manifest_matches =
+                    discovery.scan_program_installation(&install_dir, &hints, None)?;
+            }
+        }
+
+        let games = manifest_matches
             .into_iter()
             .map(|game| ProgramDiscoveredGame {
                 name: game.name,
@@ -161,6 +189,7 @@ impl ProgramDiscoveryService {
             install_dir,
             detected_app_id: app_id,
             app_id_source,
+            ignored_app_id_game_names,
             identity_hints: hints,
             games,
         })

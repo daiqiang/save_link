@@ -335,6 +335,7 @@ pub struct ProgramDiscoveryReportDto {
     pub install_dir: String,
     pub detected_app_id: Option<u32>,
     pub app_id_source: Option<String>,
+    pub ignored_app_id_game_names: Vec<String>,
     pub identity_hints: Vec<String>,
     pub suggested_name: String,
     pub program_already_added: bool,
@@ -1144,6 +1145,7 @@ pub fn scan_program_game(
         app_id_source: report
             .app_id_source
             .map(|path| path.to_string_lossy().to_string()),
+        ignored_app_id_game_names: report.ignored_app_id_game_names,
         identity_hints: report.identity_hints,
         suggested_name,
         program_already_added,
