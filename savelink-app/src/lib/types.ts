@@ -209,6 +209,8 @@ export interface AppInfo {
 export interface AutoBackupSettings {
   enabled: boolean;
   interval_minutes: number;
+  retention_limit: number;
+  retention_policy_confirmed: boolean;
 }
 
 export interface BaiduConnection {

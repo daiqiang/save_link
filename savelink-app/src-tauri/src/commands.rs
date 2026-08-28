@@ -118,7 +118,11 @@ impl AppState {
         let cloud_repo: Arc<dyn CloudStateRepository> = sqlite_repo.clone();
         let repository_dir = data_dir.join("repository");
         let store = FsStore::new(repository_dir.clone());
-        auto_backup::ensure_default(&cloud_repo)?;
+        let has_existing_games = !repo
+            .list_games()
+            .map_err(|error| error.to_string())?
+            .is_empty();
+        auto_backup::ensure_default(&cloud_repo, has_existing_games)?;
         Ok(Self {
             sqlite_repo,
             repo,
@@ -230,6 +234,8 @@ pub struct AppInfoDto {
 pub struct AutoBackupSettingsDto {
     pub enabled: bool,
     pub interval_minutes: u64,
+    pub retention_limit: usize,
+    pub retention_policy_confirmed: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -786,6 +792,8 @@ pub fn get_auto_backup_settings(
     Ok(AutoBackupSettingsDto {
         enabled: auto_backup::enabled(&state.cloud_repo)?,
         interval_minutes: auto_backup::AUTO_BACKUP_INTERVAL_MINUTES,
+        retention_limit: auto_backup::retention_limit(&state.cloud_repo)?,
+        retention_policy_confirmed: auto_backup::retention_policy_confirmed(&state.cloud_repo)?,
     })
 }
 
@@ -802,6 +810,25 @@ pub fn set_auto_backup_enabled(
     Ok(AutoBackupSettingsDto {
         enabled,
         interval_minutes: auto_backup::AUTO_BACKUP_INTERVAL_MINUTES,
+        retention_limit: auto_backup::retention_limit(&state.cloud_repo)?,
+        retention_policy_confirmed: auto_backup::retention_policy_confirmed(&state.cloud_repo)?,
+    })
+}
+
+#[tauri::command]
+pub fn set_auto_backup_retention(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    limit: u32,
+) -> Result<AutoBackupSettingsDto, String> {
+    let limit = usize::try_from(limit).map_err(|_| "快照保留数量无效".to_string())?;
+    auto_backup::set_retention_limit(&state.cloud_repo, limit)?;
+    auto_backup::trigger_sync(app);
+    Ok(AutoBackupSettingsDto {
+        enabled: auto_backup::enabled(&state.cloud_repo)?,
+        interval_minutes: auto_backup::AUTO_BACKUP_INTERVAL_MINUTES,
+        retention_limit: limit,
+        retention_policy_confirmed: true,
     })
 }
 

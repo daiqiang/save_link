@@ -50,6 +50,7 @@ pub fn run() {
             commands::get_app_info,
             commands::get_auto_backup_settings,
             commands::set_auto_backup_enabled,
+            commands::set_auto_backup_retention,
             commands::get_baidu_connection_status,
             commands::connect_baidu,
             commands::upload_snapshot_to_baidu,

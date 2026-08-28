@@ -24,7 +24,7 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - 存档目录缺失时支持“创建目录并恢复”或取消。
 - 编辑游戏名称和存档路径。
 - 移除游戏（删除 SaveLink 内部记录与仓库快照，不删除真实存档目录）。
-- 首页标题旁显示当前版本；齿轮入口打开设置页，第一个正式设置项是默认开启的全局自动备份开关。
+- 首页标题旁显示当前版本；齿轮入口打开设置页，提供默认开启的全局自动备份开关和可配置的快照保留数量。
 - SaveLink 云链 V9 已用于网页 favicon、窗口、任务栏、托盘和安装包图标。
 - 快照可通过带云图标和文字的 `上传` 按钮手动保存到百度网盘；按钮会显示 `上传中`、`已上云` 或 `重试`，未授权时授权后自动续传。
 - access token 临近过期时自动通过 refresh token 刷新。
@@ -35,7 +35,7 @@ SaveLink 的桌面外壳。前端 React 在 `src/`，Rust 命令层在 `src-taur
 - 可通过 `build-portable.bat` 生成绿色版目录、ZIP 和 SHA-256，通过 `build-installer.bat` 生成绿色 exe、NSIS、MSI。
 - v0.1.0 已发布到 GitHub Releases；v0.2.0 已完成开发，准备发布；GitHub 为主仓库，Gitee 为国内镜像。
 - 启动时立即检查存档变化，之后每 10 分钟检查；自动快照校验成功后立即尝试上传，未授权时后台不会弹浏览器。
-- 每个游戏保留 30 条未锁定记录，所有来源统一计数；锁定记录不限量。淘汰时云端删除成功后才删除本地快照。
+- 每个游戏默认保留 10 条未锁定记录，设置页可配置为 1 到 100 条，所有来源统一计数；锁定记录不限量。淘汰时云端删除成功后才删除本地快照。
 
 ## 结构
 
@@ -61,7 +61,7 @@ savelink-app/
 └── src-tauri/
     ├── src/
     │   ├── lib.rs               Tauri 入口：注册插件、初始化 AppState、注册命令
-    │   ├── auto_backup.rs       全局设置、10 分钟调度、自动上传重试与 30 条清理编排
+    │   ├── auto_backup.rs       全局设置、10 分钟调度、自动上传重试与可配置清理编排
     │   └── commands.rs          命令层（薄壳）：DTO + AppState + #[tauri::command]
     ├── Cargo.toml               依赖 savelink-core、tauri-plugin-dialog/opener、chrono、rusqlite
     ├── tauri.conf.json          productName=SaveLink，identifier=com.daiq.savelink

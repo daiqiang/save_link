@@ -43,6 +43,10 @@ export async function setAutoBackupEnabled(enabled: boolean): Promise<AutoBackup
   return invoke<AutoBackupSettings>("set_auto_backup_enabled", { enabled });
 }
 
+export async function setAutoBackupRetention(limit: number): Promise<AutoBackupSettings> {
+  return invoke<AutoBackupSettings>("set_auto_backup_retention", { limit });
+}
+
 export async function getBaiduConnectionStatus(): Promise<BaiduConnection> {
   return invoke<BaiduConnection>("get_baidu_connection_status");
 }

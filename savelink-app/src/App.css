@@ -462,12 +462,16 @@ textarea.input { resize: vertical; min-height: 60px; }
   padding: 10px 12px; }
 
 /* 设置 */
-.settings-body { min-height: 92px; }
+.settings-body { min-height: 156px; }
 .settings-loading { min-height: 60px; display: flex; align-items: center; justify-content: center; color: var(--color-text-3); }
 .setting-control-row { min-height: 60px; display: flex; align-items: center; justify-content: space-between; gap: 24px; }
+.setting-retention-row { border-top: 1px solid var(--color-border); }
 .setting-control-copy { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .setting-control-copy strong { font-size: 14px; }
 .setting-control-copy span { color: var(--color-text-3); font-size: 12.5px; }
+.setting-number-control { display: flex; align-items: center; gap: 6px; flex: none; }
+.setting-number-control .input { width: 68px; padding: 7px 8px; text-align: right; }
+.setting-number-unit { color: var(--color-text-3); font-size: 12.5px; }
 .switch { width: 40px; height: 22px; flex: none; padding: 2px; border: 0; border-radius: 11px;
   background: #c8cdd4; transition: background var(--duration); }
 .switch span { display: block; width: 18px; height: 18px; border-radius: 50%; background: #fff;

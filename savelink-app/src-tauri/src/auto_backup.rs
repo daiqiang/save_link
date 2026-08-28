@@ -12,11 +12,18 @@ use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager};
 
 pub const AUTO_BACKUP_ENABLED_SETTING: &str = "auto_backup_enabled";
+pub const RETENTION_LIMIT_SETTING: &str = "max_unlocked_snapshots_per_game";
+pub const RETENTION_POLICY_CONFIRMED_SETTING: &str = "retention_policy_confirmed";
 pub const AUTO_BACKUP_INTERVAL_MINUTES: u64 = 10;
 pub const AUTO_BACKUP_CHANGED_EVENT: &str = "auto-backup-changed";
-pub const MAX_UNLOCKED_SNAPSHOTS_PER_GAME: usize = 30;
+pub const DEFAULT_RETENTION_LIMIT: usize = 10;
+pub const MIN_RETENTION_LIMIT: usize = 1;
+pub const MAX_RETENTION_LIMIT: usize = 100;
 
-pub fn ensure_default(repo: &Arc<dyn CloudStateRepository>) -> Result<(), String> {
+pub fn ensure_default(
+    repo: &Arc<dyn CloudStateRepository>,
+    has_existing_games: bool,
+) -> Result<(), String> {
     if repo
         .get_setting(AUTO_BACKUP_ENABLED_SETTING)
         .map_err(|error| error.to_string())?
@@ -24,6 +31,32 @@ pub fn ensure_default(repo: &Arc<dyn CloudStateRepository>) -> Result<(), String
     {
         repo.set_setting(AUTO_BACKUP_ENABLED_SETTING, "true")
             .map_err(|error| error.to_string())?;
+    }
+    let retention_limit = repo
+        .get_setting(RETENTION_LIMIT_SETTING)
+        .map_err(|error| error.to_string())?;
+    if retention_limit
+        .as_deref()
+        .and_then(|value| value.parse::<usize>().ok())
+        .is_none_or(|value| !is_valid_retention_limit(value))
+    {
+        repo.set_setting(
+            RETENTION_LIMIT_SETTING,
+            &DEFAULT_RETENTION_LIMIT.to_string(),
+        )
+        .map_err(|error| error.to_string())?;
+    }
+    if repo
+        .get_setting(RETENTION_POLICY_CONFIRMED_SETTING)
+        .map_err(|error| error.to_string())?
+        .is_none()
+    {
+        // 已有 v0.2 数据库先保留旧快照，等用户明确确认新上限后再清理。
+        repo.set_setting(
+            RETENTION_POLICY_CONFIRMED_SETTING,
+            if has_existing_games { "false" } else { "true" },
+        )
+        .map_err(|error| error.to_string())?;
     }
     Ok(())
 }
@@ -42,6 +75,43 @@ pub fn set_enabled(repo: &Arc<dyn CloudStateRepository>, enabled: bool) -> Resul
         if enabled { "true" } else { "false" },
     )
     .map_err(|error| error.to_string())
+}
+
+pub fn retention_limit(repo: &Arc<dyn CloudStateRepository>) -> Result<usize, String> {
+    Ok(repo
+        .get_setting(RETENTION_LIMIT_SETTING)
+        .map_err(|error| error.to_string())?
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| is_valid_retention_limit(*value))
+        .unwrap_or(DEFAULT_RETENTION_LIMIT))
+}
+
+pub fn retention_policy_confirmed(repo: &Arc<dyn CloudStateRepository>) -> Result<bool, String> {
+    Ok(repo
+        .get_setting(RETENTION_POLICY_CONFIRMED_SETTING)
+        .map_err(|error| error.to_string())?
+        .map(|value| value.eq_ignore_ascii_case("true"))
+        .unwrap_or(true))
+}
+
+pub fn set_retention_limit(
+    repo: &Arc<dyn CloudStateRepository>,
+    limit: usize,
+) -> Result<(), String> {
+    if !is_valid_retention_limit(limit) {
+        return Err(format!(
+            "快照保留数量必须是 {} 到 {} 之间的整数",
+            MIN_RETENTION_LIMIT, MAX_RETENTION_LIMIT
+        ));
+    }
+    repo.set_setting(RETENTION_LIMIT_SETTING, &limit.to_string())
+        .map_err(|error| error.to_string())?;
+    repo.set_setting(RETENTION_POLICY_CONFIRMED_SETTING, "true")
+        .map_err(|error| error.to_string())
+}
+
+fn is_valid_retention_limit(limit: usize) -> bool {
+    (MIN_RETENTION_LIMIT..=MAX_RETENTION_LIMIT).contains(&limit)
 }
 
 pub fn start(app: AppHandle) {
@@ -121,20 +191,24 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
     };
 
     let games = state.repo.list_games().map_err(|error| error.to_string())?;
+    let retention_limit = retention_limit(&state.cloud_repo)?;
+    let retention_policy_confirmed = retention_policy_confirmed(&state.cloud_repo)?;
     let snapshots = AutoBackupService::new(state.snapshots());
     let mut retention_candidates = Vec::new();
     let mut retention_ids = HashSet::new();
-    for game in &games {
-        for snapshot in snapshots
-            .unlocked_retention_candidates(&game.id, MAX_UNLOCKED_SNAPSHOTS_PER_GAME)
-            .map_err(|error| error.to_string())?
-        {
-            retention_ids.insert(snapshot.id.clone());
-            retention_candidates.push(snapshot);
+    if retention_policy_confirmed {
+        for game in &games {
+            for snapshot in snapshots
+                .unlocked_retention_candidates(&game.id, retention_limit)
+                .map_err(|error| error.to_string())?
+            {
+                retention_ids.insert(snapshot.id.clone());
+                retention_candidates.push(snapshot);
+            }
         }
     }
 
-    // 删除一旦进入生命周期，即使当前总数后来降到 30 条以内，也必须续做收尾。
+    // 删除一旦进入生命周期，即使当前总数后来降到上限以内，也必须续做收尾。
     for status in [
         CloudSyncStatus::DeletePending,
         CloudSyncStatus::Deleting,
@@ -279,5 +353,41 @@ mod tests {
         ] {
             assert!(!needs_upload(Some(status)), "unexpected retry: {status:?}");
         }
+    }
+
+    #[test]
+    fn retention_limit_defaults_to_ten_and_rejects_values_outside_range() {
+        use savelink_core::cloud_repo::CloudStateRepository;
+        use savelink_core::sqlite_repo::SqliteRepo;
+
+        let repo: Arc<dyn CloudStateRepository> =
+            Arc::new(SqliteRepo::open_in_memory().expect("内存数据库应初始化"));
+        ensure_default(&repo, false).expect("默认设置应写入");
+        assert_eq!(retention_limit(&repo).unwrap(), DEFAULT_RETENTION_LIMIT);
+        assert!(retention_policy_confirmed(&repo).unwrap());
+
+        set_retention_limit(&repo, 1).expect("最小值应可保存");
+        assert_eq!(retention_limit(&repo).unwrap(), 1);
+        set_retention_limit(&repo, 100).expect("最大值应可保存");
+        assert_eq!(retention_limit(&repo).unwrap(), 100);
+        assert!(set_retention_limit(&repo, 0).is_err());
+        assert!(set_retention_limit(&repo, 101).is_err());
+    }
+
+    #[test]
+    fn existing_database_must_confirm_the_new_default_before_pruning() {
+        use savelink_core::cloud_repo::CloudStateRepository;
+        use savelink_core::sqlite_repo::SqliteRepo;
+
+        let repo: Arc<dyn CloudStateRepository> =
+            Arc::new(SqliteRepo::open_in_memory().expect("内存数据库应初始化"));
+        repo.set_setting(AUTO_BACKUP_ENABLED_SETTING, "true")
+            .expect("旧版自动备份设置应可写入");
+        ensure_default(&repo, true).expect("旧数据库默认设置应初始化");
+
+        assert_eq!(retention_limit(&repo).unwrap(), DEFAULT_RETENTION_LIMIT);
+        assert!(!retention_policy_confirmed(&repo).unwrap());
+        set_retention_limit(&repo, DEFAULT_RETENTION_LIMIT).expect("确认默认上限应成功");
+        assert!(retention_policy_confirmed(&repo).unwrap());
     }
 }
