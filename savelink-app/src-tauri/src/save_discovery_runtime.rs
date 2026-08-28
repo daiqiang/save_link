@@ -213,6 +213,24 @@ impl SaveDiscoveryManager {
         self.start_with_roots(app, request, roots)
     }
 
+    /// 启动已经配置好的游戏，但不建立存档活动监听会话。
+    ///
+    /// 普通自动备份仍由后台轮询负责；这里仅复用启动绑定，不改变动态发现状态。
+    pub fn launch_only(&self, binding: GameLaunchBinding) -> Result<Child, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "存档发现会话锁已损坏".to_string())?;
+        reap_finished_worker(&mut inner);
+        let current = self.status()?;
+        if current.phase.is_active() {
+            let game = current.game_name.as_deref().unwrap_or("另一款游戏");
+            return Err(format!("{game} 正在查找存档，请稍后再启动已配置游戏"));
+        }
+        validate_launch_binding(&binding)?;
+        launch_game(&binding)
+    }
+
     fn start_with_roots(
         &self,
         app: AppHandle,
@@ -2128,6 +2146,24 @@ mod tests {
         assert!(error.contains("同一时间只能监测一个游戏"));
         manager.cancel().unwrap();
         wait_for_phase(&manager, SaveDiscoveryPhase::Cancelled);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn launch_only_starts_process_without_creating_discovery_session() {
+        let root = temp_root("launch-only");
+        let binding = powershell_binding(&root, "Start-Sleep -Seconds 5".into());
+        let manager = test_manager();
+
+        let mut child = manager.launch_only(binding).unwrap();
+        let status = manager.status().unwrap();
+        assert_eq!(status.phase, SaveDiscoveryPhase::Idle);
+        assert!(status.game_id.is_none());
+        assert!(status.monitored_roots.is_empty());
+        assert!(status.candidates.is_empty());
+
+        let _ = child.kill();
+        let _ = child.wait();
         let _ = fs::remove_dir_all(root);
     }
 

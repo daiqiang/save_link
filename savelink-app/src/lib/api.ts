@@ -127,6 +127,10 @@ export async function startSaveDiscovery(gameId: string): Promise<SaveDiscoveryS
   return invoke<SaveDiscoveryStatus>("start_save_discovery", { gameId });
 }
 
+export async function launchGame(gameId: string): Promise<{ pid: number }> {
+  return invoke<{ pid: number }>("launch_game", { gameId });
+}
+
 export async function stopSaveDiscovery(): Promise<SaveDiscoveryStatus> {
   return invoke<SaveDiscoveryStatus>("stop_save_discovery");
 }

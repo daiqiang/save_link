@@ -32,6 +32,7 @@ function SaveLink() {
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [creating, setCreating] = useState(false);
   const [cloudUploadingId, setCloudUploadingId] = useState<string | null>(null);
+  const [launchingGame, setLaunchingGame] = useState(false);
   const [profileLabel, setProfileLabel] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [discovery, setDiscovery] = useState<SaveDiscoveryStatus | null>(null);
@@ -124,6 +125,19 @@ function SaveLink() {
       await api.getSaveDiscoveryStatus().then(setDiscovery).catch(() => undefined);
     } finally {
       setDiscoveryAction(false);
+    }
+  }
+
+  async function launchConfiguredGame() {
+    if (!selected || launchingGame || discoveryActive) return;
+    setLaunchingGame(true);
+    try {
+      const result = await api.launchGame(selected.id);
+      toast(`游戏已启动（PID ${result.pid}），已配置游戏不进行存档目录监测`, "ok");
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setLaunchingGame(false);
     }
   }
 
@@ -349,9 +363,20 @@ function SaveLink() {
                     : <><Icon.Folder /> 绑定存档目录</>}
                 </button>
               ) : (
-                <button className="btn primary" onClick={createSnapshot} disabled={creating}>
-                  {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
-                </button>
+                <>
+                  {(selected.launch_kind === "executable" || selected.launch_kind === "steam") && (
+                    <button className="btn" onClick={launchConfiguredGame}
+                      disabled={launchingGame || discoveryActive}
+                      title={discoveryActive ? "请先结束另一个游戏的存档查找" : "启动游戏，不进行存档目录监测"}>
+                      {launchingGame
+                        ? <><span className="spin"><Icon.RotateCcw /></span> 正在启动…</>
+                        : <><Icon.Gamepad /> 启动游戏</>}
+                    </button>
+                  )}
+                  <button className="btn primary" onClick={createSnapshot} disabled={creating}>
+                    {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
+                  </button>
+                </>
               )}
               <button className="btn" onClick={() => setEditingGame(selected)} disabled={selectedDiscoveryActive}
                 title={selectedDiscoveryActive ? "请先停止或取消监测" : "编辑游戏"}>

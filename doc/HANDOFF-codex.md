@@ -24,16 +24,17 @@
 | 1.17 | Codex | 2026-08-18 | 修复无 AppID 程序名称前缀误判；真实学习版快捷方式、EXE 和目录只读验收通过，默认测试增至 109 个 |
 | 1.18 | Codex | 2026-08-25 | 完成动态发现阶段 1 至 5：启动绑定、原生监听、候选确认、首次自动快照和真实游戏验收 |
 | 1.19 | Codex | 2026-08-26 | 修复 RUNE/CODEX 公共文档监测缺口，按数字 AppId 归并为游戏级保护目录，RUNE 真实复验通过 |
+| 1.20 | Codex | 2026-08-28 | 同步错误 AppID 防误识别、浏览器资料目录保护、游戏程序入口收紧、已配置游戏仅启动、HowManyDudes 真实验收和 134 项 core 基线 |
 
 > 角色约定：总规划会话负责方向、范围和验收判断；本地开发会话负责按文档实现、验证、打包。
 > 开工前先读完本文档 + `PROGRESS.md`，再动代码。
-> 最后更新：2026-08-26（RUNE 标准目录按 AppId 归并已完成自动回归和《暗黑地牢》真实复验）
+> 最后更新：2026-08-28（学习版错误 AppID 与浏览器噪声已拦截，HowManyDudes 主存档已真实定位）
 
 ---
 
 ## 一、现在是什么状态
 
-SaveLink 当前是一个已公开发布 v0.1.0、v0.2.0、v0.3.0 和 v0.4.0 的 Windows 桌面应用。发布后主线已完成游戏程序识别和动态发现阶段 1 至 5：待配置游戏可由 SaveLink 启动并监测，退出后由用户确认候选目录，再接管现有自动备份。`Hole Is Mine` 真实绿色版闭环已通过。
+SaveLink 当前是一个已公开发布 v0.1.0、v0.2.0、v0.3.0 和 v0.4.0 的 Windows 桌面应用。发布后主线已完成游戏程序识别和动态发现阶段 1 至 5：待配置游戏可由 SaveLink 启动并监测，退出后由用户确认候选目录，再接管现有自动备份。`Hole Is Mine` 完整闭环、RUNE《暗黑地牢》目录归并和 `HowManyDudes` 主存档定位均已通过真实绿色版验证。
 
 核心闭环已经可用：
 
@@ -77,10 +78,12 @@ MVP 后第一轮补齐也已完成：
 - 联合清理顺序为云端 `.ok` -> `.zip` -> 本地快照文件 -> `snapshots` 记录 -> 云同步缓存。云删除失败写 `delete_failed` 并保留全部本地数据；旧 v0.1.0 数据库会无损迁移新状态约束。
 - 快照持久化时间已统一为秒精度 UTC RFC 3339；旧本机时间和带偏移云端时间会自动迁移，前端按本地时区显示。最近快照、去重和 30 条淘汰不再依赖混合格式字符串排序，已有协议 v1 云对象保持兼容。
 - Steam 自动发现已接入“添加游戏”：从注册表定位 Steam、枚举游戏库和 appmanifest，并用随包 `manifest.db` 匹配 Ludusavi 规则；手动添加入口继续保留。
-- 游戏程序识别已接入“添加游戏”：支持 Windows `.lnk`、EXE 和安装目录，优先读取 AppID 配置，缺失时只接受忽略空格和标点后的完整名称相等，不再接受名称前缀；只扫描所选目录且不启动程序、不修改配置或存档。
+- 游戏程序识别已接入“添加游戏”：面向用户只允许选择 Windows `.lnk` 或 EXE，所选程序附近的 AppID 只有在 Manifest 游戏名与程序/快捷方式/目录身份完整相等时才采用；冲突时保留诊断提示、忽略该 AppID 身份和存档规则，再执行保守名称回退。底层目录扫描能力仍保留供内部复用，但“游戏目录”直接添加入口已移除。
 - 普通 PC 游戏新建时必须保存本机启动绑定：普通游戏保存真实 EXE/安装目录，Steam 保存 `steam.exe + -applaunch AppID`；DeSmuME 继续使用模拟器/ROM 绑定。旧游戏再次添加时补绑原记录，不创建重复游戏。
 - 待配置游戏可在没有存档目录时先登记，但创建、恢复、上传均被拒绝，自动备份会正常跳过；首页明确显示当前不会创建备份，并提供“启动游戏并查找存档”。
+- 已配置且有本机启动绑定的普通游戏，首页提供“启动游戏”；该动作只启动 EXE 或 Steam，不创建监听会话、不记录 PID、不进入候选分析。已配置游戏的自动备份仍由启动检查和 10 分钟轮询负责。
 - 动态发现使用原生 `ReadDirectoryChangesW` 多根监听、PID 生命周期和 5 秒退出宽限期；除标准用户目录外，还通过 Known Folder API 条件性监听公共文档下实际存在的 `Steam\RUNE`/`Steam\CODEX` 根目录。这两类已知根目录下如果紧跟纯数字 AppId，任意子树变化都归并为整个 `<AppId>` 游戏级候选，不再并列推荐 `remote`/`profile_*`/`backup`。其他未知路径仍保留通用父子候选逻辑。
+- Edge、Chrome、Firefox、Brave、Vivaldi、Opera 等已知浏览器用户资料目录强制为低可信且不可确认，避免 Cookies、登录会话和浏览记录被误选；`.bak` 主备文件配对只作为辅助加分，不能单独构成游戏存档领域证据。
 - 用户确认候选后，后端重新校验候选成员、安全范围、重复/嵌套和跨游戏冲突；自动备份开启时为当前游戏创建首份 `reason=auto` 快照，之后继续使用既有 10 分钟检查、自动上传和 30 条保留策略。
 - 多存档目录已贯通模型、SQLite、扫描、指纹、`FsStore`、恢复、云端协议、设备 B 绑定及前端展示；2026-08-10 使用《杀戮尖塔》真实候选和四个隔离假目录完成 A/B 快照往返恢复及移除安全验收。
 - DeSmuME 支持已贯通模型、SQLite、精确文件扫描、`FsStore`、恢复、云端 ROM 身份和前端添加/重新绑定流程；只保护目标 `.dsv`，不保护 `.dsv-01` 至 `.dsv-09` 即时存档，不上传 ROM 或本机路径。
@@ -88,8 +91,8 @@ MVP 后第一轮补齐也已完成：
 
 当前客观状态：
 
-- `savelink-core`：130 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
-- `savelink-app`：Tauri 31 个测试全绿，React `npm run build` 和严格 Clippy 通过；启动绑定、防重、原生监听、候选确认及首份自动快照均有回归覆盖。
+- `savelink-core`：134 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
+- `savelink-app`：Tauri 32 个测试全绿，React `npm run build` 和严格 Clippy 通过；启动绑定、防重、仅启动、原生监听、候选确认及首份自动快照均有回归覆盖。
 - `savelink-app`：Tauri 桌面应用，React 前端 + Rust 命令薄壳。
 - 数据位置：`%APPDATA%\com.daiq.savelink\`。
 - 产物位置：`savelink-app/src-tauri/target/release/`。
@@ -225,7 +228,7 @@ DeSmuME 代码主链路已完成：扫描模拟器和 ROM、解析 Header/SHA-25
 
 ### P8：已完成 - 游戏程序与快捷方式识别验收
 
-核心 `program_discovery.rs` 支持目录、EXE 和 Windows `.lnk`；快捷方式通过 Shell COM 在独立 STA 线程只读解析。扫描最多进入所选安装目录 3 层、512 个目录，不遍历其他磁盘。身份优先读取 `steam_appid.txt`、`steam_emu.ini`、`SmartSteamEmu.ini`、`ColdClientLoader.ini`、`configs.app.ini`；没有 AppID 时，快捷方式、EXE 和目录名称只有在归一化后与 Manifest 游戏名完整相等才匹配。命中游戏后复用 `steam_discovery.rs` 的 Manifest 规则展开与路径分类。
+核心 `program_discovery.rs` 支持目录、EXE 和 Windows `.lnk`；当前 UI 只允许选择 `.lnk` 或 EXE，目录扫描保留给内部回归。快捷方式通过 Shell COM 在独立 STA 线程只读解析，扫描最多进入安装目录 3 层、512 个目录，不遍历其他磁盘。身份优先读取 `steam_appid.txt`、`steam_emu.ini`、`SmartSteamEmu.ini`、`ColdClientLoader.ini`、`configs.app.ini`；AppID 对应的 Manifest 游戏名必须与快捷方式、EXE 或目录身份至少有一项完整相等，否则忽略该 AppID 和对应规则。没有可靠 AppID 时也只接受完整名称相等。命中游戏后复用 `steam_discovery.rs` 的 Manifest 规则展开与路径分类。
 
 2026-08-18 使用 `Arcane.Trigger.Build.21206983` 完成真实绿色版只读验收。首次验收发现其目录名称被错误按前缀命中 Manifest 中的 `Arcane / 534870`；移除前缀匹配并增加回归测试后，桌面快捷方式、`GunWizard.exe` 和安装目录三种入口均安全返回 0 个匹配，“添加游戏”禁用。程序未启动，既有手动添加记录和真实存档未修改；手动添加继续永久保留为最终兜底。
 
@@ -236,6 +239,8 @@ DeSmuME 代码主链路已完成：扫描模拟器和 ROM、解析 Header/SHA-25
 2026-08-25 已在备份后事务修复本机正式数据：为奥术扳机补 `GunWizard.exe`，为艾尔登法环和杀戮尖塔 2 补 Steam AppID，删除零快照且无云绑定的重复 `GunWizard`。修复没有操作真实存档/快照文件，SQLite 完整性为 `ok`，25 个快照无孤儿。历史验收数据没有真实 EXE，因此没有伪造绑定。
 
 正式工程已接入原生监听、全局单会话、受控启动、PID 退出/宽限期、候选排序、人工确认和首次自动快照。最终真实样本捕获 507 条变化、生成 12 个候选，正确 `Release` 目录为唯一高可信；首份快照 6 个文件、39,670 字节与源目录哈希一致。详细结论见 `SaveLink游戏启动与存档动态发现方案.md`，本机过程记录保留在未入库的 `acceptance-data/save-discovery-stage5-20260825/`。
+
+2026-08-28，`HowManyDudes.exe` 携带的错误 AppID 不再误命中 `DrainSim`，真实主存档 `AppData\Local\HowManyDudes\<用户编号>\Game` 已进入高可信候选；浏览器资料目录强制低可信且不可确认。游戏自带 `Backup\<用户编号>\Game` 仍可能并列高可信，后续可优化提示或排序，但当前必须由用户核对并只选择主存档。
 
 2026-08-26 《暗黑地牢》RUNE 学习版暴露公共文档根目录不在监听范围：真实文件位于 `Public Documents\Steam\RUNE\262060`，游玩期间持续变化但候选完全缺失。实现已条件性加入已存在的 RUNE/CODEX 根目录，并将数字 AppId 下所有子树变化归并到整个 `<AppId>` 目录。RUNE 样本证明 `filemappings.ini` 位于 `remote` 外且随进度变化，因此保护边界不能缩到 `remote`。用户使用新绿色版真实游玩并退出后，界面只推荐 `C:\Users\Public\Documents\Steam\RUNE\262060`，未并列推荐 `profile_*`/`backup`，真实复验通过（未留截图）。CODEX 按相同标准布局完成自动回归，但尚无本机真实样本。
 

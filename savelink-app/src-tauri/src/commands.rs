@@ -634,6 +634,35 @@ pub fn start_save_discovery(
     )
 }
 
+#[derive(Serialize)]
+pub struct LaunchGameResult {
+    pub pid: u32,
+}
+
+#[tauri::command]
+pub fn launch_game(
+    state: State<'_, AppState>,
+    game_id: String,
+) -> Result<LaunchGameResult, String> {
+    let game = state
+        .repo
+        .get_game(&game_id)
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "游戏不存在".to_string())?;
+    if game.configuration_state() != GameConfigurationState::Configured {
+        return Err("只有已经设置存档目录的普通 PC 游戏可以直接启动".into());
+    }
+    if game.emulator_identity.is_some() {
+        return Err("模拟器游戏不使用普通 PC 游戏的启动方式".into());
+    }
+    let launch_binding = game
+        .launch_binding
+        .clone()
+        .ok_or_else(|| "该游戏尚未绑定本机启动程序".to_string())?;
+    let child = state.save_discovery.launch_only(launch_binding)?;
+    Ok(LaunchGameResult { pid: child.id() })
+}
+
 #[tauri::command]
 pub fn stop_save_discovery(state: State<'_, AppState>) -> Result<SaveDiscoveryStatus, String> {
     state.save_discovery.stop_and_analyze()
