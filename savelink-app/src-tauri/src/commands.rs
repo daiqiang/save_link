@@ -203,6 +203,7 @@ pub struct GameDto {
     pub launch_arguments: Vec<String>,
     pub steam_app_id: Option<u32>,
     pub install_dir: Option<String>,
+    pub rom_path: Option<String>,
     pub snapshot_count: usize,
     pub last_snapshot_at: Option<String>,
 }
@@ -582,6 +583,10 @@ fn game_to_dto(repo: &Arc<dyn Repository>, g: &Game) -> GameDto {
             .launch_binding
             .as_ref()
             .map(|binding| display_path_string(&binding.install_dir)),
+        rom_path: g
+            .emulator_binding
+            .as_ref()
+            .map(|binding| display_path_string(&binding.rom_path)),
         snapshot_count: snaps.len(),
         last_snapshot_at: snaps.first().map(|s| s.created_at.clone()),
     }

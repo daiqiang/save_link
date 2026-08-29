@@ -94,6 +94,57 @@ export function EditGameDialog({ game, onClose, onSaved, onDeleted, onRebindDesm
             <input className="input" value={name} autoFocus
               onChange={(e) => setName(e.target.value)} placeholder="例如：艾尔登法环" />
           </div>
+          <div className="field">
+            <label>启动设置</label>
+            <div className="launch-info">
+              {isDesmume ? (
+                <>
+                  <div className="launch-info-row">
+                    <span className="launch-info-label">模拟器</span>
+                    <span className="launch-info-value"><Icon.Gamepad />{game.emulator ?? "DeSmuME"}</span>
+                  </div>
+                  <div className="launch-info-row">
+                    <span className="launch-info-label">游戏文件</span>
+                    <span className="launch-info-value path-mono" title={game.rom_path ?? undefined}>
+                      {game.rom_path ?? "尚未绑定 ROM 文件"}
+                    </span>
+                  </div>
+                </>
+              ) : game.launch_kind === "steam" ? (
+                <>
+                  <div className="launch-info-row">
+                    <span className="launch-info-label">启动方式</span>
+                    <span className="launch-info-value"><Icon.Gamepad />Steam</span>
+                  </div>
+                  {game.steam_app_id != null && (
+                    <div className="launch-info-row">
+                      <span className="launch-info-label">Steam AppID</span>
+                      <span className="launch-info-value path-mono">{game.steam_app_id}</span>
+                    </div>
+                  )}
+                  {game.install_dir && (
+                    <div className="launch-info-row">
+                      <span className="launch-info-label">游戏目录</span>
+                      <span className="launch-info-value path-mono" title={game.install_dir}>{game.install_dir}</span>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <>
+                  <div className="launch-info-row">
+                    <span className="launch-info-label">启动方式</span>
+                    <span className="launch-info-value"><Icon.Gamepad />本地程序</span>
+                  </div>
+                  <div className="launch-info-row">
+                    <span className="launch-info-label">执行文件</span>
+                    <span className="launch-info-value path-mono" title={game.launch_executable_path ?? undefined}>
+                      {game.launch_executable_path ?? "尚未设置执行文件"}
+                    </span>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
           {isDesmume ? (
             <div className="field">
               <label>DeSmuME 存档</label>

@@ -114,6 +114,12 @@ button {
 .btn:hover { background: #f0f1f3; }
 .btn.primary { background: var(--color-accent); border-color: var(--color-accent); color: #fff; }
 .btn.primary:hover { background: var(--color-accent-hover); }
+.btn.launch-game {
+  color: #fff; background: #a36f1b; border-color: #a36f1b;
+}
+.btn.launch-game:hover:not(:disabled) {
+  color: #fff; background: #885a12; border-color: #885a12;
+}
 .btn.danger { color: var(--color-danger); border-color: var(--color-danger); background: var(--color-surface); }
 .btn.danger:hover { background: var(--color-danger-soft); }
 .btn.sm { padding: 5px 10px; font-size: 12.5px; }
@@ -365,6 +371,15 @@ button {
 .add-game-tabs button.active { color: var(--color-accent); border-bottom-color: var(--color-accent); font-weight: 600; }
 .add-manual-body { min-height: 356px; overflow-y: auto; }
 .field-actions { display: flex; gap: 8px; margin-top: 8px; }
+.launch-info { display: flex; flex-direction: column; gap: 8px; padding: 10px 12px;
+  border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: #fafbfc; }
+.launch-info-row { display: grid; grid-template-columns: 82px minmax(0, 1fr); align-items: start; gap: 10px;
+  min-width: 0; font-size: 12.5px; }
+.launch-info-label { color: var(--color-text-3); }
+.launch-info-value { min-width: 0; display: inline-flex; align-items: flex-start; gap: 6px; color: var(--color-text-2);
+  overflow-wrap: anywhere; }
+.launch-info-value svg { flex: none; margin-top: 1px; }
+.launch-info-value.path-mono { color: var(--color-text-2); }
 .save-path-editor { display: flex; flex-direction: column; gap: 12px; }
 .save-path-edit { min-width: 0; }
 .save-path-edit-label { margin-bottom: 5px; color: var(--color-text-3); font-size: 11.5px; font-weight: 600; }

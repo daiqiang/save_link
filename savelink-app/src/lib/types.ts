@@ -30,6 +30,7 @@ export interface Game {
   launch_arguments: string[];
   steam_app_id: number | null;
   install_dir: string | null;
+  rom_path: string | null;
   snapshot_count: number;
   last_snapshot_at: string | null;
 }

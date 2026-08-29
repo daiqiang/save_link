@@ -374,7 +374,7 @@ function SaveLink() {
               ) : (
                 <>
                   {(selected.launch_kind === "executable" || selected.launch_kind === "steam") && (
-                    <button className="btn" onClick={launchConfiguredGame}
+                    <button className="btn launch-game" onClick={launchConfiguredGame}
                       disabled={launchingGame || discoveryActive}
                       title={discoveryActive ? "请先结束另一个游戏的存档查找" : "启动游戏，不进行存档目录监测"}>
                       {launchingGame
