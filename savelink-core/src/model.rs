@@ -189,9 +189,13 @@ pub struct Snapshot {
     pub game_id: String,
     pub created_at: String,
     pub note: Option<String>,
+    /// 用户可变名称最后修改时间；自动展示名称不写入该字段。
+    pub note_updated_at: String,
     pub reason: Reason,
     /// 是否受到自动清理保护。该字段是安全语义，也会同步到云端。
     pub locked: bool,
+    /// 锁定状态最后修改时间，用于跨设备按字段合并。
+    pub locked_updated_at: String,
     /// 当前本机时间线所属的显示区域。与 `locked` 分离，支持十分钟维护周期内的待整理状态。
     pub display_zone: SnapshotDisplayZone,
     pub file_count: u64,
@@ -249,6 +253,7 @@ pub struct StoredSnapshot {
 }
 
 /// 创建快照的结果：可能是新建，也可能是「存档未变化」。
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CreateOutcome {
     Created(Snapshot),

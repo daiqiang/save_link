@@ -2,7 +2,7 @@ use crate::commands::{
     acquire_cloud_sync_guard, baidu_connection_status, AppState, BaiduCloudRuntime,
     BAIDU_ACCOUNT_ID,
 };
-use savelink_core::cloud_model::CloudSyncStatus;
+use savelink_core::cloud_model::{CloudMetadataSyncStatus, CloudSyncStatus};
 use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::model::{Reason, SnapshotStatus};
 use savelink_core::service::{AutoBackupReport, AutoBackupService};
@@ -189,20 +189,47 @@ fn run_once_if_enabled(app: &AppHandle) -> Result<Option<AutoBackupReport>, Stri
 fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
     let retention_limit = retention_limit(&state.cloud_repo)?;
     let retention_policy_confirmed = retention_policy_confirmed(&state.cloud_repo)?;
+    let _cloud_guard = match acquire_cloud_sync_guard(state) {
+        Ok(guard) => guard,
+        Err(_) => return Ok(false),
+    };
+
+    let games = state.repo.list_games().map_err(|error| error.to_string())?;
+    let snapshots = AutoBackupService::new(state.snapshots());
+    let connected = baidu_connection_status(&state.cloud_repo, &state.baidu_token_store)?.connected;
+    let mut service = if connected {
+        Some(BaiduCloudRuntime::from_state(state).build()?)
+    } else {
+        None
+    };
+    let metadata_ready_for_prune = if let Some(cloud) = service.as_ref() {
+        let _operation = state
+            .snapshot_operation_lock
+            .lock()
+            .map_err(|_| "快照操作锁已损坏".to_string())?;
+        match cloud.sync_known_snapshot_metadata() {
+            Ok(_) => true,
+            Err(error) => {
+                eprintln!("云端快照元数据同步失败，本轮暂停清理: {error}");
+                false
+            }
+        }
+    } else {
+        false
+    };
+
     let layout_changed = {
         let _operation = state
             .snapshot_operation_lock
             .lock()
             .map_err(|_| "快照操作锁已损坏".to_string())?;
-        let games = state.repo.list_games().map_err(|error| error.to_string())?;
         let max_unlocked = if retention_policy_confirmed {
             retention_limit
         } else {
             usize::MAX
         };
-        let snapshots = AutoBackupService::new(state.snapshots());
         let mut changed = false;
-        for game in games {
+        for game in &games {
             changed |= snapshots
                 .organize_snapshot_layout(&game.id, max_unlocked)
                 .map_err(|error| error.to_string())?
@@ -211,13 +238,6 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
         changed
     };
 
-    let _cloud_guard = match acquire_cloud_sync_guard(state) {
-        Ok(guard) => guard,
-        Err(_) => return Ok(layout_changed),
-    };
-
-    let games = state.repo.list_games().map_err(|error| error.to_string())?;
-    let snapshots = AutoBackupService::new(state.snapshots());
     let mut retention_candidates = Vec::new();
     let mut retention_ids = HashSet::new();
     if retention_policy_confirmed {
@@ -226,6 +246,17 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
                 .unlocked_retention_candidates(&game.id, retention_limit)
                 .map_err(|error| error.to_string())?
             {
+                let cloud_metadata_status = state
+                    .cloud_repo
+                    .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot.id)
+                    .map_err(|error| error.to_string())?
+                    .map(|record| record.metadata_sync_status);
+                if !can_start_retention_delete(
+                    metadata_ready_for_prune,
+                    cloud_metadata_status,
+                ) {
+                    continue;
+                }
                 retention_ids.insert(snapshot.id.clone());
                 retention_candidates.push(snapshot);
             }
@@ -256,12 +287,9 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
         }
     }
 
-    let connected = baidu_connection_status(&state.cloud_repo, &state.baidu_token_store)?.connected;
-    let service = if connected || !retention_candidates.is_empty() {
-        Some(BaiduCloudRuntime::from_state(state).build()?)
-    } else {
-        None
-    };
+    if service.is_none() && !retention_candidates.is_empty() {
+        service = Some(BaiduCloudRuntime::from_state(state).build()?);
+    }
 
     let mut cloud_changed = layout_changed;
     if connected {
@@ -360,6 +388,17 @@ fn needs_upload(status: Option<CloudSyncStatus>) -> bool {
     )
 }
 
+fn can_start_retention_delete(
+    remote_metadata_checked: bool,
+    metadata_status: Option<CloudMetadataSyncStatus>,
+) -> bool {
+    match metadata_status {
+        None => true,
+        Some(CloudMetadataSyncStatus::Synced) => remote_metadata_checked,
+        Some(CloudMetadataSyncStatus::Pending | CloudMetadataSyncStatus::Error) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -383,6 +422,27 @@ mod tests {
         ] {
             assert!(!needs_upload(Some(status)), "unexpected retry: {status:?}");
         }
+    }
+
+    #[test]
+    fn retention_only_requires_remote_metadata_for_cloud_snapshots() {
+        assert!(can_start_retention_delete(false, None));
+        assert!(!can_start_retention_delete(
+            false,
+            Some(CloudMetadataSyncStatus::Synced)
+        ));
+        assert!(can_start_retention_delete(
+            true,
+            Some(CloudMetadataSyncStatus::Synced)
+        ));
+        assert!(!can_start_retention_delete(
+            true,
+            Some(CloudMetadataSyncStatus::Pending)
+        ));
+        assert!(!can_start_retention_delete(
+            true,
+            Some(CloudMetadataSyncStatus::Error)
+        ));
     }
 
     #[test]

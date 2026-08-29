@@ -1,13 +1,14 @@
 //! G 组：云同步本机状态与 CloudObjectStore 基础设施。
 
 use savelink_core::cloud_model::{
-    CloudAccount, CloudGameBinding, CloudSnapshotRecord, CloudSyncStatus,
+    CloudAccount, CloudGameBinding, CloudMetadataSyncStatus, CloudSnapshotRecord, CloudSyncStatus,
 };
 use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::cloud_store::{
     CloudEntryKind, CloudObjectStore, CloudStoreError, FakeCloudObjectStore, PutMode,
 };
 use savelink_core::model::Reason;
+use savelink_core::repo::Repository;
 use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::testkit::TempDir;
 use savelink_core::timestamp::normalize_timestamp;
@@ -56,6 +57,11 @@ fn snapshot(id: &str, created_at: &str, status: CloudSyncStatus) -> CloudSnapsho
         sync_status: status,
         last_synced_at: None,
         last_error_code: None,
+        metadata_sync_status: CloudMetadataSyncStatus::Synced,
+        metadata_last_synced_at: None,
+        metadata_last_error_code: None,
+        remote_note_updated_at: created_at.into(),
+        remote_locked_updated_at: created_at.into(),
     }
 }
 
@@ -80,6 +86,12 @@ fn g1_cloud_state_survives_database_reopen() {
 
     expected_snapshot.created_at =
         normalize_timestamp(&expected_snapshot.created_at).expect("测试时间应可规范化");
+    expected_snapshot.remote_note_updated_at =
+        normalize_timestamp(&expected_snapshot.remote_note_updated_at)
+            .expect("名称更新时间应可规范化");
+    expected_snapshot.remote_locked_updated_at =
+        normalize_timestamp(&expected_snapshot.remote_locked_updated_at)
+            .expect("锁定更新时间应可规范化");
 
     let repo = SqliteRepo::open(&db_path).unwrap();
     assert_eq!(
@@ -361,7 +373,24 @@ fn g8_v010_cloud_status_table_is_migrated_without_losing_records() {
     {
         let conn = rusqlite::Connection::open(&db_path).unwrap();
         conn.execute_batch(
-            "CREATE TABLE cloud_snapshot_sync (
+            "CREATE TABLE snapshots (
+                id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                note TEXT,
+                reason TEXT NOT NULL,
+                locked INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL,
+                total_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                storage_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'complete'
+             );
+             INSERT INTO snapshots VALUES (
+                'snap_1', 'game_1', '2026-07-14T18:10:00+08:00',
+                '本机后来修改的名称', 'auto', 1, 1, 7, 'content-hash', 'snap_1', 'complete'
+             );
+             CREATE TABLE cloud_snapshot_sync (
                 account_id TEXT NOT NULL,
                 cloud_game_id TEXT NOT NULL,
                 snapshot_id TEXT NOT NULL,
@@ -404,6 +433,16 @@ fn g8_v010_cloud_status_table_is_migrated_without_losing_records() {
         .unwrap()
         .expect("旧云同步记录应保留");
     assert_eq!(migrated.sync_status, CloudSyncStatus::Uploaded);
+    assert_eq!(
+        migrated.metadata_sync_status,
+        CloudMetadataSyncStatus::Pending,
+        "旧本机元数据与云缓存不同时必须安排重试"
+    );
+    let local = repo.get_snapshot("snap_1").unwrap().unwrap();
+    assert_eq!(local.note.as_deref(), Some("本机后来修改的名称"));
+    assert!(local.locked);
+    assert_ne!(local.note_updated_at, local.created_at);
+    assert_ne!(local.locked_updated_at, local.created_at);
 
     repo.update_cloud_snapshot_status(
         "account_1",

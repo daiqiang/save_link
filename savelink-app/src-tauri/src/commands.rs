@@ -18,7 +18,9 @@ use savelink_core::baidu_oauth::{
 };
 use savelink_core::baidu_store::BaiduNetdiskStore;
 use savelink_core::cloud_archive::ZipCloudArchiveCodec;
-use savelink_core::cloud_model::{CloudAccount, CloudSnapshotRecord};
+use savelink_core::cloud_model::{
+    CloudAccount, CloudMetadataSyncStatus, CloudSnapshotMetadataState, CloudSnapshotRecord,
+};
 use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::cloud_service::{
     CloudSnapshotDiscovery, CloudSyncError, CloudSyncService, ReceiveOutcome, UploadOutcome,
@@ -479,8 +481,10 @@ mod snapshot_display_tests {
             game_id: "game".into(),
             created_at: id.into(),
             note: note.map(str::to_string),
+            note_updated_at: "2026-08-29T00:00:00Z".into(),
             reason: Reason::Manual,
             locked: zone == SnapshotDisplayZone::Locked,
+            locked_updated_at: "2026-08-29T00:00:00Z".into(),
             display_zone: zone,
             file_count: 1,
             total_size: 1,
@@ -2061,16 +2065,43 @@ pub fn create_snapshot(
 
 #[tauri::command]
 pub fn update_snapshot_meta(
+    app: AppHandle,
     state: State<'_, AppState>,
     snapshot_id: String,
     note: Option<String>,
     locked: Option<bool>,
 ) -> Result<(), String> {
     let _operation = acquire_snapshot_operation_guard(&state)?;
+    if (note.is_some() || locked.is_some())
+        && state
+            .cloud_repo
+            .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot_id)
+            .map_err(|error| error.to_string())?
+            .is_some()
+    {
+        // 先持久化 pending，再更新本地字段，保证进程在两步之间退出后仍会重试。
+        state
+            .cloud_repo
+            .update_cloud_snapshot_metadata_status(
+                BAIDU_ACCOUNT_ID,
+                &snapshot_id,
+                CloudSnapshotMetadataState {
+                    status: CloudMetadataSyncStatus::Pending,
+                    last_synced_at: None,
+                    last_error_code: None,
+                    remote_note_updated_at: None,
+                    remote_locked_updated_at: None,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+    }
     state
         .snapshots()
         .update_meta(&snapshot_id, note, locked)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    drop(_operation);
+    auto_backup::trigger_sync(app);
+    Ok(())
 }
 
 #[tauri::command]

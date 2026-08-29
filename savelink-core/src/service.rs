@@ -45,7 +45,7 @@ impl SnapshotService {
     /// - A2：扫描 content_hash 与上一快照相同 → 返回 NoChange，不写库不写文件。
     /// - A3：任一文件变化即视为有变化。
     /// - A4：先以 status=Writing 落库 → store.create → verify → 置 Complete。
-    ///       任一步失败：删半成品文件 + 删记录，不留 Writing 悬挂；不碰真实存档。
+    ///   任一步失败：删半成品文件 + 删记录，不留 Writing 悬挂；不碰真实存档。
     /// - A5：空目录允许创建（file_count=0）。
     /// - A6：目录不可读 → SaveDirMissing/SaveDirUnreadable，不写任何状态。
     pub fn create_snapshot(
@@ -87,13 +87,16 @@ impl SnapshotService {
 
         // A4：先以 Writing 落库，再写文件；任一步失败则回滚记录 + 清半成品。
         let id = self.ids.new_id("snap");
+        let created_at = self.clock.now_stamp();
         let pending = Snapshot {
             id: id.clone(),
             game_id: game_id.to_string(),
-            created_at: self.clock.now_stamp(),
+            created_at: created_at.clone(),
             note,
+            note_updated_at: created_at.clone(),
             reason,
             locked: false,
+            locked_updated_at: created_at,
             display_zone: crate::model::SnapshotDisplayZone::Normal,
             file_count: ctx.file_count,
             total_size: ctx.total_size,
@@ -150,11 +153,18 @@ impl SnapshotService {
             .repo
             .get_snapshot(snapshot_id)?
             .ok_or_else(|| SaveLinkError::Io(format!("snapshot not found: {snapshot_id}")))?;
-        if let Some(n) = note {
+        let note_changed = note
+            .as_ref()
+            .is_some_and(|value| snap.note.as_ref() != Some(value));
+        let locked_changed = locked.is_some_and(|value| snap.locked != value);
+        let changed_at = (note_changed || locked_changed).then(|| self.clock.now_stamp());
+        if let Some(n) = note.filter(|_| note_changed) {
             snap.note = Some(n);
+            snap.note_updated_at = changed_at.clone().expect("已确认名称发生变化");
         }
-        if let Some(l) = locked {
+        if let Some(l) = locked.filter(|_| locked_changed) {
             snap.locked = l;
+            snap.locked_updated_at = changed_at.expect("已确认锁定状态发生变化");
         }
         // content_hash / created_at / file_count / total_size 一律不动。
         self.repo.update_snapshot(snap)
@@ -198,7 +208,7 @@ impl SnapshotService {
     /// 契约（C 组）：
     /// - C1：locked → SnapshotLocked，记录与文件均保留。
     /// - C3：先标记 Deleting，再删文件和记录；删文件失败恢复原状态。
-    ///       进程中断留下的 Deleting 由启动自检幂等续做。
+    ///   进程中断留下的 Deleting 由启动自检幂等续做。
     pub fn delete_snapshot(&self, snapshot_id: &str) -> Result<()> {
         let mut snap = self
             .repo
@@ -777,13 +787,11 @@ fn replace_save_dirs_with(
         ));
     }
 
-    let mut moved_old = 0usize;
-    for (save_dir, old_dir) in save_dirs.iter().zip(old_dirs) {
+    for (moved_old, (save_dir, old_dir)) in save_dirs.iter().zip(old_dirs).enumerate() {
         if let Err(error) = rename(save_dir, old_dir) {
             let rolled_back = rollback_moved_old(save_dirs, old_dirs, moved_old, rename);
             return Err((error, rolled_back));
         }
-        moved_old += 1;
     }
 
     for (tmp_dir, save_dir) in tmp_dirs.iter().zip(save_dirs) {
@@ -847,6 +855,7 @@ fn restore_failed_io(_e: std::io::Error, rolled_back: bool) -> SaveLinkError {
 }
 
 #[cfg(test)]
+#[allow(clippy::items_after_test_module)]
 mod tests {
     use super::replace_save_dirs_with;
     use crate::testkit::{write_files, TempDir};
@@ -891,7 +900,7 @@ mod tests {
 ///
 /// 契约：
 /// - E1：清理 status==Writing 的残留记录（标记 Corrupt 或删除），并清除对应半成品文件；
-///       清理后它们不得出现在正常时间线。
+///   清理后它们不得出现在正常时间线。
 pub fn startup_self_check(
     repo: &Arc<dyn Repository>,
     store: &Arc<dyn SnapshotStore>,

@@ -5,7 +5,10 @@
 //!
 //! 一个 `savelink.db` 文件即整个元数据库，无服务器、零安装，贴合"单机自包含"。
 
-use crate::cloud_model::{CloudAccount, CloudGameBinding, CloudSnapshotRecord, CloudSyncStatus};
+use crate::cloud_model::{
+    CloudAccount, CloudGameBinding, CloudMetadataSyncStatus, CloudSnapshotMetadataState,
+    CloudSnapshotRecord, CloudSyncStatus,
+};
 use crate::cloud_repo::CloudStateRepository;
 use crate::error::{Result, SaveLinkError};
 use crate::model::{
@@ -112,8 +115,10 @@ impl SqliteRepo {
                 game_id TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 note TEXT,
+                note_updated_at TEXT NOT NULL,
                 reason TEXT NOT NULL,
                 locked INTEGER NOT NULL DEFAULT 0,
+                locked_updated_at TEXT NOT NULL,
                 display_zone TEXT NOT NULL DEFAULT 'normal',
                 file_count INTEGER NOT NULL,
                 total_size INTEGER NOT NULL,
@@ -171,6 +176,13 @@ impl SqliteRepo {
                 ),
                 last_synced_at TEXT,
                 last_error_code TEXT,
+                metadata_sync_status TEXT NOT NULL DEFAULT 'synced' CHECK (
+                    metadata_sync_status IN ('synced', 'pending', 'error')
+                ),
+                metadata_last_synced_at TEXT,
+                metadata_last_error_code TEXT,
+                remote_note_updated_at TEXT NOT NULL,
+                remote_locked_updated_at TEXT NOT NULL,
                 PRIMARY KEY (account_id, snapshot_id)
              );
              CREATE INDEX IF NOT EXISTS idx_cloud_snapshot_game
@@ -181,7 +193,124 @@ impl SqliteRepo {
         Self::migrate_source_count_columns(conn)?;
         Self::migrate_game_source_columns(conn)?;
         Self::migrate_snapshot_display_zone(conn)?;
-        Self::migrate_snapshot_timestamps(conn)
+        Self::migrate_snapshot_timestamps(conn)?;
+        Self::migrate_snapshot_metadata_columns(conn)
+    }
+
+    fn migrate_snapshot_metadata_columns(conn: &Connection) -> Result<()> {
+        let added_note_timestamp = !table_has_column(conn, "snapshots", "note_updated_at")?;
+        if added_note_timestamp {
+            conn.execute("ALTER TABLE snapshots ADD COLUMN note_updated_at TEXT", [])
+                .map_err(map_err)?;
+        }
+        let added_locked_timestamp = !table_has_column(conn, "snapshots", "locked_updated_at")?;
+        if added_locked_timestamp {
+            conn.execute(
+                "ALTER TABLE snapshots ADD COLUMN locked_updated_at TEXT",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        conn.execute(
+            "UPDATE snapshots
+             SET note_updated_at = COALESCE(note_updated_at, created_at),
+                 locked_updated_at = COALESCE(locked_updated_at, created_at)",
+            [],
+        )
+        .map_err(map_err)?;
+
+        let added_metadata_status =
+            !table_has_column(conn, "cloud_snapshot_sync", "metadata_sync_status")?;
+        if added_metadata_status {
+            conn.execute(
+                "ALTER TABLE cloud_snapshot_sync ADD COLUMN metadata_sync_status TEXT NOT NULL DEFAULT 'synced'",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "cloud_snapshot_sync", "metadata_last_synced_at")? {
+            conn.execute(
+                "ALTER TABLE cloud_snapshot_sync ADD COLUMN metadata_last_synced_at TEXT",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "cloud_snapshot_sync", "metadata_last_error_code")? {
+            conn.execute(
+                "ALTER TABLE cloud_snapshot_sync ADD COLUMN metadata_last_error_code TEXT",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "cloud_snapshot_sync", "remote_note_updated_at")? {
+            conn.execute(
+                "ALTER TABLE cloud_snapshot_sync ADD COLUMN remote_note_updated_at TEXT",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "cloud_snapshot_sync", "remote_locked_updated_at")? {
+            conn.execute(
+                "ALTER TABLE cloud_snapshot_sync ADD COLUMN remote_locked_updated_at TEXT",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        conn.execute(
+            "UPDATE cloud_snapshot_sync
+             SET remote_note_updated_at = COALESCE(remote_note_updated_at, created_at),
+                 remote_locked_updated_at = COALESCE(remote_locked_updated_at, created_at)",
+            [],
+        )
+        .map_err(map_err)?;
+
+        // 旧版没有字段修改时间。若本地值与首次上传时缓存的值不同，说明用户曾经
+        // 修改过它；迁移时把本地值标为最新并进入 pending，避免首次同步退回旧值。
+        if added_note_timestamp || added_locked_timestamp || added_metadata_status {
+            let migration_time =
+                chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+            if added_note_timestamp {
+                conn.execute(
+                    "UPDATE snapshots
+                     SET note_updated_at = ?1
+                     WHERE EXISTS (
+                        SELECT 1 FROM cloud_snapshot_sync cloud
+                        WHERE cloud.snapshot_id = snapshots.id
+                          AND cloud.note IS NOT snapshots.note
+                     )",
+                    params![migration_time],
+                )
+                .map_err(map_err)?;
+            }
+            if added_locked_timestamp {
+                conn.execute(
+                    "UPDATE snapshots
+                     SET locked_updated_at = ?1
+                     WHERE EXISTS (
+                        SELECT 1 FROM cloud_snapshot_sync cloud
+                        WHERE cloud.snapshot_id = snapshots.id
+                          AND cloud.locked != snapshots.locked
+                     )",
+                    params![migration_time],
+                )
+                .map_err(map_err)?;
+            }
+            if added_metadata_status {
+                conn.execute(
+                    "UPDATE cloud_snapshot_sync
+                     SET metadata_sync_status = 'pending'
+                     WHERE EXISTS (
+                        SELECT 1 FROM snapshots local
+                        WHERE local.id = cloud_snapshot_sync.snapshot_id
+                          AND (local.note IS NOT cloud_snapshot_sync.note
+                               OR local.locked != cloud_snapshot_sync.locked)
+                     )",
+                    [],
+                )
+                .map_err(map_err)?;
+            }
+        }
+        Ok(())
     }
 
     fn migrate_game_source_columns(conn: &Connection) -> Result<()> {
@@ -475,8 +604,10 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
         game_id: row.get(1)?,
         created_at: row.get(2)?,
         note: row.get(3)?,
+        note_updated_at: row.get(13)?,
         reason: reason_from_str(&reason),
         locked: locked_i != 0,
+        locked_updated_at: row.get(14)?,
         display_zone: display_zone_from_str(&display_zone),
         file_count: row.get::<_, i64>(6)? as u64,
         total_size: row.get::<_, i64>(7)? as u64,
@@ -488,14 +619,15 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
 }
 
 const SNAP_COLS: &str =
-    "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count, display_zone";
+    "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count, display_zone, note_updated_at, locked_updated_at";
 
-const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, source_count, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code";
+const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, source_count, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code, metadata_sync_status, metadata_last_synced_at, metadata_last_error_code, remote_note_updated_at, remote_locked_updated_at";
 
 fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnapshotRecord> {
     let reason: String = row.get(4)?;
     let locked: i64 = row.get(6)?;
     let status: String = row.get(15)?;
+    let metadata_status: String = row.get(18)?;
     Ok(CloudSnapshotRecord {
         account_id: row.get(0)?,
         cloud_game_id: row.get(1)?,
@@ -512,9 +644,14 @@ fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnaps
         archive_sha256: row.get(12)?,
         published_at: row.get(13)?,
         created_by_device_id: row.get(14)?,
-        sync_status: CloudSyncStatus::from_str(&status),
+        sync_status: CloudSyncStatus::from_db_value(&status),
         last_synced_at: row.get(16)?,
         last_error_code: row.get(17)?,
+        metadata_sync_status: CloudMetadataSyncStatus::from_db_value(&metadata_status),
+        metadata_last_synced_at: row.get(19)?,
+        metadata_last_error_code: row.get(20)?,
+        remote_note_updated_at: row.get(21)?,
+        remote_locked_updated_at: row.get(22)?,
     })
 }
 
@@ -632,16 +769,20 @@ impl Repository for SqliteRepo {
     fn insert_snapshot(&self, s: Snapshot) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let created_at = normalize_for_storage(&s.created_at)?;
+        let note_updated_at = normalize_for_storage(&s.note_updated_at)?;
+        let locked_updated_at = normalize_for_storage(&s.locked_updated_at)?;
         conn.execute(
-            "INSERT INTO snapshots (id, game_id, created_at, note, reason, locked, display_zone, file_count, total_size, content_hash, storage_key, status, source_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+            "INSERT INTO snapshots (id, game_id, created_at, note, note_updated_at, reason, locked, locked_updated_at, display_zone, file_count, total_size, content_hash, storage_key, status, source_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
             params![
                 s.id,
                 s.game_id,
                 created_at,
                 s.note,
+                note_updated_at,
                 reason_to_str(s.reason),
                 s.locked as i64,
+                locked_updated_at,
                 display_zone_to_str(s.display_zone),
                 s.file_count as i64,
                 s.total_size as i64,
@@ -688,10 +829,12 @@ impl Repository for SqliteRepo {
     fn update_snapshot(&self, s: Snapshot) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let created_at = normalize_for_storage(&s.created_at)?;
+        let note_updated_at = normalize_for_storage(&s.note_updated_at)?;
+        let locked_updated_at = normalize_for_storage(&s.locked_updated_at)?;
         conn.execute(
             "UPDATE snapshots SET game_id=?2, created_at=?3, note=?4, reason=?5, locked=?6,
                  display_zone=?7, file_count=?8, total_size=?9, content_hash=?10, storage_key=?11,
-                 status=?12, source_count=?13
+                 status=?12, source_count=?13, note_updated_at=?14, locked_updated_at=?15
              WHERE id=?1",
             params![
                 s.id,
@@ -707,6 +850,8 @@ impl Repository for SqliteRepo {
                 s.storage_key,
                 status_to_str(s.status),
                 s.source_count as i64,
+                note_updated_at,
+                locked_updated_at,
             ],
         )
         .map_err(map_err)?;
@@ -928,12 +1073,16 @@ impl CloudStateRepository for SqliteRepo {
     fn upsert_cloud_snapshot(&self, snapshot: CloudSnapshotRecord) -> Result<()> {
         let conn = self.conn.lock().unwrap();
         let created_at = normalize_for_storage(&snapshot.created_at)?;
+        let remote_note_updated_at = normalize_for_storage(&snapshot.remote_note_updated_at)?;
+        let remote_locked_updated_at = normalize_for_storage(&snapshot.remote_locked_updated_at)?;
         conn.execute(
             "INSERT INTO cloud_snapshot_sync
                 (account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked,
                  file_count, total_size, source_count, content_hash, archive_size, archive_sha256,
-                 published_at, created_by_device_id, sync_status, last_synced_at, last_error_code)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18)
+                 published_at, created_by_device_id, sync_status, last_synced_at, last_error_code,
+                 metadata_sync_status, metadata_last_synced_at, metadata_last_error_code,
+                 remote_note_updated_at, remote_locked_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
              ON CONFLICT(account_id, snapshot_id) DO UPDATE SET
                 cloud_game_id=excluded.cloud_game_id,
                 created_at=excluded.created_at,
@@ -950,7 +1099,12 @@ impl CloudStateRepository for SqliteRepo {
                 created_by_device_id=excluded.created_by_device_id,
                 sync_status=excluded.sync_status,
                 last_synced_at=excluded.last_synced_at,
-                last_error_code=excluded.last_error_code",
+                last_error_code=excluded.last_error_code,
+                metadata_sync_status=excluded.metadata_sync_status,
+                metadata_last_synced_at=excluded.metadata_last_synced_at,
+                metadata_last_error_code=excluded.metadata_last_error_code,
+                remote_note_updated_at=excluded.remote_note_updated_at,
+                remote_locked_updated_at=excluded.remote_locked_updated_at",
             params![
                 snapshot.account_id,
                 snapshot.cloud_game_id,
@@ -970,6 +1124,11 @@ impl CloudStateRepository for SqliteRepo {
                 snapshot.sync_status.as_str(),
                 snapshot.last_synced_at,
                 snapshot.last_error_code,
+                snapshot.metadata_sync_status.as_str(),
+                snapshot.metadata_last_synced_at,
+                snapshot.metadata_last_error_code,
+                remote_note_updated_at,
+                remote_locked_updated_at,
             ],
         )
         .map_err(map_err)?;
@@ -1058,6 +1217,41 @@ impl CloudStateRepository for SqliteRepo {
         if changed == 0 {
             return Err(SaveLinkError::Io(format!(
                 "云端快照状态不存在: {account_id}/{snapshot_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn update_cloud_snapshot_metadata_status(
+        &self,
+        account_id: &str,
+        snapshot_id: &str,
+        state: CloudSnapshotMetadataState,
+    ) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        let changed = conn
+            .execute(
+                "UPDATE cloud_snapshot_sync
+                 SET metadata_sync_status = ?3,
+                     metadata_last_synced_at = ?4,
+                     metadata_last_error_code = ?5,
+                     remote_note_updated_at = COALESCE(?6, remote_note_updated_at),
+                     remote_locked_updated_at = COALESCE(?7, remote_locked_updated_at)
+                 WHERE account_id = ?1 AND snapshot_id = ?2",
+                params![
+                    account_id,
+                    snapshot_id,
+                    state.status.as_str(),
+                    state.last_synced_at,
+                    state.last_error_code,
+                    state.remote_note_updated_at,
+                    state.remote_locked_updated_at,
+                ],
+            )
+            .map_err(map_err)?;
+        if changed == 0 {
+            return Err(SaveLinkError::Io(format!(
+                "云端快照元数据状态不存在: {account_id}/{snapshot_id}"
             )));
         }
         Ok(())

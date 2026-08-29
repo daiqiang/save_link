@@ -205,7 +205,7 @@ impl SteamDiscoveryService {
 
         let mut matches = Vec::new();
         let mut seen = HashSet::new();
-        candidates.sort_by(|left, right| right.3.cmp(&left.3));
+        candidates.sort_by_key(|candidate| std::cmp::Reverse(candidate.3));
         for (source_game, app_id, match_kind, _) in candidates {
             let game = resolve_alias(&connection, source_game)?;
             if !seen.insert((game.name.to_ascii_lowercase(), app_id)) {

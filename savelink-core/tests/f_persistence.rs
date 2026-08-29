@@ -13,7 +13,6 @@ use savelink_core::model::{CreateOutcome, Reason, SnapshotDisplayZone};
 use savelink_core::repo::Repository;
 use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::testkit::TempDir;
-use std::path::PathBuf;
 use std::sync::Arc;
 
 #[test]
@@ -162,11 +161,7 @@ fn f3_game_update_survives_reopen() {
         let repo = SqliteRepo::open(&db_path).unwrap();
         let got = repo.get_game("g_edit").unwrap().unwrap();
         assert_eq!(got.name, "新名称", "F3: 游戏名称修改应持久化");
-        assert_eq!(
-            got.save_paths,
-            vec![PathBuf::from(new_save)],
-            "F3: 存档目录修改应持久化"
-        );
+        assert_eq!(got.save_paths, vec![new_save], "F3: 存档目录修改应持久化");
         assert_eq!(got.updated_at, "2026-06-23 00:01", "F3: 更新时间应持久化");
     }
 }

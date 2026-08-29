@@ -1,12 +1,16 @@
 //! 云端快照协议 v1 的上传、发现和接收落地编排。
 
 use crate::cloud_archive::{CloudArchiveCodec, CloudArchiveError, SnapshotContentExpectation};
-use crate::cloud_model::{CloudGameBinding, CloudSnapshotRecord, CloudSyncStatus};
+use crate::cloud_model::{
+    CloudGameBinding, CloudMetadataSyncStatus, CloudSnapshotMetadataState, CloudSnapshotRecord,
+    CloudSyncStatus,
+};
 use crate::cloud_protocol::{
     archive_layout_version, content_hash_algorithm, game_path, games_path, manifest_path,
-    normalize_timestamp, reason_to_protocol, snapshot_id_from_ok_name, snapshot_ok_path,
-    snapshot_zip_path, snapshots_path, ArchiveDocument, CloudGameDocument, CloudManifest,
-    CloudProtocolError, ContentHashDocument, SnapshotCommitDocument, PROTOCOL_NAME,
+    normalize_timestamp, reason_to_protocol, snapshot_id_from_ok_name, snapshot_metadata_path,
+    snapshot_ok_path, snapshot_zip_path, snapshots_path, ArchiveDocument, CloudGameDocument,
+    CloudManifest, CloudProtocolError, ContentHashDocument, SnapshotCommitDocument,
+    SnapshotLockedMetadata, SnapshotMetadataDocument, SnapshotNoteMetadata, PROTOCOL_NAME,
     PROTOCOL_VERSION,
 };
 use crate::cloud_repo::CloudStateRepository;
@@ -113,6 +117,12 @@ pub enum ReceiveOutcome {
     AlreadyPresent,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetadataSyncOutcome {
+    AlreadySynced,
+    Updated,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CloudSnapshotDiscovery {
     pub cloud_game_id: String,
@@ -200,11 +210,59 @@ where
         snapshot_id: &str,
     ) -> CloudSyncResult<UploadOutcome> {
         let result = self.upload_snapshot_inner(game_id, snapshot_id);
-        if let Err(error) = &result {
-            self.mark_snapshot_error(snapshot_id, error);
-            self.cleanup_operation_dir("upload", snapshot_id);
+        match &result {
+            Ok(_) => {
+                // 内容发布成功不因可重试的元数据同步失败而回滚；失败状态会单独落库。
+                let _ = self.sync_snapshot_metadata(snapshot_id);
+            }
+            Err(error) => {
+                self.mark_snapshot_error(snapshot_id, error);
+                self.cleanup_operation_dir("upload", snapshot_id);
+            }
         }
         result
+    }
+
+    /// 合并一条已发布快照的可变名称和锁定状态。
+    pub fn sync_snapshot_metadata(
+        &self,
+        snapshot_id: &str,
+    ) -> CloudSyncResult<MetadataSyncOutcome> {
+        let result = self.sync_snapshot_metadata_inner(snapshot_id);
+        if let Err(error) = &result {
+            self.mark_snapshot_metadata_error(snapshot_id, error);
+        }
+        result
+    }
+
+    /// 十分钟维护周期调用：同步当前设备已经知道且已经落地的全部云快照元数据。
+    pub fn sync_known_snapshot_metadata(&self) -> CloudSyncResult<usize> {
+        let mut changed = 0;
+        for binding in self.repo.list_cloud_game_bindings(&self.account_id)? {
+            if !binding.sync_enabled {
+                continue;
+            }
+            for record in self
+                .repo
+                .list_cloud_snapshots(&self.account_id, &binding.cloud_game_id)?
+            {
+                if matches!(
+                    record.sync_status,
+                    CloudSyncStatus::DeletePending
+                        | CloudSyncStatus::Deleting
+                        | CloudSyncStatus::DeleteFailed
+                        | CloudSyncStatus::RemoteDeleted
+                ) || self.repo.get_snapshot(&record.snapshot_id)?.is_none()
+                {
+                    continue;
+                }
+                if self.sync_snapshot_metadata(&record.snapshot_id)? == MetadataSyncOutcome::Updated
+                {
+                    changed += 1;
+                }
+            }
+        }
+        Ok(changed)
     }
 
     pub fn discover_remote_snapshots(&self) -> CloudSyncResult<Vec<CloudSnapshotRecord>> {
@@ -250,8 +308,27 @@ where
                 let commit = self.read_snapshot_commit(&cloud_game_id, &snapshot_id)?;
                 self.ensure_remote_zip_exists(&commit)?;
                 let status = self.discovery_status(&commit)?;
-                let record = record_from_commit(&self.account_id, &commit, status, None);
+                let metadata = self.read_effective_remote_metadata(&commit)?;
+                let record = record_from_commit(
+                    &self.account_id,
+                    &commit,
+                    &metadata,
+                    status,
+                    None,
+                    CloudMetadataSyncStatus::Synced,
+                    None,
+                );
                 self.repo.upsert_cloud_snapshot(record.clone())?;
+                let record = if self.repo.get_snapshot(&snapshot_id)?.is_some() {
+                    self.sync_snapshot_metadata(&snapshot_id)?;
+                    self.repo
+                        .get_cloud_snapshot(&self.account_id, &snapshot_id)?
+                        .ok_or_else(|| {
+                            CloudSyncError::InvalidState("快照元数据同步后本机云记录丢失".into())
+                        })?
+                } else {
+                    record
+                };
                 discovered.push(CloudSnapshotDiscovery {
                     cloud_game_id: cloud_game_id.clone(),
                     game_name: game.name.clone(),
@@ -293,6 +370,11 @@ where
             .get_cloud_snapshot(&self.account_id, snapshot_id)?
         {
             if cloud.sync_status != CloudSyncStatus::RemoteDeleted {
+                if cloud.metadata_sync_status != CloudMetadataSyncStatus::Synced {
+                    return Err(CloudSyncError::InvalidState(
+                        "快照元数据尚未同步，已暂停云端清理".into(),
+                    ));
+                }
                 self.repo.update_cloud_snapshot_status(
                     &self.account_id,
                     snapshot_id,
@@ -309,6 +391,8 @@ where
                 )?;
 
                 let remote_result = (|| -> CloudSyncResult<()> {
+                    self.cloud_store
+                        .delete_file(&snapshot_metadata_path(&cloud.cloud_game_id, snapshot_id)?)?;
                     self.cloud_store
                         .delete_file(&snapshot_ok_path(&cloud.cloud_game_id, snapshot_id)?)?;
                     self.cloud_store
@@ -386,11 +470,15 @@ where
                 return Err(CloudSyncError::SnapshotIdConflict(snapshot_id.into()));
             }
             self.ensure_remote_zip_exists(&existing)?;
+            let remote_metadata = self.read_effective_remote_metadata(&existing)?;
             self.repo.upsert_cloud_snapshot(record_from_commit(
                 &self.account_id,
                 &existing,
+                &remote_metadata,
                 CloudSyncStatus::Uploaded,
                 Some(self.now_timestamp()?),
+                CloudMetadataSyncStatus::Pending,
+                None,
             ))?;
             return Ok(UploadOutcome::AlreadyPresent);
         }
@@ -433,10 +521,14 @@ where
             created_by_device_id: self.device_id.clone(),
         };
         commit.validate(game_id, snapshot_id)?;
+        let local_metadata = metadata_from_snapshot(&snapshot)?;
         self.repo.upsert_cloud_snapshot(record_from_commit(
             &self.account_id,
             &commit,
+            &local_metadata,
             CloudSyncStatus::Uploading,
+            None,
+            CloudMetadataSyncStatus::Pending,
             None,
         ))?;
 
@@ -474,8 +566,11 @@ where
         self.repo.upsert_cloud_snapshot(record_from_commit(
             &self.account_id,
             &commit,
+            &local_metadata,
             CloudSyncStatus::Uploaded,
             Some(self.now_timestamp()?),
+            CloudMetadataSyncStatus::Pending,
+            None,
         ))?;
         let _ = fs::remove_dir_all(operation_dir);
         Ok(UploadOutcome::Uploaded)
@@ -547,10 +642,12 @@ where
             id: commit.snapshot_id.clone(),
             game_id: game.id,
             created_at: local_created_at,
-            note: commit.note.clone(),
+            note: cached.note.clone(),
+            note_updated_at: cached.remote_note_updated_at.clone(),
             reason: commit.reason()?,
-            locked: commit.locked,
-            display_zone: crate::model::SnapshotDisplayZone::for_locked(commit.locked),
+            locked: cached.locked,
+            locked_updated_at: cached.remote_locked_updated_at.clone(),
+            display_zone: crate::model::SnapshotDisplayZone::for_locked(cached.locked),
             file_count: commit.file_count,
             total_size: commit.total_size,
             source_count: commit.source_count,
@@ -687,6 +784,103 @@ where
             cloud_game_id,
             snapshot_id,
         )?)
+    }
+
+    fn read_effective_remote_metadata(
+        &self,
+        commit: &SnapshotCommitDocument,
+    ) -> CloudSyncResult<SnapshotMetadataDocument> {
+        let remote_path = snapshot_metadata_path(&commit.cloud_game_id, &commit.snapshot_id)?;
+        if self.cloud_store.stat_file(&remote_path)?.is_none() {
+            return metadata_from_commit(commit);
+        }
+        let bytes = self.read_remote_bytes(
+            &remote_path,
+            &format!("snapshot-{}-metadata-read.json", commit.snapshot_id),
+        )?;
+        normalize_metadata_document(SnapshotMetadataDocument::from_json(
+            &bytes,
+            &commit.cloud_game_id,
+            &commit.snapshot_id,
+        )?)
+    }
+
+    fn sync_snapshot_metadata_inner(
+        &self,
+        snapshot_id: &str,
+    ) -> CloudSyncResult<MetadataSyncOutcome> {
+        let mut record = self
+            .repo
+            .get_cloud_snapshot(&self.account_id, snapshot_id)?
+            .ok_or_else(|| {
+                CloudSyncError::InvalidState(format!("快照尚未发布到云端: {snapshot_id}"))
+            })?;
+        if matches!(
+            record.sync_status,
+            CloudSyncStatus::DeletePending
+                | CloudSyncStatus::Deleting
+                | CloudSyncStatus::DeleteFailed
+                | CloudSyncStatus::RemoteDeleted
+        ) {
+            return Err(CloudSyncError::InvalidState(
+                "正在删除的快照不能同步元数据".into(),
+            ));
+        }
+        let mut local = self
+            .repo
+            .get_snapshot(snapshot_id)?
+            .ok_or_else(|| CloudSyncError::InvalidState("本机快照不存在".into()))?;
+        let commit = self.read_snapshot_commit(&record.cloud_game_id, snapshot_id)?;
+        if !record_matches_commit(&record, &commit) || !snapshot_matches_commit(&local, &commit)? {
+            return Err(CloudSyncError::SnapshotIdConflict(snapshot_id.into()));
+        }
+
+        let remote_path = snapshot_metadata_path(&record.cloud_game_id, snapshot_id)?;
+        let remote_exists = self.cloud_store.stat_file(&remote_path)?.is_some();
+        let remote = self.read_effective_remote_metadata(&commit)?;
+        let local_document = metadata_from_snapshot(&local)?;
+        let merged = merge_snapshot_metadata(&local_document, &remote);
+        let remote_changed = !remote_exists || merged != remote;
+        if remote_changed {
+            let local_path =
+                self.metadata_temp_path(&format!("snapshot-{snapshot_id}-metadata-upload.json"))?;
+            write_bytes(&local_path, &merged.to_json()?)?;
+            self.cloud_store
+                .put_file(&remote_path, &local_path, PutMode::Overwrite)?;
+            let published = self.read_effective_remote_metadata(&commit)?;
+            if published != merged {
+                return Err(CloudSyncError::InvalidState(
+                    "云端快照元数据更新后校验失败".into(),
+                ));
+            }
+        }
+
+        let local_changed = local.note != merged.note.value
+            || !crate::timestamp::same_instant(&local.note_updated_at, &merged.note.changed_at)
+            || local.locked != merged.locked.value
+            || !crate::timestamp::same_instant(&local.locked_updated_at, &merged.locked.changed_at);
+        if local_changed {
+            local.note = merged.note.value.clone();
+            local.note_updated_at = merged.note.changed_at.clone();
+            local.locked = merged.locked.value;
+            local.locked_updated_at = merged.locked.changed_at.clone();
+            self.repo.update_snapshot(local)?;
+        }
+
+        record.note = merged.note.value.clone();
+        record.locked = merged.locked.value;
+        record.metadata_sync_status = CloudMetadataSyncStatus::Synced;
+        record.metadata_last_synced_at = Some(self.now_timestamp()?);
+        record.metadata_last_error_code = None;
+        record.remote_note_updated_at = merged.note.changed_at.clone();
+        record.remote_locked_updated_at = merged.locked.changed_at.clone();
+        self.repo.upsert_cloud_snapshot(record)?;
+
+        Ok(if remote_changed || local_changed {
+            MetadataSyncOutcome::Updated
+        } else {
+            MetadataSyncOutcome::AlreadySynced
+        })
     }
 
     fn ensure_remote_zip_exists(&self, commit: &SnapshotCommitDocument) -> CloudSyncResult<()> {
@@ -848,13 +1042,38 @@ where
             );
         }
     }
+
+    fn mark_snapshot_metadata_error(&self, snapshot_id: &str, error: &CloudSyncError) {
+        if self
+            .repo
+            .get_cloud_snapshot(&self.account_id, snapshot_id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            let _ = self.repo.update_cloud_snapshot_metadata_status(
+                &self.account_id,
+                snapshot_id,
+                CloudSnapshotMetadataState {
+                    status: CloudMetadataSyncStatus::Error,
+                    last_synced_at: None,
+                    last_error_code: Some(error.code().into()),
+                    remote_note_updated_at: None,
+                    remote_locked_updated_at: None,
+                },
+            );
+        }
+    }
 }
 
 fn record_from_commit(
     account_id: &str,
     commit: &SnapshotCommitDocument,
+    metadata: &SnapshotMetadataDocument,
     sync_status: CloudSyncStatus,
     last_synced_at: Option<String>,
+    metadata_sync_status: CloudMetadataSyncStatus,
+    metadata_last_synced_at: Option<String>,
 ) -> CloudSnapshotRecord {
     CloudSnapshotRecord {
         account_id: account_id.into(),
@@ -862,8 +1081,8 @@ fn record_from_commit(
         snapshot_id: commit.snapshot_id.clone(),
         created_at: commit.created_at.clone(),
         reason: commit.reason().unwrap_or(crate::model::Reason::Manual),
-        note: commit.note.clone(),
-        locked: commit.locked,
+        note: metadata.note.value.clone(),
+        locked: metadata.locked.value,
         file_count: commit.file_count,
         total_size: commit.total_size,
         source_count: commit.source_count,
@@ -875,6 +1094,90 @@ fn record_from_commit(
         sync_status,
         last_synced_at,
         last_error_code: None,
+        metadata_sync_status,
+        metadata_last_synced_at,
+        metadata_last_error_code: None,
+        remote_note_updated_at: metadata.note.changed_at.clone(),
+        remote_locked_updated_at: metadata.locked.changed_at.clone(),
+    }
+}
+
+fn metadata_from_commit(
+    commit: &SnapshotCommitDocument,
+) -> CloudSyncResult<SnapshotMetadataDocument> {
+    normalize_metadata_document(SnapshotMetadataDocument {
+        schema_version: 1,
+        object_type: "snapshot_metadata".into(),
+        snapshot_id: commit.snapshot_id.clone(),
+        cloud_game_id: commit.cloud_game_id.clone(),
+        note: SnapshotNoteMetadata {
+            value: commit.note.clone(),
+            changed_at: commit.created_at.clone(),
+        },
+        locked: SnapshotLockedMetadata {
+            value: commit.locked,
+            changed_at: commit.created_at.clone(),
+        },
+    })
+}
+
+fn metadata_from_snapshot(snapshot: &Snapshot) -> CloudSyncResult<SnapshotMetadataDocument> {
+    normalize_metadata_document(SnapshotMetadataDocument {
+        schema_version: 1,
+        object_type: "snapshot_metadata".into(),
+        snapshot_id: snapshot.id.clone(),
+        cloud_game_id: snapshot.game_id.clone(),
+        note: SnapshotNoteMetadata {
+            value: snapshot.note.clone(),
+            changed_at: snapshot.note_updated_at.clone(),
+        },
+        locked: SnapshotLockedMetadata {
+            value: snapshot.locked,
+            changed_at: snapshot.locked_updated_at.clone(),
+        },
+    })
+}
+
+fn normalize_metadata_document(
+    mut document: SnapshotMetadataDocument,
+) -> CloudSyncResult<SnapshotMetadataDocument> {
+    document.note.changed_at = normalize_timestamp(&document.note.changed_at)?;
+    document.locked.changed_at = normalize_timestamp(&document.locked.changed_at)?;
+    document.validate(&document.cloud_game_id, &document.snapshot_id)?;
+    Ok(document)
+}
+
+fn merge_snapshot_metadata(
+    local: &SnapshotMetadataDocument,
+    remote: &SnapshotMetadataDocument,
+) -> SnapshotMetadataDocument {
+    use std::cmp::Ordering;
+
+    let note =
+        match crate::timestamp::compare_timestamps(&local.note.changed_at, &remote.note.changed_at)
+        {
+            Ordering::Greater => local.note.clone(),
+            // 同时修改名称时保留当前云端值，避免两台设备反复覆盖。
+            Ordering::Less | Ordering::Equal => remote.note.clone(),
+        };
+    let locked = match crate::timestamp::compare_timestamps(
+        &local.locked.changed_at,
+        &remote.locked.changed_at,
+    ) {
+        Ordering::Greater => local.locked.clone(),
+        Ordering::Less => remote.locked.clone(),
+        Ordering::Equal => SnapshotLockedMetadata {
+            value: local.locked.value || remote.locked.value,
+            changed_at: remote.locked.changed_at.clone(),
+        },
+    };
+    SnapshotMetadataDocument {
+        schema_version: 1,
+        object_type: "snapshot_metadata".into(),
+        snapshot_id: remote.snapshot_id.clone(),
+        cloud_game_id: remote.cloud_game_id.clone(),
+        note,
+        locked,
     }
 }
 

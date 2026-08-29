@@ -3,10 +3,12 @@
 use savelink_core::cloud_archive::{
     CloudArchiveCodec, CloudArchiveError, SnapshotContentExpectation, ZipCloudArchiveCodec,
 };
-use savelink_core::cloud_model::{CloudAccount, CloudSyncStatus};
+use savelink_core::cloud_model::{
+    CloudAccount, CloudMetadataSyncStatus, CloudSnapshotMetadataState, CloudSyncStatus,
+};
 use savelink_core::cloud_protocol::{
-    game_path, snapshot_ok_path, snapshot_zip_path, CloudGameDocument, CloudManifest,
-    SnapshotCommitDocument,
+    game_path, snapshot_metadata_path, snapshot_ok_path, snapshot_zip_path, CloudGameDocument,
+    CloudManifest, SnapshotCommitDocument, SnapshotMetadataDocument,
 };
 use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::cloud_service::{
@@ -50,6 +52,37 @@ struct Device {
 
 struct DeleteFailingCloudStore {
     inner: Arc<dyn CloudObjectStore>,
+}
+
+struct PutFailingCloudStore {
+    inner: Arc<dyn CloudObjectStore>,
+}
+
+impl CloudObjectStore for PutFailingCloudStore {
+    fn put_file(
+        &self,
+        _remote_path: &str,
+        _local_file: &Path,
+        _mode: PutMode,
+    ) -> CloudStoreResult<CloudFile> {
+        Err(CloudStoreError::NetworkUnavailable)
+    }
+
+    fn get_file(&self, remote_path: &str, local_file: &Path) -> CloudStoreResult<()> {
+        self.inner.get_file(remote_path, local_file)
+    }
+
+    fn list_directory(&self, remote_path: &str) -> CloudStoreResult<Vec<CloudEntry>> {
+        self.inner.list_directory(remote_path)
+    }
+
+    fn stat_file(&self, remote_path: &str) -> CloudStoreResult<Option<CloudFile>> {
+        self.inner.stat_file(remote_path)
+    }
+
+    fn delete_file(&self, remote_path: &str) -> CloudStoreResult<()> {
+        self.inner.delete_file(remote_path)
+    }
 }
 
 impl CloudObjectStore for DeleteFailingCloudStore {
@@ -151,8 +184,10 @@ fn seed_device_a(device: &Device, contents: &[(&str, &[u8])]) -> PathBuf {
             game_id: "game_1".into(),
             created_at: "2026-07-14T18:10:00+08:00".into(),
             note: Some("Boss 前备份".into()),
+            note_updated_at: "2026-07-14T18:10:00+08:00".into(),
             reason: Reason::Manual,
             locked: true,
+            locked_updated_at: "2026-07-14T18:10:00+08:00".into(),
             display_zone: savelink_core::model::SnapshotDisplayZone::Locked,
             file_count: scan_result.file_count,
             total_size: scan_result.total_size,
@@ -206,8 +241,10 @@ fn seed_multi_source_device_a(device: &Device) -> (Vec<PathBuf>, ScanResult) {
             game_id: "game_1".into(),
             created_at: "2026-07-14T18:10:00+08:00".into(),
             note: Some("multi-source snapshot".into()),
+            note_updated_at: "2026-07-14T18:10:00+08:00".into(),
             reason: Reason::Manual,
             locked: false,
+            locked_updated_at: "2026-07-14T18:10:00+08:00".into(),
             display_zone: savelink_core::model::SnapshotDisplayZone::Normal,
             file_count: scan_result.file_count,
             total_size: scan_result.total_size,
@@ -268,6 +305,40 @@ fn unlock_snapshot(device: &Device, snapshot_id: &str) {
     let mut snapshot = device.repo.get_snapshot(snapshot_id).unwrap().unwrap();
     snapshot.locked = false;
     device.repo.update_snapshot(snapshot).unwrap();
+}
+
+fn edit_snapshot_metadata(
+    device: &Device,
+    snapshot_id: &str,
+    note: Option<&str>,
+    note_updated_at: Option<&str>,
+    locked: Option<bool>,
+    locked_updated_at: Option<&str>,
+) {
+    let mut snapshot = device.repo.get_snapshot(snapshot_id).unwrap().unwrap();
+    if let Some(value) = note {
+        snapshot.note = Some(value.into());
+        snapshot.note_updated_at = note_updated_at.unwrap().into();
+    }
+    if let Some(value) = locked {
+        snapshot.locked = value;
+        snapshot.locked_updated_at = locked_updated_at.unwrap().into();
+    }
+    device.repo.update_snapshot(snapshot).unwrap();
+    device
+        .repo
+        .update_cloud_snapshot_metadata_status(
+            "account_1",
+            snapshot_id,
+            CloudSnapshotMetadataState {
+                status: CloudMetadataSyncStatus::Pending,
+                last_synced_at: None,
+                last_error_code: None,
+                remote_note_updated_at: None,
+                remote_locked_updated_at: None,
+            },
+        )
+        .unwrap();
 }
 
 #[test]
@@ -909,6 +980,210 @@ fn h17_pending_game_cannot_start_manual_cloud_upload() {
             .is_none(),
         "拒绝待配置游戏时不应先写入任何云端对象"
     );
+}
+
+#[test]
+fn h18_two_devices_merge_name_and_lock_independently() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"metadata-sync")]);
+    let mut initial = device_a.repo.get_snapshot("snap_1").unwrap().unwrap();
+    initial.locked = false;
+    device_a.repo.update_snapshot(initial).unwrap();
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    device_b.service.discover_remote_catalog().unwrap();
+    device_b.service.receive_remote_snapshot("snap_1").unwrap();
+
+    edit_snapshot_metadata(
+        &device_a,
+        "snap_1",
+        Some("设备 A 的名称"),
+        Some("2026-07-14T12:00:00Z"),
+        None,
+        None,
+    );
+    device_a.service.sync_snapshot_metadata("snap_1").unwrap();
+
+    edit_snapshot_metadata(
+        &device_b,
+        "snap_1",
+        None,
+        None,
+        Some(true),
+        Some("2026-07-14T12:01:00Z"),
+    );
+    device_b.service.sync_snapshot_metadata("snap_1").unwrap();
+    device_a.service.sync_known_snapshot_metadata().unwrap();
+
+    for device in [&device_a, &device_b] {
+        let snapshot = device.repo.get_snapshot("snap_1").unwrap().unwrap();
+        assert_eq!(snapshot.note.as_deref(), Some("设备 A 的名称"));
+        assert!(snapshot.locked);
+        let cloud_record = device
+            .repo
+            .get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            cloud_record.metadata_sync_status,
+            CloudMetadataSyncStatus::Synced
+        );
+    }
+
+    let local = device_a.root.join("metadata.json");
+    cloud
+        .get_file(&snapshot_metadata_path("game_1", "snap_1").unwrap(), &local)
+        .unwrap();
+    let document =
+        SnapshotMetadataDocument::from_json(&fs::read(local).unwrap(), "game_1", "snap_1").unwrap();
+    assert_eq!(document.note.value.as_deref(), Some("设备 A 的名称"));
+    assert!(document.locked.value);
+}
+
+#[test]
+fn h19_equal_time_conflicts_are_deterministic() {
+    let (_tmp, _cloud, _codec, device_a, device_b) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"tie")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    device_b.service.discover_remote_catalog().unwrap();
+    device_b.service.receive_remote_snapshot("snap_1").unwrap();
+
+    let tie_time = "2026-07-14T12:00:00Z";
+    edit_snapshot_metadata(
+        &device_a,
+        "snap_1",
+        Some("先到云端的名称"),
+        Some(tie_time),
+        Some(false),
+        Some(tie_time),
+    );
+    edit_snapshot_metadata(
+        &device_b,
+        "snap_1",
+        Some("同时产生的另一名称"),
+        Some(tie_time),
+        Some(true),
+        Some(tie_time),
+    );
+    device_a.service.sync_snapshot_metadata("snap_1").unwrap();
+    device_b.service.sync_snapshot_metadata("snap_1").unwrap();
+    device_a.service.sync_known_snapshot_metadata().unwrap();
+
+    for device in [&device_a, &device_b] {
+        let snapshot = device.repo.get_snapshot("snap_1").unwrap().unwrap();
+        assert_eq!(snapshot.note.as_deref(), Some("先到云端的名称"));
+        assert!(snapshot.locked, "同一时刻的锁定冲突必须优先保护数据");
+    }
+}
+
+#[test]
+fn h20_metadata_error_survives_reopen_and_retries() {
+    let (_tmp, cloud, _codec, device_a, _) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"retry")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    edit_snapshot_metadata(
+        &device_a,
+        "snap_1",
+        Some("断网期间修改"),
+        Some("2026-07-14T12:00:00Z"),
+        None,
+        None,
+    );
+
+    let failing: Arc<dyn CloudObjectStore> = Arc::new(PutFailingCloudStore {
+        inner: cloud.clone(),
+    });
+    let failing_service = service_for_device(&device_a, failing);
+    let error = failing_service
+        .sync_snapshot_metadata("snap_1")
+        .unwrap_err();
+    assert_eq!(error.code(), "network_unavailable");
+    assert_eq!(
+        device_a
+            .repo
+            .get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap()
+            .metadata_sync_status,
+        CloudMetadataSyncStatus::Error
+    );
+
+    let reopened_repo = Arc::new(SqliteRepo::open(device_a.root.join("savelink.db")).unwrap());
+    assert_eq!(
+        reopened_repo
+            .get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap()
+            .metadata_sync_status,
+        CloudMetadataSyncStatus::Error,
+        "元数据错误状态必须跨重启保留"
+    );
+    let reopened_service = CloudSyncService::new(
+        reopened_repo.clone(),
+        Arc::new(FsStore::new(device_a.root.join("repository"))),
+        cloud,
+        Arc::new(ZipCloudArchiveCodec::new()),
+        Arc::new(FixedClock("2026-07-14T20:00:00+08:00")),
+        device_a.root.join("cloud-work-reopened"),
+        "account_1",
+        "device_a",
+        "repo_a",
+    )
+    .unwrap();
+    assert_eq!(reopened_service.sync_known_snapshot_metadata().unwrap(), 1);
+    let record = reopened_repo
+        .get_cloud_snapshot("account_1", "snap_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(record.note.as_deref(), Some("断网期间修改"));
+    assert_eq!(record.metadata_sync_status, CloudMetadataSyncStatus::Synced);
+}
+
+#[test]
+fn h21_pending_metadata_blocks_cloud_cleanup() {
+    let (_tmp, cloud, _codec, device_a, _) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"protected")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    edit_snapshot_metadata(
+        &device_a,
+        "snap_1",
+        None,
+        None,
+        Some(false),
+        Some("2026-07-14T12:00:00Z"),
+    );
+
+    let error = device_a
+        .service
+        .delete_snapshot_everywhere("snap_1")
+        .unwrap_err();
+    assert_eq!(error.code(), "cloud_state_invalid");
+    assert!(device_a.repo.get_snapshot("snap_1").unwrap().is_some());
+    assert!(cloud
+        .stat_file(&snapshot_ok_path("game_1", "snap_1").unwrap())
+        .unwrap()
+        .is_some());
+
+    device_a.service.sync_snapshot_metadata("snap_1").unwrap();
+    device_a
+        .service
+        .delete_snapshot_everywhere("snap_1")
+        .unwrap();
+    assert!(cloud
+        .stat_file(&snapshot_metadata_path("game_1", "snap_1").unwrap())
+        .unwrap()
+        .is_none());
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

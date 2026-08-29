@@ -38,6 +38,31 @@ pub enum CloudSyncStatus {
     RemoteDeleted,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CloudMetadataSyncStatus {
+    Synced,
+    Pending,
+    Error,
+}
+
+impl CloudMetadataSyncStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Synced => "synced",
+            Self::Pending => "pending",
+            Self::Error => "error",
+        }
+    }
+
+    pub fn from_db_value(value: &str) -> Self {
+        match value {
+            "pending" => Self::Pending,
+            "error" => Self::Error,
+            _ => Self::Synced,
+        }
+    }
+}
+
 impl CloudSyncStatus {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -55,7 +80,7 @@ impl CloudSyncStatus {
         }
     }
 
-    pub fn from_str(value: &str) -> Self {
+    pub fn from_db_value(value: &str) -> Self {
         match value {
             "uploading" => Self::Uploading,
             "uploaded" => Self::Uploaded,
@@ -93,4 +118,20 @@ pub struct CloudSnapshotRecord {
     pub sync_status: CloudSyncStatus,
     pub last_synced_at: Option<String>,
     pub last_error_code: Option<String>,
+    /// 名称/锁定状态的同步状态，与 zip 内容生命周期相互独立。
+    pub metadata_sync_status: CloudMetadataSyncStatus,
+    pub metadata_last_synced_at: Option<String>,
+    pub metadata_last_error_code: Option<String>,
+    /// 最近一次已知云端字段版本；本机修改时间保存在 `Snapshot`。
+    pub remote_note_updated_at: String,
+    pub remote_locked_updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudSnapshotMetadataState {
+    pub status: CloudMetadataSyncStatus,
+    pub last_synced_at: Option<String>,
+    pub last_error_code: Option<String>,
+    pub remote_note_updated_at: Option<String>,
+    pub remote_locked_updated_at: Option<String>,
 }

@@ -26,7 +26,7 @@
 | 1.19 | Codex | 2026-08-25 | 同步动态发现阶段 1 至 5：本机启动绑定、原生监听、受限补查、候选确认、首次自动快照和真实验收 |
 | 1.20 | Codex | 2026-08-26 | 动态发现增加 RUNE/CODEX 根目录，并按数字 AppId 归并游戏级候选 |
 | 1.21 | Codex | 2026-08-28 | 同步错误 AppID 名称佐证、游戏目录入口移除、浏览器资料目录保护、`.bak` 辅助信号、已配置游戏仅启动和 HowManyDudes 真实验收；新增默认 10、范围 1 到 100 的可配置快照保留数量 |
-| 1.22 | Codex | 2026-08-29 | 增加本机快照显示区域、普通/锁定分区编号、待整理状态和独立于自动创建开关的十分钟维护周期 |
+| 1.22 | Codex | 2026-08-29 | 增加快照分区编号与十分钟维护；完成名称/锁定状态独立云元数据同步、字段级合并、离线重试和清理保护；基线增至 core 141 项、Tauri 37 项 |
 
 ## 文档用途
 
@@ -82,8 +82,8 @@ save_link/
 
 当前验证状态：
 
-- `savelink-core`：134 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
-- Tauri：自动上传状态、启动绑定/防重、已配置游戏仅启动、原生监听、补查和候选确认共 32 个测试全绿。
+- `savelink-core`：141 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
+- Tauri：自动上传状态、启动绑定/防重、已配置游戏仅启动、原生监听、补查、候选确认和云端元数据清理保护共 37 个测试全绿。
 - `npm run build`：前端构建通过。
 - `cargo fmt -- --check`：Tauri Rust 代码格式检查通过。
 - `build-installer.bat`：打包通过。
@@ -420,7 +420,7 @@ OAuth、凭据持久化、自动刷新、真实上云和设备 B 发现/下载/�
 - 快照校验信息。
 - 发布快照时的备注和锁定状态。
 
-v1 上传后的备注/锁定修改只保存在本机。v0.2.0 保留策略直接删除不可变快照对象，不引入墓碑文件：先删除远端 `.ok` 撤销发布，再幂等删除 `.zip`。云端删除失败时保留本地快照，并在 `cloud_snapshot_sync.sync_status` 写入 `delete_failed`。
+v1 `.ok` 仍是不可变内容发布记录；上传后的用户名称和锁定状态写入 `snapshot-meta/{snapshot_id}.json`，两个字段按各自 `changed_at` 合并。同一时刻名称保留云端值，锁定取 `true`；`device_id` 不参与决胜。离线失败以独立 `metadata_sync_status` 重试，未同步成功的快照禁止进入云端清理。保留策略删除顺序为元数据对象、`.ok`、`.zip` 和本机快照；云删除失败时保留本地数据并写 `delete_failed`。
 
 ## v0.2.0 自动备份与联合清理
 
@@ -442,12 +442,14 @@ v1 上传后的备注/锁定修改只保存在本机。v0.2.0 保留策略直接
 
 - `snapshots.status`：`writing / complete / corrupt / deleting`，只描述本机物理生命周期。
 - `cloud_snapshot_sync.sync_status`：原上传/下载状态之外，增加 `delete_pending / deleting / delete_failed / remote_deleted`。
+- `cloud_snapshot_sync.metadata_sync_status`：独立的 `synced / pending / error`，不与 zip 内容生命周期混用。
 
 联合清理顺序：
 
 ```text
 delete_pending
 -> deleting
+-> 删除云端 snapshot-meta/{snapshot_id}.json
 -> 删除云端 .ok
 -> 删除云端 .zip
 -> remote_deleted

@@ -195,6 +195,86 @@ pub struct SnapshotCommitDocument {
     pub created_by_device_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotNoteMetadata {
+    pub value: Option<String>,
+    pub changed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotLockedMetadata {
+    pub value: bool,
+    pub changed_at: String,
+}
+
+/// 快照内容发布后仍可变化的字段。名称与锁定状态分别进行最后写入时间合并。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SnapshotMetadataDocument {
+    pub schema_version: u32,
+    pub object_type: String,
+    pub snapshot_id: String,
+    pub cloud_game_id: String,
+    pub note: SnapshotNoteMetadata,
+    pub locked: SnapshotLockedMetadata,
+}
+
+impl SnapshotMetadataDocument {
+    pub fn validate(
+        &self,
+        expected_game_id: &str,
+        expected_snapshot_id: &str,
+    ) -> CloudProtocolResult<()> {
+        if self.schema_version != 1 || self.object_type != "snapshot_metadata" {
+            return Err(CloudProtocolError::new(
+                "snapshot_metadata_invalid",
+                "快照元数据类型或版本不正确",
+            ));
+        }
+        validate_id(&self.snapshot_id, "snapshot_id")?;
+        validate_id(&self.cloud_game_id, "cloud_game_id")?;
+        if self.snapshot_id != expected_snapshot_id || self.cloud_game_id != expected_game_id {
+            return Err(CloudProtocolError::new(
+                "snapshot_metadata_invalid",
+                "快照元数据中的游戏或快照 ID 与路径不一致",
+            ));
+        }
+        if self
+            .note
+            .value
+            .as_ref()
+            .is_some_and(|note| note.chars().count() > 2000)
+        {
+            return Err(CloudProtocolError::new(
+                "snapshot_metadata_invalid",
+                "快照名称超过 2000 个字符",
+            ));
+        }
+        validate_timestamp(&self.note.changed_at, "note.changed_at")?;
+        validate_timestamp(&self.locked.changed_at, "locked.changed_at")
+    }
+
+    pub fn to_json(&self) -> CloudProtocolResult<Vec<u8>> {
+        self.validate(&self.cloud_game_id, &self.snapshot_id)?;
+        encode_json(self)
+    }
+
+    pub fn from_json(
+        bytes: &[u8],
+        expected_game_id: &str,
+        expected_snapshot_id: &str,
+    ) -> CloudProtocolResult<Self> {
+        if bytes.len() > 64 * 1024 {
+            return Err(CloudProtocolError::new(
+                "snapshot_metadata_invalid",
+                "快照元数据超过 64KiB",
+            ));
+        }
+        let value: Self = decode_json(bytes)?;
+        value.validate(expected_game_id, expected_snapshot_id)?;
+        Ok(value)
+    }
+}
+
 impl SnapshotCommitDocument {
     pub fn validate(
         &self,
@@ -342,6 +422,17 @@ pub fn snapshot_ok_path(cloud_game_id: &str, snapshot_id: &str) -> CloudProtocol
         "{}/{}.ok",
         snapshots_path(cloud_game_id)?,
         snapshot_id
+    ))
+}
+
+pub fn snapshot_metadata_path(
+    cloud_game_id: &str,
+    snapshot_id: &str,
+) -> CloudProtocolResult<String> {
+    validate_id(snapshot_id, "snapshot_id")?;
+    Ok(format!(
+        "{}/{cloud_game_id}/snapshot-meta/{snapshot_id}.json",
+        games_path()
     ))
 }
 

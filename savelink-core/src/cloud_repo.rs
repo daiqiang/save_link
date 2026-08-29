@@ -1,6 +1,9 @@
 //! 云同步本机状态持久化抽象。
 
-use crate::cloud_model::{CloudAccount, CloudGameBinding, CloudSnapshotRecord, CloudSyncStatus};
+use crate::cloud_model::{
+    CloudAccount, CloudGameBinding, CloudSnapshotMetadataState, CloudSnapshotRecord,
+    CloudSyncStatus,
+};
 use crate::error::Result;
 
 pub trait CloudStateRepository: Send + Sync {
@@ -42,6 +45,12 @@ pub trait CloudStateRepository: Send + Sync {
         status: CloudSyncStatus,
         last_synced_at: Option<&str>,
         last_error_code: Option<&str>,
+    ) -> Result<()>;
+    fn update_cloud_snapshot_metadata_status(
+        &self,
+        account_id: &str,
+        snapshot_id: &str,
+        state: CloudSnapshotMetadataState,
     ) -> Result<()>;
     fn delete_cloud_snapshot(&self, account_id: &str, snapshot_id: &str) -> Result<()>;
 }

@@ -29,7 +29,7 @@ fn d1_create_restore_roundtrip_is_lossless() {
 
     let store = FsStore::new(tmp.child("repo"));
     let ctx = scan_ctx(&src);
-    let stored = store.create("snap_1", &[src.clone()], &ctx).expect("D1: create");
+    let stored = store.create("snap_1", std::slice::from_ref(&src), &ctx).expect("D1: create");
 
     let out = tmp.child("restored");
     store.restore(&stored.storage_key, &out).expect("D1: restore");
@@ -46,7 +46,7 @@ fn d2_verify_detects_intact_and_corrupt() {
 
     let store = FsStore::new(tmp.child("repo"));
     let ctx = scan_ctx(&src);
-    let stored = store.create("snap_v", &[src.clone()], &ctx).expect("create");
+    let stored = store.create("snap_v", std::slice::from_ref(&src), &ctx).expect("create");
 
     assert!(store.verify(&stored.storage_key).expect("verify ok"), "D2: 完好快照应 verify==true");
 
@@ -100,7 +100,7 @@ fn d4_storage_key_is_opaque_to_upper_layers() {
     let store = FsStore::new(tmp.child("repo"));
     let ctx = scan_ctx(&src);
 
-    let stored = store.create("任意-不规则_KEY.123", &[src.clone()], &ctx).expect("create");
+    let stored = store.create("任意-不规则_KEY.123", std::slice::from_ref(&src), &ctx).expect("create");
     let out = tmp.child("out");
     store.restore(&stored.storage_key, &out).expect("restore by opaque key");
 
@@ -117,7 +117,7 @@ fn d5_cross_platform_paths_and_readable_after_restore() {
 
     let store = FsStore::new(tmp.child("repo"));
     let ctx = scan_ctx(&src);
-    let stored = store.create("snap_p", &[src.clone()], &ctx).expect("create");
+    let stored = store.create("snap_p", std::slice::from_ref(&src), &ctx).expect("create");
     let out = tmp.child("out");
     store.restore(&stored.storage_key, &out).expect("restore");
 

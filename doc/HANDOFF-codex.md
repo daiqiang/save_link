@@ -25,7 +25,7 @@
 | 1.18 | Codex | 2026-08-25 | 完成动态发现阶段 1 至 5：启动绑定、原生监听、候选确认、首次自动快照和真实游戏验收 |
 | 1.19 | Codex | 2026-08-26 | 修复 RUNE/CODEX 公共文档监测缺口，按数字 AppId 归并为游戏级保护目录，RUNE 真实复验通过 |
 | 1.20 | Codex | 2026-08-28 | 同步错误 AppID 防误识别、浏览器资料目录保护、游戏程序入口收紧、已配置游戏仅启动、HowManyDudes 真实验收和 134 项 core 基线；新增默认 10、范围 1 到 100 的可配置快照保留数量 |
-| 1.21 | Codex | 2026-08-29 | 同步快照普通/锁定分区编号、锁定解锁待整理和独立于自动创建开关的十分钟维护整理；core 基线增至 137 项 |
+| 1.21 | Codex | 2026-08-29 | 同步快照分区维护；完成名称/锁定状态独立云元数据同步、离线重试、旧库迁移和清理保护；基线增至 core 141 项、Tauri 37 项 |
 
 > 角色约定：总规划会话负责方向、范围和验收判断；本地开发会话负责按文档实现、验证、打包。
 > 开工前先读完本文档 + `PROGRESS.md`，再动代码。
@@ -93,8 +93,8 @@ MVP 后第一轮补齐也已完成：
 
 当前客观状态：
 
-- `savelink-core`：137 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
-- `savelink-app`：Tauri 36 个测试全绿，React `npm run build` 和严格 Clippy 通过；启动绑定、防重、仅启动、原生监听、候选确认、首份自动快照及快照显示编号均有回归覆盖。
+- `savelink-core`：141 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
+- `savelink-app`：Tauri 37 个测试全绿，React `npm run build` 和严格 Clippy 通过；启动绑定、防重、仅启动、原生监听、候选确认、首份自动快照、快照显示编号及云端元数据清理保护均有回归覆盖。
 - `savelink-app`：Tauri 桌面应用，React 前端 + Rust 命令薄壳。
 - 数据位置：`%APPDATA%\com.daiq.savelink\`。
 - 产物位置：`savelink-app/src-tauri/target/release/`。
@@ -254,7 +254,7 @@ DeSmuME 代码主链路已完成：扫描模拟器和 ROM、解析 Header/SHA-25
 - 不把 `latest.zip` 或整份 `savelink.db` 原样同步作为云端主线；主线是云端目录结构 + 增量同步。
 - 百度网盘快照物理格式已定为每条快照一个 `{snapshot_id}.zip`，zip 上传成功后再生成并上传云端 `{snapshot_id}.ok`。
 - 云端快照协议 v1 已定稿：按游戏目录发现，不使用全局 `snapshots.json`；有效 `.ok` 是不可变发布记录。
-- v1 本机删除不删除云端副本，上传后备注/锁定修改暂不跨设备同步，避免第一版引入误删和可变元数据冲突。
+- v1 `.ok` 保持不可变；上传后的用户名称/锁定状态通过 `snapshot-meta/{snapshot_id}.json` 按字段修改时间跨设备合并。同一时刻名称保留云端值、锁定取 `true`；断网可重试，元数据未同步时禁止云端清理。
 - `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync` 已落库；旧数据库打开时自动补表。
 - 协议 JSON、`CloudArchiveCodec` 和 `CloudSyncService` 已实现，Fake 云端已完成“上传 -> 发现 -> 下载 -> 双重校验 -> 写入另一套本机 repository -> 登记 SQLite”闭环。
 - 云同步术语统一为“接收云端快照并落地到本机快照仓库”；“导出/导入”只用于未来独立的手动备份功能。
