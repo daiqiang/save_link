@@ -10,7 +10,7 @@ use crate::cloud_repo::CloudStateRepository;
 use crate::error::{Result, SaveLinkError};
 use crate::model::{
     EmulatorGameIdentity, EmulatorLocalBinding, Game, GameLaunchBinding, Reason, SaveSource,
-    Snapshot, SnapshotStatus,
+    Snapshot, SnapshotDisplayZone, SnapshotStatus,
 };
 use crate::repo::Repository;
 use crate::timestamp::normalize_timestamp;
@@ -51,6 +51,20 @@ fn status_from_str(s: &str) -> SnapshotStatus {
         "corrupt" => SnapshotStatus::Corrupt,
         "deleting" => SnapshotStatus::Deleting,
         _ => SnapshotStatus::Complete,
+    }
+}
+
+fn display_zone_to_str(zone: SnapshotDisplayZone) -> &'static str {
+    match zone {
+        SnapshotDisplayZone::Normal => "normal",
+        SnapshotDisplayZone::Locked => "locked",
+    }
+}
+
+fn display_zone_from_str(s: &str) -> SnapshotDisplayZone {
+    match s {
+        "locked" => SnapshotDisplayZone::Locked,
+        _ => SnapshotDisplayZone::Normal,
     }
 }
 
@@ -100,6 +114,7 @@ impl SqliteRepo {
                 note TEXT,
                 reason TEXT NOT NULL,
                 locked INTEGER NOT NULL DEFAULT 0,
+                display_zone TEXT NOT NULL DEFAULT 'normal',
                 file_count INTEGER NOT NULL,
                 total_size INTEGER NOT NULL,
                 source_count INTEGER NOT NULL DEFAULT 1,
@@ -165,6 +180,7 @@ impl SqliteRepo {
         Self::migrate_cloud_snapshot_sync_status(conn)?;
         Self::migrate_source_count_columns(conn)?;
         Self::migrate_game_source_columns(conn)?;
+        Self::migrate_snapshot_display_zone(conn)?;
         Self::migrate_snapshot_timestamps(conn)
     }
 
@@ -202,6 +218,24 @@ impl SqliteRepo {
         if !table_has_column(conn, "cloud_snapshot_sync", "source_count")? {
             conn.execute(
                 "ALTER TABLE cloud_snapshot_sync ADD COLUMN source_count INTEGER NOT NULL DEFAULT 1",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        Ok(())
+    }
+
+    /// 为旧数据库补充本机时间线显示区域。旧的锁定快照直接进入锁定区，
+    /// 未锁定快照进入普通区；之后的锁定/解锁只改变 locked，维护周期再调整区域。
+    fn migrate_snapshot_display_zone(conn: &Connection) -> Result<()> {
+        if !table_has_column(conn, "snapshots", "display_zone")? {
+            conn.execute(
+                "ALTER TABLE snapshots ADD COLUMN display_zone TEXT NOT NULL DEFAULT 'normal'",
+                [],
+            )
+            .map_err(map_err)?;
+            conn.execute(
+                "UPDATE snapshots SET display_zone='locked' WHERE locked != 0",
                 [],
             )
             .map_err(map_err)?;
@@ -435,6 +469,7 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
     let reason: String = row.get(4)?;
     let locked_i: i64 = row.get(5)?;
     let status: String = row.get(10)?;
+    let display_zone: String = row.get(12)?;
     Ok(Snapshot {
         id: row.get(0)?,
         game_id: row.get(1)?,
@@ -442,6 +477,7 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
         note: row.get(3)?,
         reason: reason_from_str(&reason),
         locked: locked_i != 0,
+        display_zone: display_zone_from_str(&display_zone),
         file_count: row.get::<_, i64>(6)? as u64,
         total_size: row.get::<_, i64>(7)? as u64,
         content_hash: row.get(8)?,
@@ -452,7 +488,7 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
 }
 
 const SNAP_COLS: &str =
-    "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count";
+    "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count, display_zone";
 
 const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, source_count, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code";
 
@@ -597,8 +633,8 @@ impl Repository for SqliteRepo {
         let conn = self.conn.lock().unwrap();
         let created_at = normalize_for_storage(&s.created_at)?;
         conn.execute(
-            "INSERT INTO snapshots (id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+            "INSERT INTO snapshots (id, game_id, created_at, note, reason, locked, display_zone, file_count, total_size, content_hash, storage_key, status, source_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
             params![
                 s.id,
                 s.game_id,
@@ -606,6 +642,7 @@ impl Repository for SqliteRepo {
                 s.note,
                 reason_to_str(s.reason),
                 s.locked as i64,
+                display_zone_to_str(s.display_zone),
                 s.file_count as i64,
                 s.total_size as i64,
                 s.content_hash,
@@ -653,8 +690,8 @@ impl Repository for SqliteRepo {
         let created_at = normalize_for_storage(&s.created_at)?;
         conn.execute(
             "UPDATE snapshots SET game_id=?2, created_at=?3, note=?4, reason=?5, locked=?6,
-                 file_count=?7, total_size=?8, content_hash=?9, storage_key=?10, status=?11,
-                 source_count=?12
+                 display_zone=?7, file_count=?8, total_size=?9, content_hash=?10, storage_key=?11,
+                 status=?12, source_count=?13
              WHERE id=?1",
             params![
                 s.id,
@@ -663,6 +700,7 @@ impl Repository for SqliteRepo {
                 s.note,
                 reason_to_str(s.reason),
                 s.locked as i64,
+                display_zone_to_str(s.display_zone),
                 s.file_count as i64,
                 s.total_size as i64,
                 s.content_hash,

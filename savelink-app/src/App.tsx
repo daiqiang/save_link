@@ -52,6 +52,15 @@ function SaveLink() {
   const selected = games.find((g) => g.id === selectedId) ?? null;
   // 只渲染/操作属于当前所选游戏的快照，杜绝“看到或误操作到别的游戏快照”的串档风险。
   const shown = selected ? snapshots.filter((s) => s.game_id === selected.id) : [];
+  // 后端按创建时间返回快照；待整理项仍属于原显示区域，直到维护周期统一移动。
+  const lockedShown = shown.filter((snapshot) => snapshot.display_zone === "locked");
+  const recentShown = shown.filter((snapshot) => snapshot.display_zone === "normal");
+  const snapshotGroups = [
+    ...(lockedShown.length > 0
+      ? [{ key: "locked", title: "锁定存档", snapshots: lockedShown }]
+      : []),
+    { key: "recent", title: "最近存档", snapshots: recentShown },
+  ];
   const requiredBindingSourceCount = Math.max(1, ...shown.map((snapshot) => snapshot.source_count));
   const discoveryActive = discovery ? ACTIVE_DISCOVERY_PHASES.has(discovery.phase) : false;
   const selectedDiscovery = selected && discovery?.game_id === selected.id ? discovery : null;
@@ -253,7 +262,7 @@ function SaveLink() {
           <span className="logo"><Icon.History size={20} /></span>
           SaveLink
           {appVersion && <span className="app-version">v{appVersion}</span>}
-          <span className={`sub ${profileLabel ? "test-profile" : ""}`}>{profileLabel ?? "本地存档时间线"}</span>
+          <span className={`sub ${profileLabel ? "test-profile" : ""}`}>{profileLabel ?? "本地存档管理"}</span>
         </div>
         <div className="spacer" />
         <button
@@ -392,14 +401,22 @@ function SaveLink() {
               />
             )}
 
-            <div className="section-label">时间线</div>
+            <div className="snapshot-divider" aria-hidden="true" />
             <div className="timeline">
               {shown.length === 0 && <div className="empty-tl">{selected.configuration_state !== "configured"
                 ? selected.configuration_state === "pending_discovery"
                   ? "尚未设置存档目录，当前不会创建备份。"
                   : selected.emulator === "desmume" ? "尚未绑定本机 DeSmuME ROM。" : "尚未绑定本机存档目录。"
                 : "还没有快照。点击「创建快照」保存当前存档状态。"}</div>}
-              {shown.map((s) => {
+              {shown.length > 0 && snapshotGroups.map((group) => <section className="snapshot-group" key={group.key}
+                aria-labelledby={`snapshot-group-${group.key}`}>
+                <div className="snapshot-group-head" id={`snapshot-group-${group.key}`}>
+                  <span>{group.title}</span>
+                  <span>{group.snapshots.length} 个</span>
+                </div>
+                <div className="snapshot-group-list">
+              {group.snapshots.length === 0 && <div className="snapshot-group-empty">暂无最近存档</div>}
+              {group.snapshots.map((s) => {
                 const cloudBusy = cloudUploadingId === s.id;
                 const cloudUploaded = s.cloud_status === "uploaded" || s.cloud_status === "downloaded";
                 const cloudFailed = s.cloud_status === "error";
@@ -420,13 +437,15 @@ function SaveLink() {
                       ? "重试"
                       : "上传";
                 return (
-                <div key={s.id} className={`snap ${s.locked ? "is-locked" : ""}`}
+                <div key={s.id} className={`snap ${s.locked ? "is-locked" : ""} ${s.pending_reorganization ? "is-pending" : ""}`}
                   onClick={() => setDrawerSnap(s)}>
                   <div className="snap-main">
                     <div className="snap-time">{formatTimestamp(s.created_at)}</div>
                     <div className="snap-note">
-                      {s.note || "未命名快照"}
-                      {s.locked && <span className="badge lock"><Icon.Lock size={12} /> 已锁定</span>}
+                      {s.display_name}
+                      {s.pending_reorganization
+                        ? <span className="badge pending">{s.locked ? <Icon.Lock size={12} /> : <Icon.Unlock size={12} />} {s.locked ? "已锁定，待整理" : "已解锁，待整理"}</span>
+                        : s.locked && <span className="badge lock"><Icon.Lock size={12} /> 已锁定</span>}
                     </div>
                     <div className="snap-info">
                       {s.file_count} 个文件<span className="sep">·</span>{formatSize(s.total_size)}
@@ -461,6 +480,8 @@ function SaveLink() {
                 </div>
                 );
               })}
+                </div>
+              </section>)}
             </div>
           </div>
         )}

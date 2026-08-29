@@ -5,7 +5,7 @@
 
 use crate::error::{Result, SaveLinkError};
 use crate::model::{CreateOutcome, RestoreOutcome, RestoreStep, SaveSource};
-use crate::model::{Snapshot, SnapshotStatus};
+use crate::model::{Snapshot, SnapshotDisplayZone, SnapshotStatus};
 use crate::repo::{Clock, IdGen, Repository};
 use crate::scan;
 use crate::store::SnapshotStore;
@@ -94,6 +94,7 @@ impl SnapshotService {
             note,
             reason,
             locked: false,
+            display_zone: crate::model::SnapshotDisplayZone::Normal,
             file_count: ctx.file_count,
             total_size: ctx.total_size,
             source_count: save_sources.len().max(1) as u32,
@@ -157,6 +158,39 @@ impl SnapshotService {
         }
         // content_hash / created_at / file_count / total_size 一律不动。
         self.repo.update_snapshot(snap)
+    }
+
+    /// 在维护周期内整理快照显示区域。
+    ///
+    /// `locked` 只表示保护状态，用户点击锁定/解锁时立即生效；本方法才会把快照
+    /// 移入与状态相符的显示区域。未锁定且超出保留数量的快照保持原区域，交由上层
+    /// 完成云端感知删除后再移除，这样删除失败时仍能显示“待整理”状态。
+    pub fn organize_snapshot_layout(&self, game_id: &str, max_unlocked: usize) -> Result<usize> {
+        let snapshots = self.repo.list_snapshots(game_id)?;
+        let retained_unlocked: std::collections::HashSet<String> = snapshots
+            .iter()
+            .filter(|snapshot| !snapshot.locked && snapshot.status == SnapshotStatus::Complete)
+            .take(max_unlocked)
+            .map(|snapshot| snapshot.id.clone())
+            .collect();
+
+        let mut changed = 0;
+        for mut snapshot in snapshots {
+            let desired_zone = if snapshot.locked {
+                SnapshotDisplayZone::Locked
+            } else if retained_unlocked.contains(&snapshot.id) {
+                SnapshotDisplayZone::Normal
+            } else {
+                // 超出保留范围的快照要等删除流程成功后消失，不能提前伪装成已整理。
+                continue;
+            };
+            if snapshot.display_zone != desired_zone {
+                snapshot.display_zone = desired_zone;
+                self.repo.update_snapshot(snapshot)?;
+                changed += 1;
+            }
+        }
+        Ok(changed)
     }
 
     /// 删除快照。
@@ -226,6 +260,12 @@ pub struct AutoBackupService {
 impl AutoBackupService {
     pub fn new(snapshots: SnapshotService) -> Self {
         Self { snapshots }
+    }
+
+    /// 执行一次本机时间线区域整理，不创建快照也不执行删除。
+    pub fn organize_snapshot_layout(&self, game_id: &str, max_unlocked: usize) -> Result<usize> {
+        self.snapshots
+            .organize_snapshot_layout(game_id, max_unlocked)
     }
 
     /// 检查所有游戏；单个游戏失败不会阻断其他游戏。

@@ -20,6 +20,7 @@ fn e1_startup_clears_dangling_writing_snapshots() {
         note: Some("半成品".into()),
         reason: Reason::Manual,
         locked: false,
+        display_zone: savelink_core::model::SnapshotDisplayZone::Normal,
         file_count: 0,
         total_size: 0,
         source_count: 1,

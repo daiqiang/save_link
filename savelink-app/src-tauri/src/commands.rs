@@ -28,7 +28,7 @@ use savelink_core::desmume_discovery::{
 };
 use savelink_core::model::{
     CreateOutcome, Game, GameConfigurationState, GameLaunchBinding, MissingDirChoice, Reason,
-    Snapshot,
+    Snapshot, SnapshotDisplayZone,
 };
 use savelink_core::program_discovery::{
     ProgramDiscoveredGame, ProgramDiscoveryService, ProgramMatchKind, ProgramSelectionKind,
@@ -40,6 +40,7 @@ use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::steam_discovery::{SteamDiscoveredGame, SteamDiscoveryService};
 use savelink_core::store::{FsStore, SnapshotStore};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -212,6 +213,9 @@ pub struct SnapshotDto {
     pub game_id: String,
     pub created_at: String,
     pub note: Option<String>,
+    pub display_name: String,
+    pub display_zone: String,
+    pub pending_reorganization: bool,
     pub reason: String,
     pub locked: bool,
     pub file_count: u64,
@@ -409,15 +413,30 @@ fn cloud_snapshot_to_dto(discovery: CloudSnapshotDiscovery) -> CloudSnapshotDto 
 }
 
 fn snapshot_to_dto(s: &Snapshot) -> SnapshotDto {
-    snapshot_to_dto_with_cloud(s, None)
+    snapshot_to_dto_with_view(
+        s,
+        None,
+        s.note.clone().unwrap_or_else(|| "未命名快照".into()),
+    )
 }
 
-fn snapshot_to_dto_with_cloud(s: &Snapshot, cloud: Option<&CloudSnapshotRecord>) -> SnapshotDto {
+fn snapshot_to_dto_with_view(
+    s: &Snapshot,
+    cloud: Option<&CloudSnapshotRecord>,
+    display_name: String,
+) -> SnapshotDto {
     SnapshotDto {
         id: s.id.clone(),
         game_id: s.game_id.clone(),
         created_at: s.created_at.clone(),
         note: s.note.clone(),
+        display_name,
+        display_zone: match s.display_zone {
+            SnapshotDisplayZone::Normal => "normal",
+            SnapshotDisplayZone::Locked => "locked",
+        }
+        .into(),
+        pending_reorganization: s.display_zone.is_pending(s.locked),
         reason: reason_str(s.reason),
         locked: s.locked,
         file_count: s.file_count,
@@ -425,6 +444,91 @@ fn snapshot_to_dto_with_cloud(s: &Snapshot, cloud: Option<&CloudSnapshotRecord>)
         source_count: s.source_count,
         cloud_status: cloud.map(|record| record.sync_status.as_str().to_string()),
         cloud_error_code: cloud.and_then(|record| record.last_error_code.clone()),
+    }
+}
+
+fn snapshot_display_names(snapshots: &[Snapshot]) -> HashMap<String, String> {
+    let mut normal_number = 0usize;
+    let mut locked_number = 0usize;
+    let mut names = HashMap::with_capacity(snapshots.len());
+    for snapshot in snapshots {
+        let name = match snapshot.display_zone {
+            SnapshotDisplayZone::Normal => {
+                normal_number += 1;
+                format!("存档{normal_number}")
+            }
+            SnapshotDisplayZone::Locked => {
+                locked_number += 1;
+                format!("锁定存档{locked_number}")
+            }
+        };
+        names.insert(snapshot.id.clone(), snapshot.note.clone().unwrap_or(name));
+    }
+    names
+}
+
+#[cfg(test)]
+mod snapshot_display_tests {
+    use super::*;
+    use savelink_core::model::{Reason, SnapshotStatus};
+
+    fn snapshot(id: &str, zone: SnapshotDisplayZone, note: Option<&str>) -> Snapshot {
+        Snapshot {
+            id: id.into(),
+            game_id: "game".into(),
+            created_at: id.into(),
+            note: note.map(str::to_string),
+            reason: Reason::Manual,
+            locked: zone == SnapshotDisplayZone::Locked,
+            display_zone: zone,
+            file_count: 1,
+            total_size: 1,
+            source_count: 1,
+            content_hash: id.into(),
+            storage_key: id.into(),
+            status: SnapshotStatus::Complete,
+        }
+    }
+
+    #[test]
+    fn automatic_names_are_numbered_separately_by_display_zone() {
+        let snapshots = vec![
+            snapshot("locked-new", SnapshotDisplayZone::Locked, None),
+            snapshot("locked-old", SnapshotDisplayZone::Locked, None),
+            snapshot("normal-new", SnapshotDisplayZone::Normal, None),
+            snapshot(
+                "normal-noted",
+                SnapshotDisplayZone::Normal,
+                Some("打Boss前"),
+            ),
+            snapshot("normal-old", SnapshotDisplayZone::Normal, None),
+        ];
+        let names = snapshot_display_names(&snapshots);
+
+        assert_eq!(names["locked-new"], "锁定存档1");
+        assert_eq!(names["locked-old"], "锁定存档2");
+        assert_eq!(names["normal-new"], "存档1");
+        assert_eq!(names["normal-noted"], "打Boss前");
+        assert_eq!(names["normal-old"], "存档3");
+    }
+
+    #[test]
+    fn pending_lock_or_unlock_keeps_its_old_zone_and_name() {
+        let mut pending_lock = snapshot("normal", SnapshotDisplayZone::Normal, None);
+        pending_lock.locked = true;
+        let pending_unlock = snapshot("locked", SnapshotDisplayZone::Locked, None);
+        let names = snapshot_display_names(&[pending_lock.clone(), pending_unlock.clone()]);
+
+        assert_eq!(names["normal"], "存档1");
+        assert_eq!(names["locked"], "锁定存档1");
+        assert!(pending_lock.display_zone.is_pending(pending_lock.locked));
+        assert!(!pending_unlock
+            .display_zone
+            .is_pending(pending_unlock.locked));
+
+        let mut unlocked = pending_unlock;
+        unlocked.locked = false;
+        assert!(unlocked.display_zone.is_pending(unlocked.locked));
     }
 }
 
@@ -1068,6 +1172,7 @@ pub fn list_snapshots(
         .repo
         .list_snapshots(&game_id)
         .map_err(|e| e.to_string())?;
+    let display_names = snapshot_display_names(&snaps);
     snaps
         .iter()
         .map(|snapshot| {
@@ -1075,7 +1180,14 @@ pub fn list_snapshots(
                 .cloud_repo
                 .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot.id)
                 .map_err(|error| error.to_string())?;
-            Ok(snapshot_to_dto_with_cloud(snapshot, cloud.as_ref()))
+            Ok(snapshot_to_dto_with_view(
+                snapshot,
+                cloud.as_ref(),
+                display_names
+                    .get(&snapshot.id)
+                    .cloned()
+                    .unwrap_or_else(|| "未命名快照".into()),
+            ))
         })
         .collect()
 }
@@ -1090,6 +1202,9 @@ pub fn scan_path(path: String) -> Result<SnapshotDto, String> {
         game_id: String::new(),
         created_at: String::new(),
         note: None,
+        display_name: "".into(),
+        display_zone: "normal".into(),
+        pending_reorganization: false,
         reason: "scan".into(),
         locked: false,
         file_count: r.file_count,

@@ -550,6 +550,7 @@ where
             note: commit.note.clone(),
             reason: commit.reason()?,
             locked: commit.locked,
+            display_zone: crate::model::SnapshotDisplayZone::for_locked(commit.locked),
             file_count: commit.file_count,
             total_size: commit.total_size,
             source_count: commit.source_count,

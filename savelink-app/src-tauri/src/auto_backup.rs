@@ -154,26 +154,28 @@ pub fn trigger_sync(app: AppHandle) {
 
 fn run_once_if_enabled(app: &AppHandle) -> Result<Option<AutoBackupReport>, String> {
     let state = app.state::<AppState>();
-    if !enabled(&state.cloud_repo)? {
-        return Ok(None);
-    }
+    let report = if enabled(&state.cloud_repo)? {
+        let report = {
+            let _operation = state
+                .snapshot_operation_lock
+                .lock()
+                .map_err(|_| "快照操作锁已损坏".to_string())?;
+            AutoBackupService::new(state.snapshots())
+                .run_once()
+                .map_err(|error| error.to_string())?
+        };
 
-    let report = {
-        let _operation = state
-            .snapshot_operation_lock
-            .lock()
-            .map_err(|_| "快照操作锁已损坏".to_string())?;
-        AutoBackupService::new(state.snapshots())
-            .run_once()
-            .map_err(|error| error.to_string())?
+        for failure in &report.failures {
+            eprintln!("游戏 {} 自动备份失败: {}", failure.game_id, failure.error);
+        }
+        if !report.created_snapshots.is_empty() {
+            let _ = app.emit(AUTO_BACKUP_CHANGED_EVENT, ());
+        }
+        Some(report)
+    } else {
+        // 自动备份关闭时仍运行维护周期：整理区域、清理过期快照和续做云端收尾。
+        None
     };
-
-    for failure in &report.failures {
-        eprintln!("游戏 {} 自动备份失败: {}", failure.game_id, failure.error);
-    }
-    if !report.created_snapshots.is_empty() {
-        let _ = app.emit(AUTO_BACKUP_CHANGED_EVENT, ());
-    }
     match sync_pending_and_prune(&state) {
         Ok(true) => {
             let _ = app.emit(AUTO_BACKUP_CHANGED_EVENT, ());
@@ -181,18 +183,40 @@ fn run_once_if_enabled(app: &AppHandle) -> Result<Option<AutoBackupReport>, Stri
         Ok(false) => {}
         Err(error) => eprintln!("自动云同步或快照清理失败: {error}"),
     }
-    Ok(Some(report))
+    Ok(report)
 }
 
 fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
+    let retention_limit = retention_limit(&state.cloud_repo)?;
+    let retention_policy_confirmed = retention_policy_confirmed(&state.cloud_repo)?;
+    let layout_changed = {
+        let _operation = state
+            .snapshot_operation_lock
+            .lock()
+            .map_err(|_| "快照操作锁已损坏".to_string())?;
+        let games = state.repo.list_games().map_err(|error| error.to_string())?;
+        let max_unlocked = if retention_policy_confirmed {
+            retention_limit
+        } else {
+            usize::MAX
+        };
+        let snapshots = AutoBackupService::new(state.snapshots());
+        let mut changed = false;
+        for game in games {
+            changed |= snapshots
+                .organize_snapshot_layout(&game.id, max_unlocked)
+                .map_err(|error| error.to_string())?
+                > 0;
+        }
+        changed
+    };
+
     let _cloud_guard = match acquire_cloud_sync_guard(state) {
         Ok(guard) => guard,
-        Err(_) => return Ok(false),
+        Err(_) => return Ok(layout_changed),
     };
 
     let games = state.repo.list_games().map_err(|error| error.to_string())?;
-    let retention_limit = retention_limit(&state.cloud_repo)?;
-    let retention_policy_confirmed = retention_policy_confirmed(&state.cloud_repo)?;
     let snapshots = AutoBackupService::new(state.snapshots());
     let mut retention_candidates = Vec::new();
     let mut retention_ids = HashSet::new();
@@ -233,10 +257,15 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
     }
 
     let connected = baidu_connection_status(&state.cloud_repo, &state.baidu_token_store)?.connected;
-    let service = BaiduCloudRuntime::from_state(state).build()?;
+    let service = if connected || !retention_candidates.is_empty() {
+        Some(BaiduCloudRuntime::from_state(state).build()?)
+    } else {
+        None
+    };
 
-    let mut cloud_changed = false;
+    let mut cloud_changed = layout_changed;
     if connected {
+        let service = service.as_ref().expect("已连接百度网盘时必须构造云服务");
         let mut stop_uploading = false;
         for game in &games {
             for snapshot in state
@@ -288,6 +317,7 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
     }
 
     for candidate in retention_candidates {
+        let service = service.as_ref().expect("存在待清理快照时必须构造云服务");
         let _operation = state
             .snapshot_operation_lock
             .lock()

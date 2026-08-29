@@ -2,6 +2,7 @@
 // 第 5 步接线时，invoke 的返回值就是这些类型。
 
 export type SnapshotReason = "manual" | "before_restore" | "auto";
+export type SnapshotDisplayZone = "normal" | "locked";
 export type CloudSyncStatus =
   | "uploading"
   | "uploaded"
@@ -38,6 +39,9 @@ export interface Snapshot {
   game_id: string;
   created_at: string;
   note: string | null;
+  display_name: string;
+  display_zone: SnapshotDisplayZone;
+  pending_reorganization: boolean;
   reason: SnapshotReason;
   locked: boolean;
   file_count: number;

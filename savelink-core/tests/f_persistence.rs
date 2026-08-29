@@ -9,7 +9,7 @@ use chrono::{Duration, Local, TimeZone};
 use common::*;
 use rusqlite::{params, Connection};
 use savelink_core::model::Game;
-use savelink_core::model::{CreateOutcome, Reason};
+use savelink_core::model::{CreateOutcome, Reason, SnapshotDisplayZone};
 use savelink_core::repo::Repository;
 use savelink_core::sqlite_repo::SqliteRepo;
 use savelink_core::testkit::TempDir;
@@ -83,6 +83,49 @@ fn f2_enum_roundtrip_through_sql() {
         "F2: before_restore 经 SQL 往返应不变"
     );
     assert!(got.locked, "F2: locked 经 SQL 往返应不变");
+    assert_eq!(
+        got.display_zone,
+        SnapshotDisplayZone::Normal,
+        "F2: 锁定操作不会提前改变显示区域，等待维护周期整理"
+    );
+}
+
+#[test]
+fn f2b_old_locked_snapshot_migrates_into_locked_display_zone() {
+    let tmp = TempDir::new();
+    let db_path = tmp.path().join("old-snapshot-layout.db");
+    {
+        let conn = Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE snapshots (
+                id TEXT PRIMARY KEY,
+                game_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                note TEXT,
+                reason TEXT NOT NULL,
+                locked INTEGER NOT NULL DEFAULT 0,
+                file_count INTEGER NOT NULL,
+                total_size INTEGER NOT NULL,
+                content_hash TEXT NOT NULL,
+                storage_key TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'complete'
+            );
+            INSERT INTO snapshots
+                (id, game_id, created_at, note, reason, locked, file_count,
+                 total_size, content_hash, storage_key, status)
+            VALUES ('old-locked', 'game', '2026-08-28 12:00', NULL, 'manual', 1, 1, 1,
+                    'hash', 'old-locked', 'complete');",
+        )
+        .unwrap();
+    }
+
+    let repo = SqliteRepo::open(&db_path).expect("旧数据库应完成显示区域迁移");
+    let snapshot = repo
+        .get_snapshot("old-locked")
+        .unwrap()
+        .expect("旧快照应保留");
+    assert!(snapshot.locked);
+    assert_eq!(snapshot.display_zone, SnapshotDisplayZone::Locked);
 }
 
 #[test]

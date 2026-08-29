@@ -89,11 +89,7 @@ impl GameLaunchBinding {
         }
     }
 
-    pub fn steam(
-        steam_executable_path: PathBuf,
-        install_dir: PathBuf,
-        app_id: u32,
-    ) -> Self {
+    pub fn steam(steam_executable_path: PathBuf, install_dir: PathBuf, app_id: u32) -> Self {
         Self {
             executable_path: steam_executable_path,
             install_dir,
@@ -194,7 +190,10 @@ pub struct Snapshot {
     pub created_at: String,
     pub note: Option<String>,
     pub reason: Reason,
+    /// 是否受到自动清理保护。该字段是安全语义，也会同步到云端。
     pub locked: bool,
+    /// 当前本机时间线所属的显示区域。与 `locked` 分离，支持十分钟维护周期内的待整理状态。
+    pub display_zone: SnapshotDisplayZone,
     pub file_count: u64,
     pub total_size: u64,
     /// 快照包含的独立存档根目录数量。旧快照固定为 1。
@@ -204,6 +203,32 @@ pub struct Snapshot {
     /// 不透明存储键：上层不得解析其结构（解耦未来 ResticStore）。
     pub storage_key: String,
     pub status: SnapshotStatus,
+}
+
+/// 快照在本机时间线中的显示区域。
+///
+/// 这是本机展示元数据，不进入云端协议。锁定/解锁时只立即改变 `Snapshot::locked`，
+/// 下一次维护周期再把快照移动到与保护状态对应的区域。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SnapshotDisplayZone {
+    #[default]
+    Normal,
+    Locked,
+}
+
+impl SnapshotDisplayZone {
+    pub fn for_locked(locked: bool) -> Self {
+        if locked {
+            Self::Locked
+        } else {
+            Self::Normal
+        }
+    }
+
+    pub fn is_pending(self, locked: bool) -> bool {
+        self != Self::for_locked(locked)
+    }
 }
 
 /// 一次扫描的结果。
