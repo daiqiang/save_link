@@ -1,6 +1,6 @@
 use crate::commands::{
     acquire_cloud_sync_guard, baidu_connection_status, AppState, BaiduCloudRuntime,
-    BAIDU_ACCOUNT_ID,
+    CloudSyncTaskKind, BAIDU_ACCOUNT_ID,
 };
 use savelink_core::cloud_model::{CloudMetadataSyncStatus, CloudSyncStatus};
 use savelink_core::cloud_repo::CloudStateRepository;
@@ -189,7 +189,7 @@ fn run_once_if_enabled(app: &AppHandle) -> Result<Option<AutoBackupReport>, Stri
 fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
     let retention_limit = retention_limit(&state.cloud_repo)?;
     let retention_policy_confirmed = retention_policy_confirmed(&state.cloud_repo)?;
-    let _cloud_guard = match acquire_cloud_sync_guard(state) {
+    let _cloud_guard = match acquire_cloud_sync_guard(state, CloudSyncTaskKind::Background) {
         Ok(guard) => guard,
         Err(_) => return Ok(false),
     };
@@ -251,10 +251,7 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
                     .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot.id)
                     .map_err(|error| error.to_string())?
                     .map(|record| record.metadata_sync_status);
-                if !can_start_retention_delete(
-                    metadata_ready_for_prune,
-                    cloud_metadata_status,
-                ) {
+                if !can_start_retention_delete(metadata_ready_for_prune, cloud_metadata_status) {
                     continue;
                 }
                 retention_ids.insert(snapshot.id.clone());

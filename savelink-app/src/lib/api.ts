@@ -74,6 +74,10 @@ export async function listSnapshots(gameId: string): Promise<Snapshot[]> {
   return invoke<Snapshot[]>("list_snapshots", { gameId });
 }
 
+export async function compareSnapshotWithLocal(snapshotId: string): Promise<boolean> {
+  return invoke<boolean>("compare_snapshot_with_local", { snapshotId });
+}
+
 export async function scanPath(path: string): Promise<ScanResult> {
   // Rust scan_path 返回 SnapshotDto，取其中 file_count / total_size。
   const r = await invoke<{ file_count: number; total_size: number }>("scan_path", { path });

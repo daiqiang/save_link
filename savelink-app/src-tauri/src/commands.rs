@@ -44,7 +44,7 @@ use savelink_core::store::{FsStore, SnapshotStore};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,6 +56,10 @@ const BAIDU_TOKEN_REF: &str = "credentials/baidu-oauth.json";
 const BAIDU_CALLBACK_TIMEOUT: Duration = Duration::from_secs(180);
 const DEVICE_ID_SETTING: &str = "device_id";
 const REPOSITORY_ID_SETTING: &str = "repository_id";
+const CLOUD_SYNC_IDLE: u8 = 0;
+const CLOUD_SYNC_BACKGROUND: u8 = 1;
+const CLOUD_SYNC_USER: u8 = 2;
+const CLOUD_UPLOAD_STARTED_EVENT: &str = "cloud-upload-started";
 
 /// 真实时钟：持久化固定秒精度的 UTC RFC 3339；前端按本地时区展示。
 struct SystemClock;
@@ -89,7 +93,7 @@ pub struct AppState {
     pub store: Arc<dyn SnapshotStore>,
     pub baidu_token_store: FileBaiduTokenStore,
     pub baidu_auth_in_progress: Arc<AtomicBool>,
-    pub baidu_sync_in_progress: Arc<AtomicBool>,
+    pub baidu_sync_in_progress: Arc<AtomicU8>,
     pub device_id: String,
     pub cloud_repository_id: String,
     pub profile_label: Option<String>,
@@ -133,7 +137,7 @@ impl AppState {
             store: Arc::new(store),
             baidu_token_store: FileBaiduTokenStore::new(data_dir.join(BAIDU_TOKEN_REF)),
             baidu_auth_in_progress: Arc::new(AtomicBool::new(false)),
-            baidu_sync_in_progress: Arc::new(AtomicBool::new(false)),
+            baidu_sync_in_progress: Arc::new(AtomicU8::new(CLOUD_SYNC_IDLE)),
             device_id,
             cloud_repository_id,
             profile_label,
@@ -640,6 +644,29 @@ impl Drop for AuthBusyGuard {
     }
 }
 
+#[derive(Clone, Copy)]
+pub(crate) enum CloudSyncTaskKind {
+    Background,
+    User,
+}
+
+impl CloudSyncTaskKind {
+    fn value(self) -> u8 {
+        match self {
+            Self::Background => CLOUD_SYNC_BACKGROUND,
+            Self::User => CLOUD_SYNC_USER,
+        }
+    }
+}
+
+pub(crate) struct CloudSyncBusyGuard(Arc<AtomicU8>);
+
+impl Drop for CloudSyncBusyGuard {
+    fn drop(&mut self) {
+        self.0.store(CLOUD_SYNC_IDLE, Ordering::SeqCst);
+    }
+}
+
 pub(crate) struct BaiduCloudRuntime {
     sqlite_repo: Arc<SqliteRepo>,
     snapshot_store: Arc<dyn SnapshotStore>,
@@ -687,20 +714,77 @@ impl BaiduCloudRuntime {
     }
 }
 
-pub(crate) fn acquire_cloud_sync_guard(state: &AppState) -> Result<AuthBusyGuard, String> {
-    let busy = state.baidu_sync_in_progress.clone();
-    if busy
-        .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-        .is_err()
-    {
-        return Err("已有云端任务正在进行，请等待当前任务完成".into());
+fn acquire_cloud_sync_guard_for(
+    busy: Arc<AtomicU8>,
+    task_kind: CloudSyncTaskKind,
+) -> Result<CloudSyncBusyGuard, String> {
+    let occupied_by = match busy.compare_exchange(
+        CLOUD_SYNC_IDLE,
+        task_kind.value(),
+        Ordering::SeqCst,
+        Ordering::SeqCst,
+    ) {
+        Ok(_) => return Ok(CloudSyncBusyGuard(busy)),
+        Err(occupied_by) => occupied_by,
+    };
+    match occupied_by {
+        CLOUD_SYNC_BACKGROUND => Err("正在进行后台云同步，请稍后重试".into()),
+        CLOUD_SYNC_USER => Err("已有用户发起的云端操作正在进行，请等待当前操作完成".into()),
+        _ => Err("云端任务状态异常，请重启 SaveLink 后重试".into()),
     }
-    Ok(AuthBusyGuard(busy))
+}
+
+pub(crate) fn acquire_cloud_sync_guard(
+    state: &AppState,
+    task_kind: CloudSyncTaskKind,
+) -> Result<CloudSyncBusyGuard, String> {
+    acquire_cloud_sync_guard_for(state.baidu_sync_in_progress.clone(), task_kind)
+}
+
+#[cfg(test)]
+mod cloud_sync_guard_tests {
+    use super::*;
+
+    #[test]
+    fn reports_background_sync_separately() {
+        let busy = Arc::new(AtomicU8::new(CLOUD_SYNC_IDLE));
+        let _background =
+            acquire_cloud_sync_guard_for(busy.clone(), CloudSyncTaskKind::Background).unwrap();
+
+        let error = acquire_cloud_sync_guard_for(busy, CloudSyncTaskKind::User)
+            .err()
+            .expect("用户操作应被后台同步拒绝");
+
+        assert_eq!(error, "正在进行后台云同步，请稍后重试");
+    }
+
+    #[test]
+    fn reports_an_existing_user_operation_separately() {
+        let busy = Arc::new(AtomicU8::new(CLOUD_SYNC_IDLE));
+        let _user = acquire_cloud_sync_guard_for(busy.clone(), CloudSyncTaskKind::User).unwrap();
+
+        let error = acquire_cloud_sync_guard_for(busy, CloudSyncTaskKind::User)
+            .err()
+            .expect("第二个用户操作应被拒绝");
+
+        assert_eq!(error, "已有用户发起的云端操作正在进行，请等待当前操作完成");
+    }
+
+    #[test]
+    fn releases_the_cloud_sync_state_when_the_guard_drops() {
+        let busy = Arc::new(AtomicU8::new(CLOUD_SYNC_IDLE));
+        {
+            let _background =
+                acquire_cloud_sync_guard_for(busy.clone(), CloudSyncTaskKind::Background).unwrap();
+        }
+
+        let _user = acquire_cloud_sync_guard_for(busy, CloudSyncTaskKind::User).unwrap();
+    }
 }
 
 /* ---------- Tauri 命令（前端通过 invoke 调用，类似发 HTTP 到 Controller） ---------- */
 
-use tauri::{path::BaseDirectory, AppHandle, Manager, State};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager, State};
 
 #[tauri::command]
 pub fn list_games(state: State<'_, AppState>) -> Result<Vec<GameDto>, String> {
@@ -1023,11 +1107,14 @@ pub async fn connect_baidu(
 
 #[tauri::command]
 pub async fn upload_snapshot_to_baidu(
+    app: AppHandle,
     state: State<'_, AppState>,
     game_id: String,
     snapshot_id: String,
 ) -> Result<CloudUploadDto, String> {
-    let _busy_guard = acquire_cloud_sync_guard(&state)?;
+    let _busy_guard = acquire_cloud_sync_guard(&state, CloudSyncTaskKind::User)?;
+    app.emit(CLOUD_UPLOAD_STARTED_EVENT, snapshot_id.clone())
+        .map_err(|error| format!("无法通知上传任务已开始: {error}"))?;
     let runtime = BaiduCloudRuntime::from_state(&state);
     let token_store_on_error = state.baidu_token_store.clone();
     let requested_snapshot_id = snapshot_id.clone();
@@ -1068,7 +1155,7 @@ pub async fn upload_snapshot_to_baidu(
 pub async fn discover_baidu_snapshots(
     state: State<'_, AppState>,
 ) -> Result<Vec<CloudSnapshotDto>, String> {
-    let _busy_guard = acquire_cloud_sync_guard(&state)?;
+    let _busy_guard = acquire_cloud_sync_guard(&state, CloudSyncTaskKind::User)?;
     let runtime = BaiduCloudRuntime::from_state(&state);
     let token_store_on_error = state.baidu_token_store.clone();
 
@@ -1093,7 +1180,7 @@ pub async fn receive_baidu_snapshot(
     state: State<'_, AppState>,
     snapshot_id: String,
 ) -> Result<CloudReceiveDto, String> {
-    let _busy_guard = acquire_cloud_sync_guard(&state)?;
+    let _busy_guard = acquire_cloud_sync_guard(&state, CloudSyncTaskKind::User)?;
     let runtime = BaiduCloudRuntime::from_state(&state);
     let repo = runtime.sqlite_repo.clone();
     let token_store_on_error = state.baidu_token_store.clone();
@@ -1199,6 +1286,23 @@ pub fn list_snapshots(
             ))
         })
         .collect()
+}
+
+#[tauri::command]
+pub async fn compare_snapshot_with_local(
+    state: State<'_, AppState>,
+    snapshot_id: String,
+) -> Result<bool, String> {
+    let snapshots = state.snapshots();
+    tauri::async_runtime::spawn_blocking(move || {
+        // 这里只读取当前存档，不等待可能包含云端网络请求的快照写操作锁。
+        // 单实例 UI 不会同时发起恢复；后台创建快照与本检查也都只读取真实存档。
+        snapshots
+            .current_save_matches(&snapshot_id)
+            .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| format!("本地存档比较任务失败: {error}"))?
 }
 
 #[tauri::command]

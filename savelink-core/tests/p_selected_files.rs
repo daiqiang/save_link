@@ -155,3 +155,33 @@ fn p2_restore_maps_the_logical_save_to_a_renamed_rom_without_touching_siblings()
         b"KEEP-ME"
     );
 }
+
+#[test]
+fn p3_current_save_match_ignores_unselected_sibling_files() {
+    let outer = TempDir::new();
+    let battery = outer.child("Battery");
+    fs::write(battery.join("game-a.dsv"), b"A-ONE").unwrap();
+    fs::write(battery.join("game-b.dsv"), b"B-ONE").unwrap();
+    let harness = SelectedHarness::new(&battery, "game-a.dsv");
+
+    let snapshot = match harness
+        .snapshots()
+        .create_snapshot("desmume_game", None, Reason::Manual)
+        .unwrap()
+    {
+        CreateOutcome::Created(snapshot) => snapshot,
+        CreateOutcome::NoChange => panic!("first selected-file snapshot should be created"),
+    };
+
+    fs::write(battery.join("game-b.dsv"), b"B-TWO").unwrap();
+    assert!(harness
+        .snapshots()
+        .current_save_matches(&snapshot.id)
+        .expect("unselected sibling changes should be ignored"));
+
+    fs::write(battery.join("game-a.dsv"), b"A-TWO").unwrap();
+    assert!(!harness
+        .snapshots()
+        .current_save_matches(&snapshot.id)
+        .expect("selected file changes should be detected"));
+}

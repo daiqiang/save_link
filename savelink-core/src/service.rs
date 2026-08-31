@@ -57,6 +57,29 @@ impl SnapshotService {
         self.create_internal(game_id, note, reason)
     }
 
+    /// 只读比较当前真实存档与指定快照，不创建记录也不写入任何存档文件。
+    pub fn current_save_matches(&self, snapshot_id: &str) -> Result<bool> {
+        let target = self
+            .repo
+            .get_snapshot(snapshot_id)?
+            .ok_or_else(|| SaveLinkError::Io(format!("snapshot not found: {snapshot_id}")))?;
+        if target.status != SnapshotStatus::Complete {
+            return Err(SaveLinkError::SnapshotCorrupt);
+        }
+        let game = self
+            .repo
+            .get_game(&target.game_id)?
+            .ok_or_else(|| SaveLinkError::Io(format!("game not found: {}", target.game_id)))?;
+        if !game.is_configured() {
+            return Err(SaveLinkError::SaveSourcesNotConfigured);
+        }
+
+        let configured_sources = game.effective_save_sources();
+        let save_sources = snapshot_save_sources(&configured_sources, target.source_count)?;
+        let current = scan::scan_save_sources(&save_sources)?;
+        Ok(snapshot_matches_scan(&target, &current))
+    }
+
     fn create_internal(
         &self,
         game_id: &str,

@@ -540,6 +540,11 @@ textarea.input { resize: vertical; min-height: 60px; }
 .mrow { display: flex; justify-content: space-between; padding: 7px 0;
   border-bottom: 1px solid var(--color-border); font-size: 13px; }
 .mrow .mk { color: var(--color-text-3); }
+.local-match { min-width: 116px; min-height: 18px; display: inline-flex; align-items: center;
+  justify-content: flex-end; gap: 5px; white-space: nowrap; }
+.local-match.matched { color: var(--color-ok); }
+.local-match.different { color: var(--color-warn); }
+.local-match.checking, .local-match.unavailable { color: var(--color-text-3); }
 .drawer-foot { padding: 14px 20px; border-top: 1px solid var(--color-border);
   display: flex; flex-direction: column; gap: 10px; }
 

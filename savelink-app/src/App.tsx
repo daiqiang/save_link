@@ -225,6 +225,7 @@ function SaveLink() {
     if (selected?.configuration_state !== "configured") return toast("请先设置本机存档目录", "warn");
     if (cloudUploadingId || s.cloud_status === "uploaded" || s.cloud_status === "downloaded") return;
     setCloudUploadingId(s.id);
+    let unlistenUploadStarted: (() => void) | null = null;
     try {
       const current = await api.getBaiduConnectionStatus();
       if (!current.connected) {
@@ -232,7 +233,9 @@ function SaveLink() {
         const connected = await api.connectBaidu();
         if (!connected.connected) throw new Error("百度网盘授权未完成");
       }
-      toast("正在打包并上传这条快照", "warn");
+      unlistenUploadStarted = await listen<string>("cloud-upload-started", (event) => {
+        if (event.payload === s.id) toast("正在打包并上传这条快照", "warn");
+      });
       const result = await api.uploadSnapshotToBaidu(s.game_id, s.id);
       await loadSnapshots(s.game_id);
       toast(
@@ -243,6 +246,7 @@ function SaveLink() {
       toast(String(error), "err");
       await loadSnapshots(s.game_id).catch(() => undefined);
     } finally {
+      unlistenUploadStarted?.();
       setCloudUploadingId(null);
     }
   }

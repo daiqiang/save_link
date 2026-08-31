@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Icon } from "../lib/icons";
 import { formatSize, formatTimestamp, REASON_LABEL } from "../lib/format";
 import * as api from "../lib/api";
@@ -6,6 +6,13 @@ import { useToast } from "./Toast";
 import type { Game, Snapshot } from "../lib/types";
 
 type PendingAction = "close" | "restore" | "delete";
+const LOCAL_MATCH_TIMEOUT_MS = 15_000;
+
+type LocalMatchState =
+  | { kind: "checking"; visible: boolean }
+  | { kind: "matched" }
+  | { kind: "different" }
+  | { kind: "unavailable"; message: string };
 
 interface Props {
   game: Game;
@@ -27,7 +34,51 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
   // 否则抽屉读的是打开时的 snapshot prop（refresh 不会更新它），按钮文案会和时间线不一致。
   const [locked, setLocked] = useState(snapshot.locked);
   const [pendingReorganization, setPendingReorganization] = useState(snapshot.pending_reorganization);
+  const [localMatch, setLocalMatch] = useState<LocalMatchState>({ kind: "checking", visible: false });
   const noteDirty = note !== savedNote;
+
+  useEffect(() => {
+    let active = true;
+    let completed = false;
+    setLocalMatch({ kind: "checking", visible: false });
+    const slowTimer = window.setTimeout(() => {
+      if (active && !completed) {
+        setLocalMatch((current) => current.kind === "checking"
+          ? { kind: "checking", visible: true }
+          : current);
+      }
+    }, 200);
+    const timeoutTimer = window.setTimeout(() => {
+      if (active && !completed) {
+        completed = true;
+        setLocalMatch({ kind: "unavailable", message: "检查超时，请关闭详情后重试" });
+      }
+    }, LOCAL_MATCH_TIMEOUT_MS);
+
+    api.compareSnapshotWithLocal(snapshot.id)
+      .then((matches) => {
+        if (active && !completed) {
+          completed = true;
+          setLocalMatch({ kind: matches ? "matched" : "different" });
+        }
+      })
+      .catch((error) => {
+        if (active && !completed) {
+          completed = true;
+          setLocalMatch({ kind: "unavailable", message: String(error) });
+        }
+      })
+      .finally(() => {
+        window.clearTimeout(slowTimer);
+        window.clearTimeout(timeoutTimer);
+      });
+
+    return () => {
+      active = false;
+      window.clearTimeout(slowTimer);
+      window.clearTimeout(timeoutTimer);
+    };
+  }, [snapshot.id]);
 
   async function saveNote() {
     if (!noteDirty || savingNote) return;
@@ -108,6 +159,31 @@ export function SnapshotDrawer({ game, snapshot, onClose, onChanged, onRestore, 
             <div className="mrow"><span className="mk">状态</span><span>{pendingReorganization
               ? (locked ? "已锁定，待整理" : "已解锁，待整理")
               : locked ? "已锁定" : "正常"}</span></div>
+            <div className="mrow">
+              <span className="mk">本地存档</span>
+              {localMatch.kind === "checking" && (
+                <span className="local-match checking" aria-live="polite">
+                  {localMatch.visible
+                    ? <><span className="spin"><Icon.RotateCcw size={13} /></span> 正在检查</>
+                    : <span aria-hidden="true">&nbsp;</span>}
+                </span>
+              )}
+              {localMatch.kind === "matched" && (
+                <span className="local-match matched" title="打开快照详情时的检查结果">
+                  <Icon.CheckCircle size={14} /> 与本地一致
+                </span>
+              )}
+              {localMatch.kind === "different" && (
+                <span className="local-match different" title="打开快照详情时的检查结果">
+                  <Icon.Alert size={14} /> 与本地不一致
+                </span>
+              )}
+              {localMatch.kind === "unavailable" && (
+                <span className="local-match unavailable" title={localMatch.message}>
+                  <Icon.Alert size={14} /> 无法检查
+                </span>
+              )}
+            </div>
           </div>
 
           <div style={{ marginTop: 16 }}>

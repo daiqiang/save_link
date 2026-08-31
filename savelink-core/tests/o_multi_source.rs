@@ -221,3 +221,34 @@ fn o6_path_overlap_treats_windows_verbatim_prefix_as_the_same_path() {
     assert!(scan::save_paths_overlap(&regular, &verbatim));
     assert!(scan::path_is_same_or_descendant(&regular, &child));
 }
+
+#[test]
+fn o7_current_save_match_checks_every_configured_source() {
+    let h = Harness::new(&[("save.dat", b"FIRST")]);
+    let second = h.tmp.child("second-save");
+    write_files(&second, &[("profile.dat", b"SECOND")]);
+
+    let mut game = h.repo.get_game(&h.game_id).unwrap().unwrap();
+    game.save_paths = vec![h.save_dir.clone(), second.clone()];
+    h.repo.update_game(game).unwrap();
+
+    let snapshot = match h
+        .snapshots()
+        .create_snapshot(&h.game_id, None, Reason::Manual)
+        .unwrap()
+    {
+        CreateOutcome::Created(snapshot) => snapshot,
+        CreateOutcome::NoChange => panic!("first multi-source snapshot should be created"),
+    };
+
+    assert!(h
+        .snapshots()
+        .current_save_matches(&snapshot.id)
+        .expect("unchanged multi-source save should match"));
+
+    fs::write(second.join("profile.dat"), b"CHANGED").unwrap();
+    assert!(!h
+        .snapshots()
+        .current_save_matches(&snapshot.id)
+        .expect("a change in any source should be detected"));
+}
