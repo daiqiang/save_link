@@ -60,6 +60,7 @@ fn snapshot(id: &str, created_at: &str, status: CloudSyncStatus) -> CloudSnapsho
         metadata_sync_status: CloudMetadataSyncStatus::Synced,
         metadata_last_synced_at: None,
         metadata_last_error_code: None,
+        remote_metadata_modified_at: None,
         remote_note_updated_at: created_at.into(),
         remote_locked_updated_at: created_at.into(),
     }

@@ -62,8 +62,30 @@ export async function uploadSnapshotToBaidu(
   return invoke<CloudUploadResult>("upload_snapshot_to_baidu", { gameId, snapshotId });
 }
 
-export async function discoverBaiduSnapshots(): Promise<CloudSnapshot[]> {
-  return invoke<CloudSnapshot[]>("discover_baidu_snapshots");
+let cloudDiscoveryInFlight: Promise<CloudSnapshot[]> | null = null;
+let cloudDiscoveryCache: CloudSnapshot[] | null = null;
+
+export function getCachedBaiduSnapshots(): CloudSnapshot[] {
+  return cloudDiscoveryCache ?? [];
+}
+
+export function discoverBaiduSnapshots(): Promise<CloudSnapshot[]> {
+  if (cloudDiscoveryInFlight) return cloudDiscoveryInFlight;
+
+  const request = invoke<CloudSnapshot[]>("discover_baidu_snapshots");
+  const shared = request.then(
+    (snapshots) => {
+      cloudDiscoveryCache = snapshots;
+      if (cloudDiscoveryInFlight === shared) cloudDiscoveryInFlight = null;
+      return snapshots;
+    },
+    (error) => {
+      if (cloudDiscoveryInFlight === shared) cloudDiscoveryInFlight = null;
+      throw error;
+    },
+  );
+  cloudDiscoveryInFlight = shared;
+  return shared;
 }
 
 export async function receiveBaiduSnapshot(snapshotId: string): Promise<CloudReceiveResult> {

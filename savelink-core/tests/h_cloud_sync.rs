@@ -31,7 +31,8 @@ use savelink_core::testkit::TempDir;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
@@ -56,6 +57,76 @@ struct DeleteFailingCloudStore {
 
 struct PutFailingCloudStore {
     inner: Arc<dyn CloudObjectStore>,
+}
+
+struct TrackingCloudStore {
+    inner: Arc<dyn CloudObjectStore>,
+    downloads: Mutex<Vec<String>>,
+    metadata_modified_at: AtomicU64,
+}
+
+impl TrackingCloudStore {
+    fn new(inner: Arc<dyn CloudObjectStore>) -> Self {
+        Self {
+            inner,
+            downloads: Mutex::new(Vec::new()),
+            metadata_modified_at: AtomicU64::new(1),
+        }
+    }
+
+    fn download_count(&self, suffix: &str) -> usize {
+        self.downloads
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|path| path.ends_with(suffix))
+            .count()
+    }
+
+    fn advance_metadata_time(&self) {
+        self.metadata_modified_at.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+impl CloudObjectStore for TrackingCloudStore {
+    fn put_file(
+        &self,
+        remote_path: &str,
+        local_file: &Path,
+        mode: PutMode,
+    ) -> CloudStoreResult<CloudFile> {
+        let result = self.inner.put_file(remote_path, local_file, mode);
+        if result.is_ok() && remote_path.contains("/snapshot-meta/") {
+            self.advance_metadata_time();
+        }
+        result
+    }
+
+    fn get_file(&self, remote_path: &str, local_file: &Path) -> CloudStoreResult<()> {
+        self.downloads.lock().unwrap().push(remote_path.into());
+        self.inner.get_file(remote_path, local_file)
+    }
+
+    fn list_directory(&self, remote_path: &str) -> CloudStoreResult<Vec<CloudEntry>> {
+        let mut entries = self.inner.list_directory(remote_path)?;
+        if remote_path.ends_with("/snapshot-meta") {
+            let modified_at = self.metadata_modified_at.load(Ordering::SeqCst);
+            for entry in &mut entries {
+                if entry.kind == savelink_core::cloud_store::CloudEntryKind::File {
+                    entry.modified_at = Some(modified_at);
+                }
+            }
+        }
+        Ok(entries)
+    }
+
+    fn stat_file(&self, remote_path: &str) -> CloudStoreResult<Option<CloudFile>> {
+        self.inner.stat_file(remote_path)
+    }
+
+    fn delete_file(&self, remote_path: &str) -> CloudStoreResult<()> {
+        self.inner.delete_file(remote_path)
+    }
 }
 
 impl CloudObjectStore for PutFailingCloudStore {
@@ -1138,7 +1209,10 @@ fn h20_metadata_error_survives_reopen_and_retries() {
         "repo_a",
     )
     .unwrap();
-    assert_eq!(reopened_service.sync_known_snapshot_metadata().unwrap(), 1);
+    assert_eq!(
+        reopened_service.sync_pending_snapshot_metadata().unwrap(),
+        1
+    );
     let record = reopened_repo
         .get_cloud_snapshot("account_1", "snap_1")
         .unwrap()
@@ -1184,6 +1258,96 @@ fn h21_pending_metadata_blocks_cloud_cleanup() {
         .stat_file(&snapshot_metadata_path("game_1", "snap_1").unwrap())
         .unwrap()
         .is_none());
+}
+
+#[test]
+fn h22_background_metadata_sync_only_touches_pending_records() {
+    let (_tmp, cloud, _codec, device_a, _) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"pending-only")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    let tracking = Arc::new(TrackingCloudStore::new(cloud));
+    let service = service_for_device(&device_a, tracking.clone());
+    assert_eq!(service.sync_pending_snapshot_metadata().unwrap(), 0);
+    assert_eq!(tracking.download_count("snap_1.ok"), 0);
+    assert_eq!(tracking.download_count("snap_1.json"), 0);
+
+    edit_snapshot_metadata(
+        &device_a,
+        "snap_1",
+        Some("待同步名称"),
+        Some("2026-07-14T19:00:00Z"),
+        None,
+        None,
+    );
+    assert_eq!(service.sync_pending_snapshot_metadata().unwrap(), 1);
+    let downloads_after_sync = tracking.download_count("snap_1.ok");
+    assert!(downloads_after_sync > 0);
+    assert_eq!(service.sync_pending_snapshot_metadata().unwrap(), 0);
+    assert_eq!(tracking.download_count("snap_1.ok"), downloads_after_sync);
+}
+
+#[test]
+fn h23_incremental_discovery_reuses_commit_and_metadata_until_remote_changes() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"incremental")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    let tracking = Arc::new(TrackingCloudStore::new(cloud));
+    let service = service_for_device(&device_b, tracking.clone());
+    service.discover_remote_catalog().unwrap();
+    assert_eq!(tracking.download_count("snap_1.ok"), 1);
+    assert_eq!(tracking.download_count("snap_1.json"), 1);
+
+    service.discover_remote_catalog().unwrap();
+    assert_eq!(tracking.download_count("snap_1.ok"), 1);
+    assert_eq!(tracking.download_count("snap_1.json"), 1);
+
+    edit_snapshot_metadata(
+        &device_a,
+        "snap_1",
+        Some("另一台设备的新名称"),
+        Some("2026-07-14T20:00:00Z"),
+        None,
+        None,
+    );
+    device_a.service.sync_snapshot_metadata("snap_1").unwrap();
+    tracking.advance_metadata_time();
+
+    let discovered = service.discover_remote_catalog().unwrap();
+    assert_eq!(tracking.download_count("snap_1.ok"), 1);
+    assert_eq!(tracking.download_count("snap_1.json"), 2);
+    assert_eq!(
+        discovered[0].snapshot.note.as_deref(),
+        Some("另一台设备的新名称")
+    );
+}
+
+#[test]
+fn h24_incremental_discovery_still_rejects_a_missing_zip() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"missing-zip")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    let service = service_for_device(&device_b, cloud.clone());
+    service.discover_remote_catalog().unwrap();
+    cloud
+        .delete_file(&snapshot_zip_path("game_1", "snap_1").unwrap())
+        .unwrap();
+
+    assert!(matches!(
+        service.discover_remote_catalog(),
+        Err(CloudSyncError::RemoteZipMissing(id)) if id == "snap_1"
+    ));
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

@@ -13,7 +13,7 @@ use reqwest::blocking::{Client, RequestBuilder, Response};
 use reqwest::{StatusCode, Url};
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -85,6 +85,7 @@ pub struct BaiduNetdiskStore {
     config: BaiduNetdiskConfig,
     token_provider: Arc<dyn BaiduAccessTokenProvider>,
     ensured_directories: Mutex<HashSet<String>>,
+    directory_cache: Mutex<HashMap<String, Vec<BaiduEntry>>>,
 }
 
 impl BaiduNetdiskStore {
@@ -107,6 +108,7 @@ impl BaiduNetdiskStore {
             config,
             token_provider,
             ensured_directories: Mutex::new(HashSet::new()),
+            directory_cache: Mutex::new(HashMap::new()),
         })
     }
 
@@ -185,6 +187,15 @@ impl BaiduNetdiskStore {
             .form(&[("path", remote_dir), ("isdir", "1"), ("rtype", "0")]);
         let response = self.send(request)?;
         self.read_json_response(response, remote_dir, true)?;
+        self.invalidate_directory(posix_dirname(remote_dir))?;
+        Ok(())
+    }
+
+    fn invalidate_directory(&self, remote_dir: &str) -> CloudStoreResult<()> {
+        self.directory_cache
+            .lock()
+            .map_err(|_| CloudStoreError::Provider("百度网盘目录缓存不可用".into()))?
+            .remove(remote_dir);
         Ok(())
     }
 
@@ -215,6 +226,16 @@ impl BaiduNetdiskStore {
     }
 
     fn list_remote_directory(&self, remote_dir: &str) -> CloudStoreResult<Vec<BaiduEntry>> {
+        if let Some(entries) = self
+            .directory_cache
+            .lock()
+            .map_err(|_| CloudStoreError::Provider("百度网盘目录缓存不可用".into()))?
+            .get(remote_dir)
+            .cloned()
+        {
+            return Ok(entries);
+        }
+
         let mut entries = Vec::new();
         let mut start = 0usize;
         loop {
@@ -248,6 +269,10 @@ impl BaiduNetdiskStore {
             }
             start = start.saturating_add(count);
         }
+        self.directory_cache
+            .lock()
+            .map_err(|_| CloudStoreError::Provider("百度网盘目录缓存不可用".into()))?
+            .insert(remote_dir.to_string(), entries.clone());
         Ok(entries)
     }
 
@@ -395,6 +420,7 @@ impl CloudObjectStore for BaiduNetdiskStore {
             .multipart(form);
         let response = self.send(request)?;
         self.read_json_response(response, remote_path, false)?;
+        self.invalidate_directory(posix_dirname(&physical_path))?;
         Ok(CloudFile {
             path: remote_path.into(),
             size: metadata.len(),
@@ -433,6 +459,7 @@ impl CloudObjectStore for BaiduNetdiskStore {
                 } else {
                     0
                 },
+                modified_at: entry.server_mtime,
             });
         }
         result.sort_by(|left, right| left.name.cmp(&right.name));
@@ -485,6 +512,7 @@ impl CloudObjectStore for BaiduNetdiskStore {
                 }
             }
         }
+        self.invalidate_directory(posix_dirname(&entry.path))?;
         Ok(())
     }
 }
@@ -505,6 +533,8 @@ struct BaiduEntry {
     isdir: i32,
     #[serde(default)]
     size: u64,
+    #[serde(default)]
+    server_mtime: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]

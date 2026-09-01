@@ -184,19 +184,10 @@ fn i2_create_only_stops_before_upload_when_remote_file_exists() {
 fn i3_list_stat_download_and_delete_follow_baidu_file_api_contract() {
     let server = ScriptedServer::start(vec![
         MockResponse::json(
-            r#"{"errno":0,"list":[{"fs_id":7,"path":"/apps/savelink/v1/games/game_1/snapshots/snap_1.ok","server_filename":"snap_1.ok","isdir":0,"size":9},{"fs_id":8,"path":"/apps/savelink/v1/games/game_1/snapshots/archive","server_filename":"archive","isdir":1,"size":0}]}"#,
-        ),
-        MockResponse::json(
-            r#"{"errno":0,"list":[{"fs_id":7,"path":"/apps/savelink/v1/games/game_1/snapshots/snap_1.ok","server_filename":"snap_1.ok","isdir":0,"size":9}]}"#,
-        ),
-        MockResponse::json(
-            r#"{"errno":0,"list":[{"fs_id":7,"path":"/apps/savelink/v1/games/game_1/snapshots/snap_1.ok","server_filename":"snap_1.ok","isdir":0,"size":9}]}"#,
+            r#"{"errno":0,"list":[{"fs_id":7,"path":"/apps/savelink/v1/games/game_1/snapshots/snap_1.ok","server_filename":"snap_1.ok","isdir":0,"size":9,"server_mtime":123},{"fs_id":8,"path":"/apps/savelink/v1/games/game_1/snapshots/archive","server_filename":"archive","isdir":1,"size":0}]}"#,
         ),
         MockResponse::json(r#"{"errno":0,"list":[{"fs_id":7,"dlink":"{{BASE_URL}}/download/7"}]}"#),
         MockResponse::bytes(b"cloud-ok!"),
-        MockResponse::json(
-            r#"{"errno":0,"list":[{"fs_id":7,"path":"/apps/savelink/v1/games/game_1/snapshots/snap_1.ok","server_filename":"snap_1.ok","isdir":0,"size":9}]}"#,
-        ),
         MockResponse::json(r#"{"errno":0,"info":[{"errno":0}]}"#),
         MockResponse::json(r#"{"errno":0,"list":[]}"#),
     ]);
@@ -211,6 +202,7 @@ fn i3_list_stat_download_and_delete_follow_baidu_file_api_contract() {
     assert_eq!(entries[1].name, "snap_1.ok");
     assert_eq!(entries[1].kind, CloudEntryKind::File);
     assert_eq!(entries[1].size, 9);
+    assert_eq!(entries[1].modified_at, Some(123));
     assert_eq!(store.stat_file(&remote_file).unwrap().unwrap().size, 9);
 
     let tmp = TempDir::new();
@@ -228,18 +220,18 @@ fn i3_list_stat_download_and_delete_follow_baidu_file_api_contract() {
     store.delete_file(&remote_file).unwrap();
     store.delete_file(&remote_file).unwrap();
     let requests = server.finish();
-    assert_eq!(requests.len(), 8);
-    let metas_query = request_query(&requests[3]);
+    assert_eq!(requests.len(), 5);
+    let metas_query = request_query(&requests[1]);
     assert_eq!(query_value(&metas_query, "method"), Some("filemetas"));
-    let download_query = request_query(&requests[4]);
+    let download_query = request_query(&requests[2]);
     assert_eq!(
         query_value(&download_query, "access_token"),
         Some("test-access-token")
     );
-    let delete_query = request_query(&requests[6]);
+    let delete_query = request_query(&requests[3]);
     assert_eq!(query_value(&delete_query, "method"), Some("filemanager"));
     assert_eq!(query_value(&delete_query, "opera"), Some("delete"));
-    assert!(String::from_utf8_lossy(&requests[6].body).contains("filelist="));
+    assert!(String::from_utf8_lossy(&requests[3].body).contains("filelist="));
 }
 
 #[test]

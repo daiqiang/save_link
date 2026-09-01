@@ -122,6 +122,8 @@ pub struct CloudSnapshotRecord {
     pub metadata_sync_status: CloudMetadataSyncStatus,
     pub metadata_last_synced_at: Option<String>,
     pub metadata_last_error_code: Option<String>,
+    /// 最近一次已读取的远端 metadata 文件修改时间（Unix 秒）。
+    pub remote_metadata_modified_at: Option<u64>,
     /// 最近一次已知云端字段版本；本机修改时间保存在 `Snapshot`。
     pub remote_note_updated_at: String,
     pub remote_locked_updated_at: String,

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../lib/icons";
 import { formatSize, formatTimestamp, REASON_LABEL } from "../lib/format";
 import * as api from "../lib/api";
@@ -13,31 +13,43 @@ interface Props {
 export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
   const toast = useToast();
   const [connected, setConnected] = useState<boolean | null>(null);
-  const [snapshots, setSnapshots] = useState<CloudSnapshot[]>([]);
+  const [snapshots, setSnapshots] = useState<CloudSnapshot[]>(() => api.getCachedBaiduSnapshots());
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [receivingId, setReceivingId] = useState<string | null>(null);
+  const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
     setLoading(true);
+    setLoadError(null);
     try {
       const status = await api.getBaiduConnectionStatus();
+      if (!mounted.current) return;
       setConnected(status.connected);
       if (!status.connected) {
         setSnapshots([]);
         return;
       }
-      setSnapshots(await api.discoverBaiduSnapshots());
+      const discovered = await api.discoverBaiduSnapshots();
+      if (mounted.current) setSnapshots(discovered);
     } catch (error) {
       const status = await api.getBaiduConnectionStatus().catch(() => null);
-      if (status) setConnected(status.connected);
-      toast(String(error), "err");
+      if (mounted.current) {
+        if (status) setConnected(status.connected);
+        setLoadError(String(error));
+        toast(String(error), "err");
+      }
     } finally {
-      setLoading(false);
+      if (mounted.current) setLoading(false);
     }
   }, [toast]);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    mounted.current = true;
+    refresh();
+    return () => { mounted.current = false; };
+  }, [refresh]);
 
   const games = useMemo(() => {
     const grouped = new Map<string, { name: string; snapshots: CloudSnapshot[] }>();
@@ -94,7 +106,7 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
           </div>
         </div>
         <div className="modal-body cloud-body">
-          {loading && <div className="cloud-empty"><span className="spin"><Icon.RotateCcw size={22} /></span><span>正在读取百度网盘</span></div>}
+          {loading && games.length === 0 && <div className="cloud-empty"><span className="spin"><Icon.RotateCcw size={22} /></span><span>正在读取百度网盘</span></div>}
           {!loading && connected === false && (
             <div className="cloud-empty">
               <Icon.CloudUpload size={34} />
@@ -104,8 +116,15 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
               </button>
             </div>
           )}
-          {!loading && connected && games.length === 0 && <div className="cloud-empty"><span>云端还没有 SaveLink 快照</span></div>}
-          {!loading && connected && games.map((game) => (
+          {!loading && connected && loadError && games.length === 0 && (
+            <div className="cloud-empty">
+              <strong>读取云端存档失败</strong>
+              <span>{loadError}</span>
+              <button className="btn" onClick={refresh}>重试</button>
+            </div>
+          )}
+          {!loading && connected && !loadError && games.length === 0 && <div className="cloud-empty"><span>云端还没有 SaveLink 快照</span></div>}
+          {connected && games.map((game) => (
             <section className="cloud-game" key={game.id}>
               <div className="cloud-game-head">
                 <span className="game-cover">{game.name[0] ?? "游"}</span>

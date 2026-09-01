@@ -14,12 +14,13 @@ use crate::cloud_protocol::{
     PROTOCOL_VERSION,
 };
 use crate::cloud_repo::CloudStateRepository;
-use crate::cloud_store::{CloudEntryKind, CloudObjectStore, CloudStoreError, PutMode};
+use crate::cloud_store::{CloudEntry, CloudEntryKind, CloudObjectStore, CloudStoreError, PutMode};
 use crate::error::SaveLinkError;
 use crate::model::{Game, ScanResult, Snapshot, SnapshotStatus};
 use crate::repo::{Clock, Repository};
 use crate::scan;
 use crate::store::SnapshotStore;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -104,6 +105,8 @@ impl From<CloudArchiveError> for CloudSyncError {
 }
 
 pub type CloudSyncResult<T> = std::result::Result<T, CloudSyncError>;
+
+const DISCOVERY_CONCURRENCY: usize = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UploadOutcome {
@@ -235,7 +238,7 @@ where
         result
     }
 
-    /// 十分钟维护周期调用：同步当前设备已经知道且已经落地的全部云快照元数据。
+    /// 显式全量同步当前设备已经知道且已经落地的全部云快照元数据。
     pub fn sync_known_snapshot_metadata(&self) -> CloudSyncResult<usize> {
         let mut changed = 0;
         for binding in self.repo.list_cloud_game_bindings(&self.account_id)? {
@@ -265,6 +268,45 @@ where
         Ok(changed)
     }
 
+    /// 后台维护调用：只重试本机明确标记为待同步或失败的元数据。
+    pub fn sync_pending_snapshot_metadata(&self) -> CloudSyncResult<usize> {
+        let enabled_games: HashSet<String> = self
+            .repo
+            .list_cloud_game_bindings(&self.account_id)?
+            .into_iter()
+            .filter(|binding| binding.sync_enabled)
+            .map(|binding| binding.cloud_game_id)
+            .collect();
+        let mut changed = 0;
+        for status in [
+            CloudMetadataSyncStatus::Pending,
+            CloudMetadataSyncStatus::Error,
+        ] {
+            for record in self
+                .repo
+                .list_cloud_snapshots_by_metadata_status(&self.account_id, status)?
+            {
+                if !enabled_games.contains(&record.cloud_game_id)
+                    || matches!(
+                        record.sync_status,
+                        CloudSyncStatus::DeletePending
+                            | CloudSyncStatus::Deleting
+                            | CloudSyncStatus::DeleteFailed
+                            | CloudSyncStatus::RemoteDeleted
+                    )
+                    || self.repo.get_snapshot(&record.snapshot_id)?.is_none()
+                {
+                    continue;
+                }
+                if self.sync_snapshot_metadata(&record.snapshot_id)? == MetadataSyncOutcome::Updated
+                {
+                    changed += 1;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
     pub fn discover_remote_snapshots(&self) -> CloudSyncResult<Vec<CloudSnapshotRecord>> {
         Ok(self
             .discover_remote_catalog()?
@@ -281,61 +323,44 @@ where
             Err(error) => return Err(error.into()),
         };
 
-        let mut discovered = Vec::new();
-        for entry in game_entries {
-            if entry.kind != CloudEntryKind::Directory {
-                continue;
-            }
-            let cloud_game_id = entry.name;
-            crate::cloud_protocol::validate_id(&cloud_game_id, "cloud_game_id")?;
-            let game = self.read_game_document(&cloud_game_id)?;
-
-            let snapshot_entries = match self
-                .cloud_store
-                .list_directory(&snapshots_path(&cloud_game_id)?)
-            {
-                Ok(entries) => entries,
-                Err(CloudStoreError::NotFound(_)) => continue,
-                Err(error) => return Err(error.into()),
-            };
-            for snapshot_entry in snapshot_entries {
-                if snapshot_entry.kind != CloudEntryKind::File
-                    || !snapshot_entry.name.ends_with(".ok")
-                {
-                    continue;
-                }
-                let snapshot_id = snapshot_id_from_ok_name(&snapshot_entry.name)?;
-                let commit = self.read_snapshot_commit(&cloud_game_id, &snapshot_id)?;
-                self.ensure_remote_zip_exists(&commit)?;
-                let status = self.discovery_status(&commit)?;
-                let metadata = self.read_effective_remote_metadata(&commit)?;
-                let record = record_from_commit(
-                    &self.account_id,
-                    &commit,
-                    &metadata,
-                    status,
-                    None,
-                    CloudMetadataSyncStatus::Synced,
-                    None,
-                );
-                self.repo.upsert_cloud_snapshot(record.clone())?;
-                let record = if self.repo.get_snapshot(&snapshot_id)?.is_some() {
-                    self.sync_snapshot_metadata(&snapshot_id)?;
-                    self.repo
-                        .get_cloud_snapshot(&self.account_id, &snapshot_id)?
-                        .ok_or_else(|| {
-                            CloudSyncError::InvalidState("快照元数据同步后本机云记录丢失".into())
-                        })?
-                } else {
-                    record
-                };
-                discovered.push(CloudSnapshotDiscovery {
-                    cloud_game_id: cloud_game_id.clone(),
-                    game_name: game.name.clone(),
-                    snapshot: record,
-                });
-            }
+        let game_ids = game_entries
+            .into_iter()
+            .filter(|entry| entry.kind == CloudEntryKind::Directory)
+            .map(|entry| {
+                crate::cloud_protocol::validate_id(&entry.name, "cloud_game_id")?;
+                Ok(entry.name)
+            })
+            .collect::<CloudSyncResult<Vec<_>>>()?;
+        if game_ids.is_empty() {
+            return Ok(Vec::new());
         }
+
+        let worker_count = game_ids.len().min(DISCOVERY_CONCURRENCY);
+        let mut batches = vec![Vec::new(); worker_count];
+        for (index, game_id) in game_ids.into_iter().enumerate() {
+            batches[index % worker_count].push(game_id);
+        }
+        let mut discovered = std::thread::scope(|scope| {
+            let handles = batches
+                .into_iter()
+                .map(|batch| {
+                    scope.spawn(move || {
+                        let mut batch_discovered = Vec::new();
+                        for game_id in batch {
+                            batch_discovered.extend(self.discover_remote_game(&game_id)?);
+                        }
+                        Ok::<_, CloudSyncError>(batch_discovered)
+                    })
+                })
+                .collect::<Vec<_>>();
+            let mut all = Vec::new();
+            for handle in handles {
+                all.extend(handle.join().map_err(|_| {
+                    CloudSyncError::InvalidState("云端存档发现工作线程异常结束".into())
+                })??);
+            }
+            Ok::<_, CloudSyncError>(all)
+        })?;
         discovered.sort_by(|left, right| {
             crate::timestamp::compare_timestamps(
                 &right.snapshot.created_at,
@@ -343,6 +368,148 @@ where
             )
             .then_with(|| right.snapshot.snapshot_id.cmp(&left.snapshot.snapshot_id))
         });
+        Ok(discovered)
+    }
+
+    fn discover_remote_game(
+        &self,
+        cloud_game_id: &str,
+    ) -> CloudSyncResult<Vec<CloudSnapshotDiscovery>> {
+        let game_name = match self.repo.get_game(cloud_game_id)? {
+            Some(game) => game.name,
+            None => self.read_game_document(cloud_game_id)?.name,
+        };
+        let snapshot_entries = match self
+            .cloud_store
+            .list_directory(&snapshots_path(cloud_game_id)?)
+        {
+            Ok(entries) => entries,
+            Err(CloudStoreError::NotFound(_)) => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        let metadata_path = format!("{}/{cloud_game_id}/snapshot-meta", games_path());
+        let metadata_entries = match self.cloud_store.list_directory(&metadata_path) {
+            Ok(entries) => entries,
+            Err(CloudStoreError::NotFound(_)) => Vec::new(),
+            Err(error) => return Err(error.into()),
+        };
+        let snapshot_files: HashMap<String, CloudEntry> = snapshot_entries
+            .iter()
+            .filter(|entry| entry.kind == CloudEntryKind::File)
+            .cloned()
+            .map(|entry| (entry.name.clone(), entry))
+            .collect();
+        let metadata_files: HashMap<String, CloudEntry> = metadata_entries
+            .into_iter()
+            .filter(|entry| entry.kind == CloudEntryKind::File)
+            .map(|entry| (entry.name.clone(), entry))
+            .collect();
+
+        let mut discovered = Vec::new();
+        for snapshot_entry in snapshot_entries {
+            if snapshot_entry.kind != CloudEntryKind::File || !snapshot_entry.name.ends_with(".ok")
+            {
+                continue;
+            }
+            let snapshot_id = snapshot_id_from_ok_name(&snapshot_entry.name)?;
+            let zip_entry = snapshot_files
+                .get(&format!("{snapshot_id}.zip"))
+                .ok_or_else(|| CloudSyncError::RemoteZipMissing(snapshot_id.clone()))?;
+            let metadata_modified_at = metadata_files
+                .get(&format!("{snapshot_id}.json"))
+                .and_then(|entry| entry.modified_at);
+
+            if let Some(mut record) = self
+                .repo
+                .get_cloud_snapshot(&self.account_id, &snapshot_id)?
+            {
+                if record.cloud_game_id != cloud_game_id {
+                    return Err(CloudSyncError::SnapshotIdConflict(snapshot_id));
+                }
+                if zip_entry.size != record.archive_size {
+                    return Err(CloudArchiveError::ArchiveSizeMismatch.into());
+                }
+                let metadata_changed = remote_metadata_changed(&record, metadata_modified_at);
+                let should_record_observed_time =
+                    record.remote_metadata_modified_at != metadata_modified_at;
+                let local_exists = self.repo.get_snapshot(&snapshot_id)?.is_some();
+                if local_exists
+                    && (record.metadata_sync_status != CloudMetadataSyncStatus::Synced
+                        || metadata_changed)
+                {
+                    self.sync_snapshot_metadata(&snapshot_id)?;
+                    record = self
+                        .repo
+                        .get_cloud_snapshot(&self.account_id, &snapshot_id)?
+                        .ok_or_else(|| {
+                            CloudSyncError::InvalidState("快照元数据同步后本机云记录丢失".into())
+                        })?;
+                    record.remote_metadata_modified_at = metadata_modified_at;
+                    self.repo.upsert_cloud_snapshot(record.clone())?;
+                } else if !local_exists && metadata_changed {
+                    let metadata = match metadata_files.get(&format!("{snapshot_id}.json")) {
+                        Some(_) => self.read_snapshot_metadata(cloud_game_id, &snapshot_id)?,
+                        None => metadata_from_record(&record)?,
+                    };
+                    record.note = metadata.note.value;
+                    record.locked = metadata.locked.value;
+                    record.remote_note_updated_at = metadata.note.changed_at;
+                    record.remote_locked_updated_at = metadata.locked.changed_at;
+                    record.metadata_sync_status = CloudMetadataSyncStatus::Synced;
+                    record.metadata_last_synced_at = Some(self.now_timestamp()?);
+                    record.metadata_last_error_code = None;
+                    record.remote_metadata_modified_at = metadata_modified_at;
+                    self.repo.upsert_cloud_snapshot(record.clone())?;
+                } else if should_record_observed_time {
+                    // 旧数据库首次增量扫描时，若远端文件早于最近同步时间，
+                    // 只补齐 server_mtime，不重复下载已经同步过的元数据。
+                    record.remote_metadata_modified_at = metadata_modified_at;
+                    self.repo.upsert_cloud_snapshot(record.clone())?;
+                }
+                discovered.push(CloudSnapshotDiscovery {
+                    cloud_game_id: cloud_game_id.into(),
+                    game_name: game_name.clone(),
+                    snapshot: record,
+                });
+                continue;
+            }
+
+            let commit = self.read_snapshot_commit(cloud_game_id, &snapshot_id)?;
+            if zip_entry.size != commit.archive.size {
+                return Err(CloudArchiveError::ArchiveSizeMismatch.into());
+            }
+            let status = self.discovery_status(&commit)?;
+            let metadata = match metadata_files.get(&format!("{snapshot_id}.json")) {
+                Some(_) => self.read_snapshot_metadata(cloud_game_id, &snapshot_id)?,
+                None => metadata_from_commit(&commit)?,
+            };
+            let record = record_from_commit(
+                &self.account_id,
+                &commit,
+                &metadata,
+                status,
+                None,
+                CloudMetadataSyncStatus::Synced,
+                Some(self.now_timestamp()?),
+                metadata_modified_at,
+            );
+            self.repo.upsert_cloud_snapshot(record.clone())?;
+            let record = if self.repo.get_snapshot(&snapshot_id)?.is_some() {
+                self.sync_snapshot_metadata(&snapshot_id)?;
+                self.repo
+                    .get_cloud_snapshot(&self.account_id, &snapshot_id)?
+                    .ok_or_else(|| {
+                        CloudSyncError::InvalidState("快照元数据同步后本机云记录丢失".into())
+                    })?
+            } else {
+                record
+            };
+            discovered.push(CloudSnapshotDiscovery {
+                cloud_game_id: cloud_game_id.into(),
+                game_name: game_name.clone(),
+                snapshot: record,
+            });
+        }
         Ok(discovered)
     }
 
@@ -479,6 +646,7 @@ where
                 Some(self.now_timestamp()?),
                 CloudMetadataSyncStatus::Pending,
                 None,
+                None,
             ))?;
             return Ok(UploadOutcome::AlreadyPresent);
         }
@@ -530,6 +698,7 @@ where
             None,
             CloudMetadataSyncStatus::Pending,
             None,
+            None,
         ))?;
 
         let remote_zip = snapshot_zip_path(game_id, snapshot_id)?;
@@ -570,6 +739,7 @@ where
             CloudSyncStatus::Uploaded,
             Some(self.now_timestamp()?),
             CloudMetadataSyncStatus::Pending,
+            None,
             None,
         ))?;
         let _ = fs::remove_dir_all(operation_dir);
@@ -794,14 +964,22 @@ where
         if self.cloud_store.stat_file(&remote_path)?.is_none() {
             return metadata_from_commit(commit);
         }
+        self.read_snapshot_metadata(&commit.cloud_game_id, &commit.snapshot_id)
+    }
+
+    fn read_snapshot_metadata(
+        &self,
+        cloud_game_id: &str,
+        snapshot_id: &str,
+    ) -> CloudSyncResult<SnapshotMetadataDocument> {
         let bytes = self.read_remote_bytes(
-            &remote_path,
-            &format!("snapshot-{}-metadata-read.json", commit.snapshot_id),
+            &snapshot_metadata_path(cloud_game_id, snapshot_id)?,
+            &format!("snapshot-{snapshot_id}-metadata-read.json"),
         )?;
         normalize_metadata_document(SnapshotMetadataDocument::from_json(
             &bytes,
-            &commit.cloud_game_id,
-            &commit.snapshot_id,
+            cloud_game_id,
+            snapshot_id,
         )?)
     }
 
@@ -872,6 +1050,8 @@ where
         record.metadata_sync_status = CloudMetadataSyncStatus::Synced;
         record.metadata_last_synced_at = Some(self.now_timestamp()?);
         record.metadata_last_error_code = None;
+        // 百度覆盖上传会产生新的 server_mtime；下一次发现时补齐精确值。
+        record.remote_metadata_modified_at = None;
         record.remote_note_updated_at = merged.note.changed_at.clone();
         record.remote_locked_updated_at = merged.locked.changed_at.clone();
         self.repo.upsert_cloud_snapshot(record)?;
@@ -1066,6 +1246,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn record_from_commit(
     account_id: &str,
     commit: &SnapshotCommitDocument,
@@ -1074,6 +1255,7 @@ fn record_from_commit(
     last_synced_at: Option<String>,
     metadata_sync_status: CloudMetadataSyncStatus,
     metadata_last_synced_at: Option<String>,
+    remote_metadata_modified_at: Option<u64>,
 ) -> CloudSnapshotRecord {
     CloudSnapshotRecord {
         account_id: account_id.into(),
@@ -1097,8 +1279,39 @@ fn record_from_commit(
         metadata_sync_status,
         metadata_last_synced_at,
         metadata_last_error_code: None,
+        remote_metadata_modified_at,
         remote_note_updated_at: metadata.note.changed_at.clone(),
         remote_locked_updated_at: metadata.locked.changed_at.clone(),
+    }
+}
+
+fn metadata_from_record(record: &CloudSnapshotRecord) -> CloudSyncResult<SnapshotMetadataDocument> {
+    normalize_metadata_document(SnapshotMetadataDocument {
+        schema_version: 1,
+        object_type: "snapshot_metadata".into(),
+        snapshot_id: record.snapshot_id.clone(),
+        cloud_game_id: record.cloud_game_id.clone(),
+        note: SnapshotNoteMetadata {
+            value: record.note.clone(),
+            changed_at: record.remote_note_updated_at.clone(),
+        },
+        locked: SnapshotLockedMetadata {
+            value: record.locked,
+            changed_at: record.remote_locked_updated_at.clone(),
+        },
+    })
+}
+
+fn remote_metadata_changed(record: &CloudSnapshotRecord, modified_at: Option<u64>) -> bool {
+    match (record.remote_metadata_modified_at, modified_at) {
+        (Some(previous), current) => Some(previous) != current,
+        (None, None) => false,
+        (None, Some(remote)) => record
+            .metadata_last_synced_at
+            .as_deref()
+            .and_then(crate::timestamp::parse_timestamp)
+            .and_then(|local| u64::try_from(local.timestamp()).ok())
+            .is_none_or(|local| remote > local),
     }
 }
 

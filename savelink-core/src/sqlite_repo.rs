@@ -181,6 +181,7 @@ impl SqliteRepo {
                 ),
                 metadata_last_synced_at TEXT,
                 metadata_last_error_code TEXT,
+                remote_metadata_modified_at INTEGER,
                 remote_note_updated_at TEXT NOT NULL,
                 remote_locked_updated_at TEXT NOT NULL,
                 PRIMARY KEY (account_id, snapshot_id)
@@ -238,6 +239,13 @@ impl SqliteRepo {
         if !table_has_column(conn, "cloud_snapshot_sync", "metadata_last_error_code")? {
             conn.execute(
                 "ALTER TABLE cloud_snapshot_sync ADD COLUMN metadata_last_error_code TEXT",
+                [],
+            )
+            .map_err(map_err)?;
+        }
+        if !table_has_column(conn, "cloud_snapshot_sync", "remote_metadata_modified_at")? {
+            conn.execute(
+                "ALTER TABLE cloud_snapshot_sync ADD COLUMN remote_metadata_modified_at INTEGER",
                 [],
             )
             .map_err(map_err)?;
@@ -621,7 +629,7 @@ fn row_to_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<Snapshot> {
 const SNAP_COLS: &str =
     "id, game_id, created_at, note, reason, locked, file_count, total_size, content_hash, storage_key, status, source_count, display_zone, note_updated_at, locked_updated_at";
 
-const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, source_count, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code, metadata_sync_status, metadata_last_synced_at, metadata_last_error_code, remote_note_updated_at, remote_locked_updated_at";
+const CLOUD_SNAPSHOT_COLS: &str = "account_id, cloud_game_id, snapshot_id, created_at, reason, note, locked, file_count, total_size, source_count, content_hash, archive_size, archive_sha256, published_at, created_by_device_id, sync_status, last_synced_at, last_error_code, metadata_sync_status, metadata_last_synced_at, metadata_last_error_code, remote_metadata_modified_at, remote_note_updated_at, remote_locked_updated_at";
 
 fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnapshotRecord> {
     let reason: String = row.get(4)?;
@@ -650,8 +658,9 @@ fn row_to_cloud_snapshot(row: &rusqlite::Row<'_>) -> rusqlite::Result<CloudSnaps
         metadata_sync_status: CloudMetadataSyncStatus::from_db_value(&metadata_status),
         metadata_last_synced_at: row.get(19)?,
         metadata_last_error_code: row.get(20)?,
-        remote_note_updated_at: row.get(21)?,
-        remote_locked_updated_at: row.get(22)?,
+        remote_metadata_modified_at: row.get::<_, Option<i64>>(21)?.map(|value| value as u64),
+        remote_note_updated_at: row.get(22)?,
+        remote_locked_updated_at: row.get(23)?,
     })
 }
 
@@ -1081,8 +1090,8 @@ impl CloudStateRepository for SqliteRepo {
                  file_count, total_size, source_count, content_hash, archive_size, archive_sha256,
                  published_at, created_by_device_id, sync_status, last_synced_at, last_error_code,
                  metadata_sync_status, metadata_last_synced_at, metadata_last_error_code,
-                 remote_note_updated_at, remote_locked_updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)
+                 remote_metadata_modified_at, remote_note_updated_at, remote_locked_updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24)
              ON CONFLICT(account_id, snapshot_id) DO UPDATE SET
                 cloud_game_id=excluded.cloud_game_id,
                 created_at=excluded.created_at,
@@ -1103,6 +1112,7 @@ impl CloudStateRepository for SqliteRepo {
                 metadata_sync_status=excluded.metadata_sync_status,
                 metadata_last_synced_at=excluded.metadata_last_synced_at,
                 metadata_last_error_code=excluded.metadata_last_error_code,
+                remote_metadata_modified_at=excluded.remote_metadata_modified_at,
                 remote_note_updated_at=excluded.remote_note_updated_at,
                 remote_locked_updated_at=excluded.remote_locked_updated_at",
             params![
@@ -1127,6 +1137,7 @@ impl CloudStateRepository for SqliteRepo {
                 snapshot.metadata_sync_status.as_str(),
                 snapshot.metadata_last_synced_at,
                 snapshot.metadata_last_error_code,
+                snapshot.remote_metadata_modified_at.map(|value| value as i64),
                 remote_note_updated_at,
                 remote_locked_updated_at,
             ],
@@ -1182,6 +1193,24 @@ impl CloudStateRepository for SqliteRepo {
         let sql = format!(
             "SELECT {CLOUD_SNAPSHOT_COLS} FROM cloud_snapshot_sync
              WHERE account_id = ?1 AND sync_status = ?2
+             ORDER BY created_at DESC, snapshot_id DESC"
+        );
+        let mut stmt = conn.prepare(&sql).map_err(map_err)?;
+        let rows = stmt
+            .query_map(params![account_id, status.as_str()], row_to_cloud_snapshot)
+            .map_err(map_err)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    fn list_cloud_snapshots_by_metadata_status(
+        &self,
+        account_id: &str,
+        status: CloudMetadataSyncStatus,
+    ) -> Result<Vec<CloudSnapshotRecord>> {
+        let conn = self.conn.lock().unwrap();
+        let sql = format!(
+            "SELECT {CLOUD_SNAPSHOT_COLS} FROM cloud_snapshot_sync
+             WHERE account_id = ?1 AND metadata_sync_status = ?2
              ORDER BY created_at DESC, snapshot_id DESC"
         );
         let mut stmt = conn.prepare(&sql).map_err(map_err)?;

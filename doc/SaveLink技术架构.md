@@ -30,6 +30,7 @@
 | 1.22 | Codex | 2026-08-29 | 增加快照分区编号与十分钟维护；完成名称/锁定状态独立云元数据同步、字段级合并、离线重试和清理保护；基线增至 core 141 项、Tauri 37 项 |
 | 1.23 | Codex | 2026-08-30 | 增加快照详情与当前本地存档的异步只读指纹比较；修复云同步写锁阻塞并增加超时兜底，core 增至 147 项 |
 | 1.24 | Codex | 2026-08-31 | 云端互斥由布尔状态升级为后台/用户任务类型；上传受理后通过 Tauri 事件通知前端，Tauri 增至 40 项 |
+| 1.25 | Codex | 2026-09-01 | 云端发现改为增量缓存和 8 路受控并发；前端增加 single-flight、会话缓存和独立错误态，core 增至 150 项 |
 
 ## 文档用途
 
@@ -71,6 +72,8 @@ save_link/
 - 百度 OAuth、本机 Token 持久化与过期前自动刷新。
 - 快照按钮手动上云，成功后持久化状态并显示绿色勾选。
 - 顶栏云端存档窗口可发现并下载真实百度快照；接收成功后创建未绑定的本机游戏。
+- 云端目录读取使用最多 8 路游戏级受控并发；同一 `BaiduNetdiskStore` 生命周期复用目录列表。已验证的不可变 `.ok` 复用 SQLite 记录，metadata 仅在百度 `server_mtime` 变化时重新下载，zip 仍按远端目录条目检查存在性和大小。
+- React 云端窗口对相同发现调用使用 single-flight Promise，并保存进程内最后一次成功列表；关闭重开可立即展示缓存并接回原请求。读取失败进入独立错误态，不再与“云端确实为空”共用界面。
 - 未绑定本机存档目录时禁止创建快照和恢复，下载与恢复保持为两个独立动作。
 - 独立绑定弹窗复用 `scan_path` 做只读检测，扫描成功后复用 `update_game` 保存路径；绑定本身不触发快照、恢复或上传。
 - v0.2.0 启动立即检查、10 分钟轮询、自动快照上云和未锁定记录联合清理已接入；当前默认保留 10 条，可在设置页配置为 1 到 100 条。
@@ -86,7 +89,7 @@ save_link/
 
 当前验证状态：
 
-- `savelink-core`：147 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
+- `savelink-core`：150 项通过；J/L/Q5 三项真实环境测试默认忽略，均已在相应验收阶段按需执行通过。
 - Tauri：自动上传状态、启动绑定/防重、已配置游戏仅启动、原生监听、补查、候选确认、云端元数据清理保护和云任务占用类型共 40 个测试全绿。
 - `npm run build`：前端构建通过。
 - 本轮改动涉及的 Rust 文件通过 `rustfmt --check`；全仓检查仍会报告既有历史文件的格式差异。
@@ -387,15 +390,15 @@ pub trait SnapshotStore: Send + Sync {
 
 - `cloud_model.rs`：云账号、游戏绑定、远端 `.ok` 缓存和同步状态模型。
 - `cloud_repo.rs`：独立 `CloudStateRepository`，不污染现有本地 `Repository` 契约。
-- `SqliteRepo`：包含 `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync`；旧数据库打开时自动补表，并在事务中无损升级云删除状态 CHECK 约束。
-- `cloud_store.rs`：通用 `CloudObjectStore`、上传覆盖策略、云端条目模型和文件系统 `FakeCloudObjectStore`。
-- `baidu_store.rs`：正式 `BaiduNetdiskStore`、逻辑/物理路径映射、Token 提供者边界、流式单步上传、分页列表、filemetas/dlink 下载、幂等删除和百度错误分类。
+- `SqliteRepo`：包含 `app_settings`、`cloud_accounts`、`cloud_game_bindings`、`cloud_snapshot_sync`；旧数据库打开时自动补表，并在事务中无损升级云删除状态 CHECK 约束及新增 `remote_metadata_modified_at`。
+- `cloud_store.rs`：通用 `CloudObjectStore`、上传覆盖策略、带远端修改时间的云端条目模型和文件系统 `FakeCloudObjectStore`。
+- `baidu_store.rs`：正式 `BaiduNetdiskStore`、逻辑/物理路径映射、Token 提供者边界、流式单步上传、分页列表、`server_mtime`、同实例目录缓存、filemetas/dlink 下载、幂等删除和百度错误分类；上传、创建目录和删除后会失效相关缓存。
 - F 组 5 个测试：SQLite 持久化、重开、游戏更新及旧快照混合时间迁移与真实时间排序。
 - G 组 8 个测试：持久化、状态转换、目录排序、ignored 保留、CreateOnly/Overwrite、路径穿越防护、旧库补表和 v0.1.0 状态约束迁移。
 - `cloud_protocol.rs`：manifest、game、云端 `.ok` JSON 和逻辑路径的序列化、解析与严格校验。
 - `cloud_archive.rs`：单快照 zip、SHA-256、路径安全、防 zip slip 和解压后内容指纹校验。
-- `cloud_service.rs`：上传、发现、下载、冲突、幂等、接收落地和“云端优先、本地最后”的联合删除编排。
-- H 组 21 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配、硬冲突、联合删除成功/失败重试、旧偏移时间云对象幂等兼容、已有云文档补写模拟器身份，以及名称/锁定元数据字段级同步。
+- `cloud_service.rs`：上传、最多 8 路游戏级发现、下载、冲突、幂等、接收落地和“云端优先、本地最后”的联合删除编排。
+- H 组 24 个测试：JSON、zip 往返、危险 entry、A/B 双设备闭环、孤儿 zip、篡改、内容不匹配、硬冲突、联合删除成功/失败重试、旧偏移时间云对象幂等兼容、已有云文档补写模拟器身份、名称/锁定元数据字段级同步，以及后台只处理待同步元数据、增量发现缓存和 zip 缺失保护。
 - 百度适配器内部单元测试 2 个，I 组本地 HTTP 契约测试 4 个；J 组真实百度对象存取冒烟默认忽略，2026-07-15 已使用环境变量注入 Token 执行通过。
 - `baidu_oauth.rs`：OAuth URL、授权码换 Token、刷新方法、随机 `state`、本机回调监听和 Token 文件仓库；K 组 8 个测试保护。
 - L 组真实百度设备 B 测试默认忽略，保护只读发现不创建游戏、下载后双重校验、接收落地及设备路径隔离；2026-07-16 已按需执行通过。
@@ -405,6 +408,8 @@ pub trait SnapshotStore: Send + Sync {
 - Q 组 5 个默认测试：失效 ROM 配置要求重选、NDS Header/SHA-256 解析与缓存、精确 `.dsv` 匹配及 `.dsv-01` 排除、目录链接环不会导致递归栈溢出，以及 512 KiB 小栈线程可完成 ROM 哈希；Q5 为真实 DeSmuME 只读发现测试，默认忽略。
 
 OAuth、凭据持久化、自动刷新、真实上云和设备 B 发现/下载/接收已实现。上传通过 `CloudSyncService` 发布 `.zip + .ok`；下载先校验压缩包，再校验解压内容，通过后才写本机仓库。只读发现不创建本机游戏，接收后创建的游戏不含设备 A 路径。尚未完成解绑和凭据加密；`BaiduNetdiskStore` 当前按百度官方单步上传边界支持不超过 2 GiB 的对象，更大快照需要后续增加预上传/分片上传。
+
+发现缓存只优化列表读取，不改变内容信任边界：`.ok` 是 CreateOnly 的不可变发布记录，已成功解析的记录可以复用；新快照仍必须下载 `.ok`，已知 zip 仍检查存在性和大小，metadata 的 `server_mtime` 变化会触发重读。用户真正接收快照时始终重新下载 zip，并校验 `zip_size + zip_sha256` 与解压后的 `content_hash + file_count + total_size`。
 
 百度网盘 POC 已通过，云端快照物理格式确定为：
 
@@ -429,7 +434,7 @@ v1 `.ok` 仍是不可变内容发布记录；上传后的用户名称和锁定�
 
 ## v0.2.0 自动备份与联合清理
 
-桌面层新增 `auto_backup.rs`，职责是全局设置、启动即时检查、10 分钟调度、待上传自动快照重试、显示区域维护和保留策略编排。核心层新增 `AutoBackupService`，只负责一次全游戏检查、显示区域整理和按传入上限计算未锁定候选，不直接感知 Tauri 或百度网盘。
+桌面层新增 `auto_backup.rs`，职责是全局设置、启动即时检查、10 分钟调度、待上传自动快照重试、显示区域维护和保留策略编排。十分钟云维护只主动同步 `metadata_sync_status=pending/error` 的记录，然后执行增量云端发现，以便联合清理前看见另一设备的新快照和锁定变化；不再对全部已知记录重复下载 `.ok` 和 metadata。核心层新增 `AutoBackupService`，只负责一次全游戏检查、显示区域整理和按传入上限计算未锁定候选，不直接感知 Tauri 或百度网盘。
 
 自动任务与手动创建、恢复、删除、编辑路径及云端接收共享 `snapshot_operation_lock`，防止后台扫描和用户写操作同时修改同一快照状态。云任务另使用三态原子值 `baidu_sync_in_progress`（空闲、后台维护、用户操作），避免手动上传/下载与后台上传并发执行，并为冲突返回准确类型。手动上传成功取得用户云操作权后，后端发送 `cloud-upload-started` 事件，前端此时才提示“正在打包并上传”；当前不实现等待队列。
 

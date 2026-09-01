@@ -207,8 +207,11 @@ fn sync_pending_and_prune(state: &AppState) -> Result<bool, String> {
             .snapshot_operation_lock
             .lock()
             .map_err(|_| "快照操作锁已损坏".to_string())?;
-        match cloud.sync_known_snapshot_metadata() {
-            Ok(_) => true,
+        match cloud
+            .sync_pending_snapshot_metadata()
+            .and_then(|_| cloud.discover_remote_catalog().map(|_| ()))
+        {
+            Ok(()) => true,
             Err(error) => {
                 eprintln!("云端快照元数据同步失败，本轮暂停清理: {error}");
                 false

@@ -3,6 +3,7 @@
 use std::fmt;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CloudStoreError {
@@ -59,6 +60,8 @@ pub struct CloudEntry {
     pub name: String,
     pub kind: CloudEntryKind,
     pub size: u64,
+    /// 云服务提供的最后修改时间（Unix 秒）。目录或服务不支持时为空。
+    pub modified_at: Option<u64>,
 }
 
 pub trait CloudObjectStore: Send + Sync {
@@ -201,6 +204,11 @@ impl CloudObjectStore for FakeCloudObjectStore {
                 } else {
                     0
                 },
+                modified_at: metadata
+                    .modified()
+                    .ok()
+                    .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+                    .map(|value| value.as_secs()),
             });
         }
         entries.sort_by(|a, b| a.name.cmp(&b.name));
