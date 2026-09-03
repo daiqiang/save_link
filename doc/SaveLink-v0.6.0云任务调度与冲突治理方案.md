@@ -5,7 +5,7 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | Codex | 2026-09-02 | 第一版：确定云任务类型、资源键、优先级、并发规则、状态机、删除语义、未读提醒和实施顺序 |
-| 1.1 | Codex | 2026-09-03 | 根据五轮评审修订：完成任务、迁移和 tombstone 契约收口；引入真实账号身份、请求级 generation 隔离、任务级 Store 和单对象墓碑规模门槛 |
+| 1.1 | Codex | 2026-09-03 | 根据六轮评审修订：完成任务、迁移和 tombstone 契约收口；补齐真实账号/快照归属、分账号凭据崩溃恢复、manifest 重试和墓碑规模门槛 |
 
 > 本文是 v0.6.0 云同步改造的权威设计。文中标为“目标状态”的内容尚未实现；当前 v0.5.0 的真实行为仍以代码、`SaveLink技术架构.md` 和 `SaveLink云端快照协议V1.md` 为准。
 
@@ -18,7 +18,7 @@ v0.6.0 在继续增加云功能前，先正式引入统一的云任务协调器�
 3. 云端目录刷新是账号级一致性屏障：刷新期间不与该账号的快照写任务交叉执行，但所有请求进入队列等待，不再直接报“正在进行后台云同步”。
 4. 顶层云任务最多同时执行 3 个；百度 HTTP 请求全局最多 8 个，其中后台任务最多占 6 个，始终给用户任务保留容量。
 5. 队列保存在 Tauri 进程内存中，不新增通用 `cloud_tasks` 持久化表。上传、元数据、删除等跨重启义务继续由 SQLite 业务状态恢复。
-6. HTTP Client 和限流器改为应用级共享；Token Provider 按账号凭据 generation 建立不可变会话并采用 single-flight 刷新。任务绑定真实账号身份和创建时的 generation，每次 HTTP 请求取得同 generation 的请求租约，旧任务不能读取或操作后来连接的新账号；带目录状态的 Store 不跨任务共享。
+6. HTTP Client 和限流器改为应用级共享；Token Provider 按账号凭据 generation 建立不可变会话并采用 single-flight 刷新。任务绑定真实账号身份和创建时的 generation，每次 HTTP 请求取得同 generation 的请求租约，旧任务不能读取或操作后来连接的新账号；Token 按内部账号分别原子落盘，带目录状态的 Store 不跨任务共享。
 7. 用户删除已上云快照时，立即写入独立的删除意图并从正常界面隐藏；同一快照的 `Queued/WaitingRetry/WaitingAuth` 上传由删除取代，`Running` 上传结束后再执行删除。
 8. 内容同步状态、元数据同步状态和删除状态必须拆开：删除意图在 `snapshots`，跨设备删除生命周期在专用 `cloud_snapshot_tombstones`，不能继续让 `sync_status` 同时表达上传和删除。
 9. 没有合法 tombstone 时，本地备注或锁定状态先立即落库，再异步同步；使用本地元数据 revision 防止旧任务覆盖用户的新修改。已有合法 tombstone 的本机副本仍可编辑，但只改本地，不再产生 metadata 云任务。
@@ -31,6 +31,9 @@ v0.6.0 在继续增加云功能前，先正式引入统一的云任务协调器�
 16. tombstone 缓存只有在本地和远端修改时间都存在且相等时才能命中；并发创建只比较协议身份字段，审计字段采用远端先创建成功的版本。
 17. 远端存在性属于实时事实：`CatalogRefresh` 及上传、接收、metadata、恢复、删除的对象查询都必须访问当时的云端状态，不得使用无 TTL 的进程级目录缓存。
 18. 永久 tombstone 的规模验收不仅覆盖全量刷新，还覆盖单条上传、接收、metadata 和恢复检查的点查请求数；10,000 条下出现随目录总量线性放大的点查时阻止发布，再根据实测选择百度直接查询能力或哈希前缀分片。
+19. 一个本机快照最多归属一个百度账号；首次上传或接收时确定 `cloud_owner_account_id`，之后禁止向第二个账号上传。未激活账号拥有的快照不参与自动淘汰，也不在当前账号执行云删除或 metadata 同步。
+20. 远端 manifest 的 `repository_id` 必须按账号持久化为 `remote_repository_id`；每台设备随机生成的本机 `repository_id` 只在创建空远端仓库时作为候选，绝不作为账号或 legacy 归属证据。
+21. manifest single-flight 只共享当前一轮结果：成功缓存绑定账号和 credential generation；失败唤醒等待者后回到可重试状态，不能永久缓存第一次网络错误。
 
 本轮适合直接引入队列。继续在现有全局互斥上叠加例外，会让上传、刷新、元数据和删除之间的关系越来越难以证明正确。
 
@@ -129,6 +132,21 @@ Snapshot(account_id, cloud_game_id, snapshot_id)
 - `Snapshot` 使用独占模式，保证同一快照的上传、下载、metadata 和删除严格串行。
 
 账号根 manifest 的初始化不持有整个上传任务的账号独占锁，而由 `CloudRuntime` 内部短临界区 single-flight 完成。否则所有上传仍会退化为全局串行。
+
+manifest single-flight 是可重试状态机，不是 `OnceLock<Result<_>>`：
+
+```text
+Idle
+  -> Running(account_id, credential_generation, waiters)
+       -> Ready(account_id, credential_generation, manifest)
+       -> Idle + 本轮错误通知全部 waiters
+```
+
+- 同一账号和 generation 只有首个调用者读取或创建 manifest，其余调用者等待同一轮结果。
+- 成功结果可以在当前 Runtime 内缓存，但缓存键必须包含 `account_id + credential_generation`；授权失效、账号切换或 generation 递增立即丢弃。
+- 网络、限流、授权和服务端瞬时失败只结束当前一轮，向所有等待者返回同一个已分类错误，然后原子清空 `Running`。下一任务按正常退避策略重新进入，不能永久记住失败。
+- 创建竞态仍使用 `CreateOnly`：一个调用者成功创建，另一个读回服务端对象；最终成功结果必须持久化实际读取到的 `remote_repository_id`。
+- generation 在请求期间失效时，本轮以 `StaleCredentialGeneration` 结束，不写成功缓存，也不把旧 manifest 交给新账号等待者。
 
 `AccountCatalog` 是公平调度屏障，不是把账号内全部快照塞进一条 FIFO：用户刷新达到可调度优先级后先关闭新的共享入口，等待已经运行的快照任务结束，再独占执行；后台刷新尚未达到调度优先级时不能拦住新来的用户快照任务。aging 最终会让后台刷新获得屏障，避免永久饥饿。普通任务的严格 FIFO 应用于同一 `Snapshot` 和同一 `Game` 的任务链，删除取代规则除外。
 
@@ -296,11 +314,38 @@ CloudRuntime
 
 1. OAuth 成功后先通过百度账号身份接口读取稳定的提供方身份，再允许创建可写 Runtime；内部 `account_id` 由 provider 与该身份稳定派生或映射，日志和界面不暴露完整敏感标识。
 2. 同一时刻仍只激活一个百度账号，不建设多账号切换中心；但不同真实身份必须对应不同本机 `cloud_accounts`、绑定、远端缓存、tombstone 和可靠义务命名空间。
-3. 第一次 v0.6.0 升级时，现有固定账号记录只有在当前授权成功取得身份后才能绑定该 `account_identity`。若 legacy 账号已有云缓存或可靠义务，还必须只读校验远端 manifest 的 repository ID 与本机既有仓库身份一致；远端为空、缺少 manifest 或身份不符时，不得把 legacy 义务猜测归给当前账号，而是为当前身份建立新的账号命名空间，并把未绑定 legacy 记录保持暂停，等待原账号重新连接或后续人工确认。没有任何既有云状态时可以直接绑定。
-4. 同一身份重新授权只递增 credential generation，可恢复该 `account_id` 的可靠义务。身份不同则视为账号切换：旧账号业务状态完整保留但不调度，新账号只扫描和执行自己的记录；切回原身份后旧义务才恢复。
-5. 无法读取或验证账号身份时不创建可写 Runtime，不得以固定 `BAIDU_ACCOUNT_ID` 猜测同一账号；界面显示“无法确认百度账号身份”，允许重新授权。
+3. 远端 manifest 读取成功后，把其中实际的 `repository_id` 持久化到当前 `cloud_accounts.remote_repository_id`。`AppState.cloud_repository_id`/`app_settings.repository_id` 继续只是“远端尚无 manifest 时创建新仓库”的候选 ID；不同设备随机值不同是正常现象，不能拿它比较账号、设备或 legacy 归属。
+4. 第一次 v0.6.0 升级时，现有固定账号记录只有在当前授权成功取得身份后才能尝试绑定。legacy 已有云缓存或可靠义务时，使用本机已知 `.ok` 与当前远端不可变内容做强交叉匹配：至少一个相同 `snapshot_id` 的 `content_hash`、文件统计和归档 SHA-256 全部一致才可自动认领；任何同 ID 内容冲突都拒绝绑定。若 legacy 已持久化过 `remote_repository_id`，当前远端 manifest ID 相同也可直接认领。
+5. legacy 没有可交叉匹配的 `.ok`、远端为空或证据不足时，不把“本机候选 repository ID 不同”判为账号不匹配，也不冒险自动认领；为当前真实身份建立新账号命名空间，将未绑定 legacy 记录保持暂停，等待原账号重新连接或后续人工确认。当前账号仍可正常刷新、发现和接收自己的远端对象，暂停的只是归属证据不足的旧本机缓存与可靠义务。legacy 完全没有绑定、云缓存和可靠义务时可以直接绑定当前身份。
+6. 后续取得强证据并确认某个 `legacy_unbound` 行属于已经存在的 verified 账号时，不创建第二个相同身份账号，也不直接覆盖主键；在单个 SQLite 事务中把 legacy 子记录、`snapshots.cloud_owner_account_id` 和可靠义务合并到 verified `account_id`，逐项检查主键及内容冲突，全部成功后删除空的 legacy 行。任何冲突或中途失败整笔回滚并继续暂停，等待人工处理。
+7. 同一身份重新授权只递增 credential generation，可恢复该 `account_id` 的可靠义务。身份不同则视为账号切换：旧账号业务状态完整保留但不调度，新账号只扫描和执行自己的记录；切回原身份后旧义务才恢复。
+8. 无法读取或验证账号身份时不创建可写 Runtime，不得以固定 `BAIDU_ACCOUNT_ID` 猜测同一账号；界面显示“无法确认百度账号身份”，允许重新授权。
 
 该要求是账号安全边界，不等于 v0.6.0 要提供完整的多账号产品功能。
+
+#### 9.3.3 分账号凭据与崩溃恢复
+
+单一 `credentials/baidu-oauth.json` 不能与 SQLite 的活跃账号安全配对。v0.6.0 改为：
+
+```text
+credentials/baidu/{account_id}/oauth.json
+credentials/baidu/pending/{oauth_state}.json.tmp
+app_settings.active_cloud_account_id
+```
+
+安装新授权按以下顺序执行，前一步失败不得继续：
+
+1. 授权码换得 Token 后先只保存在内存或 pending 临时文件，调用只读账号身份接口并派生内部 `account_id`。
+2. 使用该 Token 只读获取远端 manifest；存在则验证并记录实际 `remote_repository_id`，不存在则暂不创建，避免身份确认阶段产生远端写入。
+3. 将 Token 写入该账号专属路径的临时文件，`flush/sync_all` 后在同目录原子替换 `oauth.json`；Token 文件内同时保存 provider、`account_identity` 和内部 `account_id` 绑定摘要，启动时可独立核对。
+4. 在一个 SQLite 事务中 upsert 已验证账号、保存 `remote_repository_id` 和 token 引用，最后更新 `active_cloud_account_id`。事务失败时账号专属 Token 可以成为未激活孤儿，但不能影响旧活跃账号；后续启动清理或重新认领。
+5. 事务提交后才创建新 Runtime、递增/发布新 generation 并向界面报告连接成功。
+
+清除授权采用反向安全顺序：先阻止并排空请求租约，在 SQLite 原子清空 `active_cloud_account_id`，再删除对应账号 Token 文件并销毁 Runtime。删除 Token 失败时仍保持未激活，报告需要人工清理，不能重新启用旧 Runtime。
+
+每次进程启动创建可写 Runtime 前都必须重新读取活跃账号专属 Token，调用只读身份接口，并同时核对 Token 内绑定摘要、`cloud_accounts.account_identity` 和 `active_cloud_account_id`。任一不一致时清空活跃状态、禁止所有云写入并提示重新授权；内存 generation 从零重新开始不构成信任依据。
+
+旧版 `credentials/baidu-oauth.json` 作为一次性迁移候选处理：先保持原文件不动，用其中 Token 只读取得真实身份并按 9.3.2 判断 legacy 归属；随后执行上述账号专属 Token 安装和 SQLite 事务，确认新活跃账号可在重启后通过身份核对，最后才删除旧文件。任一步失败或崩溃都允许旧、新文件同时暂存，但启动只相信 SQLite 指向且身份复核通过的账号专属文件，绝不能按“哪个文件存在”自动选择账号。
 
 ### 9.4 远端新鲜度契约
 
@@ -569,6 +614,20 @@ savelink/v1/games/{cloud_game_id}/snapshot-tombstones/{snapshot_id}.json
 
 恢复检查需要网络或授权时进入 `WaitingRetry/WaitingAuth`。它在同一快照的新上传之前执行，避免用户重试时重复发布一个实际已经完成的对象。若此时已有删除意图，删除取代恢复检查并负责清理远端残留。
 
+### 10.8 本机快照的单账号归属
+
+v0.6.0 不实现一个本机快照同时扇出到多个百度账号。`snapshots.cloud_owner_account_id` 是唯一归属：
+
+- 纯本地、从未上传的快照为 `NULL`；第一次向当前活跃账号上传时，在提交任务前用 SQLite 事务认领该账号。任务失败不撤销归属，避免切换账号后把同一 ID 再发往另一仓库。
+- 从云端接收的新本机快照在最终落地事务中直接归属来源账号。
+- 已有归属与当前活跃账号不同，上传命令立即拒绝并显示“此快照属于另一个百度账号”；不能新增第二条账号同步记录。
+- 没有合法 tombstone 时，本地备注和锁定仍可立即修改，metadata `pending` 永远写入 owner 账号的记录；owner 未激活时不创建网络任务，切回该账号后再恢复。已有合法 tombstone 时以 11.3 的本地-only 规则为准，不保留或新建任何账号的 metadata 待办。
+- 用户显式删除 owner 未激活的快照时，仍可写 `delete_requested_at` 并从列表隐藏，但 tombstone 和物理删除保持 `WaitingAuth`，直到原 owner 账号重新连接。不能在当前其他账号下执行删除，也不能先删本机后留下不可追踪的远端副本。
+- 自动保留策略只处理 `cloud_owner_account_id IS NULL` 的纯本地快照，以及 owner 正是当前活跃账号的快照。属于未激活账号的快照不进入本轮淘汰候选，即使因此暂时超过保留数量；界面不把它误报成清理失败。
+- 同一 `snapshot_id` 可以作为不同账号的纯远端目录记录存在，但一旦落地为同一条本机 `snapshots` 记录，只能绑定其中一个账号；另一账号同 ID 的接收按已有本机快照/内容冲突规则拒绝或保持远端可见。
+
+该模型保留未来“复制为新 snapshot ID 后上传到另一账号”的扩展空间，但 v0.6.0 不提供该操作。
+
 ## 十一、主要业务流程
 
 ### 11.1 用户手动上传
@@ -610,10 +669,13 @@ savelink/v1/games/{cloud_game_id}/snapshot-tombstones/{snapshot_id}.json
 
 ```text
 用户确认删除
-  -> 短事务校验未锁定并写 snapshots.delete_requested_at
-     -> 此时已有云记录：同事务 upsert tombstone.status=publish_pending
+  -> 短事务校验未锁定，读取 owner、云记录和上传执行状态
+     -> 无云记录、无 Running/遗留 uploading：按纯本地流程（即使曾认领 owner）
+     -> 可能存在远端对象：要求唯一 owner，写 snapshots.delete_requested_at
+        -> 同事务只为该 owner upsert tombstone.status=publish_pending
   -> 前端刷新后立即隐藏
-  -> 提交 P0 SnapshotDelete
+  -> owner 是当前活跃账号：提交 P0 SnapshotDelete
+  -> owner 未激活：保持 WaitingAuth，不向当前账号提交任务
   -> 取代同快照未运行/等待中的任务
   -> 如有同快照 Running 任务则等待其结束
   -> 重新读取 cloud_snapshot_sync
@@ -626,11 +688,11 @@ savelink/v1/games/{cloud_game_id}/snapshot-tombstones/{snapshot_id}.json
         -> 删除 snapshots 和 cloud_snapshot_sync，保留 tombstone 缓存
 ```
 
-若立即尝试失败，记录 `failed` 和稳定错误码；十分钟维护重新提交。待删除记录不出现在正常页面，但后端的恢复、上传、下载、改名和锁定命令仍必须检查并拒绝它。远端不存在目标对象也必须先成功创建或确认 tombstone，随后各项删除按幂等成功处理。
+若可能存在远端对象却缺少唯一 owner，属于迁移或数据完整性错误：保持本机可见且拒绝删除，不能猜测当前账号。若立即尝试失败，记录 `failed` 和稳定错误码；十分钟维护重新提交。待删除记录不出现在正常页面，但后端的恢复、上传、下载、改名和锁定命令仍必须检查并拒绝它。远端不存在目标对象也必须先成功创建或确认 tombstone，随后各项删除按幂等成功处理。
 
 ### 11.5 保留策略删除
 
-十分钟维护先完成必要的远端发现和 metadata 合并，再计算未锁定超额快照。每个候选先写入本机删除意图并提交 P4 `SnapshotDelete`，随后使用 11.4 的相同规则分类：确认纯本地则直接安全删除；已有云记录或上传曾进入远端写阶段时才创建 `publish_pending` tombstone 并清理云端。不再在一个全局锁内逐条同步删除。
+十分钟维护先完成当前活跃账号必要的远端发现和 metadata 合并，再计算未锁定超额快照。候选只包括纯本地快照和 owner 为当前活跃账号的快照；未激活账号拥有的快照本轮跳过。每个候选先写入本机删除意图并提交 P4 `SnapshotDelete`，随后使用 11.4 的相同规则分类：确认纯本地则直接安全删除；已有云记录或上传曾进入远端写阶段时才为唯一 owner 创建 `publish_pending` tombstone 并清理云端。不再在一个全局锁内逐条同步删除。
 
 如果远端发现或 metadata 拉取失败，本轮不产生新的保留删除意图；tombstone 表中已有的 `publish_pending/cleaning_remote/failed` 删除义务仍可继续重试。
 
@@ -696,11 +758,12 @@ v0.6.0 需要迁移现有表，但不需要新增通用任务表。
 
 ### 13.0 `cloud_accounts` 账号身份收口
 
-`cloud_accounts.account_identity` 已经存在，但当前不能区分历史占位和已验证身份。本轮明确新增：
+`cloud_accounts.account_identity` 已经存在，但当前不能区分历史占位和已验证身份，也没有保存真正读到的远端仓库 ID。本轮明确新增：
 
 ```sql
 identity_state TEXT NOT NULL DEFAULT 'legacy_unbound'
-  CHECK (identity_state IN ('legacy_unbound', 'verified'))
+  CHECK (identity_state IN ('legacy_unbound', 'verified')),
+remote_repository_id TEXT,
 CHECK (
   (identity_state = 'legacy_unbound' AND account_identity IS NULL) OR
   (identity_state = 'verified' AND account_identity IS NOT NULL)
@@ -710,9 +773,12 @@ CHECK (
 `app_settings.active_cloud_account_id` 只保存当前激活的内部账号 ID；清除授权时清空该设置，但不删除账号行和可靠义务。升级后的首次授权按 9.3.2 取得真实身份并绑定：
 
 - legacy 账号没有任何绑定、云快照缓存或可靠义务时，可直接补写当前身份。
-- legacy 已有云状态时，只有远端 manifest repository ID 与本机既有身份一致才补写；否则保留 legacy 行及其子表记录，状态标记为未绑定/暂停，并为当前真实身份创建新的内部 `account_id`。
+- legacy 已有云状态时，按 9.3.2 使用已持久化的 `remote_repository_id` 或已知 `.ok` 强匹配认领；本机随机候选 `app_settings.repository_id` 不参与判断。证据不足时保留 legacy 行及其子表记录为未绑定/暂停，并为当前真实身份创建新的内部 `account_id`，但不阻止该账号正常发现和使用远端仓库。后续证据充分时按 9.3.2 的事务合并规则认领，不能产生两个相同 verified 身份。
 - 旧表迁移时，`account_identity IS NULL` 的行写为 `legacy_unbound`，非空行写为 `verified`；新建真实账号只能直接写 `verified`。未授权由 Token/活跃账号设置表达，不复用 `identity_state`。
 - 所有 `cloud_game_bindings`、`cloud_snapshot_sync` 和 `cloud_snapshot_tombstones` 查询都必须带内部 `account_id`；切换活跃账号不迁移这些子记录。
+- `token_ref` 必须指向 `credentials/baidu/{account_id}/oauth.json`，不能继续让不同账号引用同一个固定文件；`remote_repository_id` 只保存验证通过的远端 manifest 值。
+
+跨字段 CHECK 和现有 `UNIQUE(provider, account_identity)` 必须通过单事务重建表实现，不能只 `ALTER TABLE ADD COLUMN`：创建新表及完整约束 -> 映射复制旧行 -> 校验行数、identity 组合和唯一性 -> 替换旧表 -> 重建索引/唯一约束。任一步失败整笔回滚。由于子表以 `account_id` 关联，本次迁移不改已有账号主键；后续真实身份认领或建立新账号使用独立事务。
 
 ### 13.1 `snapshots`
 
@@ -721,6 +787,7 @@ CHECK (
 ```sql
 metadata_local_revision INTEGER NOT NULL DEFAULT 0
 delete_requested_at TEXT
+cloud_owner_account_id TEXT
 ```
 
 本地用户修改备注或锁定时递增；远端合并写回使用 compare-and-set，不把旧网络结果覆盖到更高 revision。
@@ -732,6 +799,13 @@ delete_requested_at TEXT
 - 上传任务第一次远端写入前重新读取 `delete_requested_at`；存在则不发出写请求。
 - 确认为纯本地后执行现有安全删除；本地文件删除失败时清除 `delete_requested_at` 并重新显示，向用户报告失败。
 - 有过远端写入可能性的快照保持隐藏，直到 tombstone 和远端清理完成；不能因为断网清除删除意图。
+
+`cloud_owner_account_id` 按 10.8 执行单账号归属：
+
+- 旧库中本机快照没有任何 `cloud_snapshot_sync` 时保持 `NULL`；只关联一个 distinct `account_id` 时回填该账号。
+- 同一本机快照若意外关联多个 distinct 账号，迁移必须报错并回滚，不得随机选择 owner。当前正式代码只使用固定百度账号，正常旧库不会命中该异常。
+- 第一次上传认领 owner、云端接收落地写 owner，都必须与对应云记录在同一 SQLite 事务中完成。
+- owner 一旦非空，普通上传、metadata、删除和保留流程都不得改成另一账号；只有删除整条本机快照时一起消失。
 
 ### 13.2 `cloud_snapshot_sync`
 
@@ -879,6 +953,8 @@ error_code（可空）
 - `等待云端任务`：已经入队但尚未开始。
 - `正在上传/下载/刷新/删除`：任务已进入 `Running`。
 - `等待重新授权`：可靠任务保留，用户需重新连接。
+- `正在切换百度账号`：停止新请求并等待当前账号已发请求结束。
+- `此快照属于另一个百度账号`：当前账号禁止上传或云端修改该本机快照，不称为冲突。
 - `稍后重试`：网络或限流，不能写成“云冲突”。
 - `内容冲突`：只用于同 ID 不同不可变内容。
 - 云端入口小红点：后台发现用户尚未查看的远端变化。
@@ -948,18 +1024,22 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 18. 每个任务绑定创建时的账号和授权 generation；每一次 HTTP 请求都必须取得匹配租约。generation 变化后，旧任务既不得取得新 Token 或发起后续请求，也不得提交当前账号状态。
 19. 旧 generation 的刷新结果、OAuth 回调和授权错误不得覆盖或清除新 generation 的 Token。
 20. 可靠云义务必须属于已验证的真实账号身份；换账号不能恢复、删除或上传旧账号的对象，切回原账号后才能继续。
+21. 一个本机快照最多有一个 `cloud_owner_account_id`；任何入口都不能在第二个账号为同一快照建立上传、metadata 或删除义务。
+22. 进程重启后只有账号专属 Token 的真实身份与 SQLite 活跃账号一致才能建立可写 Runtime；内存 generation 重置不能绕过持久化核对。
+23. manifest single-flight 的失败不能永久缓存，成功缓存不能跨账号或 credential generation。
 
 ## 十八、实施顺序
 
 ### 阶段 1：调度器骨架和共享网络运行时
 
-- 一次性增加 metadata revision、本机删除意图、专用 tombstone 表、远端存在状态和 `conflict` CHECK；完成旧删除状态及 `ignored` 迁移测试。
+- 一次性增加 metadata revision、本机删除意图、快照单账号 owner、账号 identity 状态/远端仓库 ID、专用 tombstone 表、远端存在状态和 `conflict` CHECK；完成 cloud_accounts 重建、owner 回填、旧删除状态及 `ignored` 迁移测试。
 - 增加 tombstone 协议对象、路径、序列化、校验、可选目录兼容、可空修改时间和并发创建契约测试，但暂不切换用户删除入口。
 - 新增纯调度状态机、任务键、资源锁、优先级、aging、合并和 Fake 执行器测试。
 - 在 `AppState` 中接入单例协调器。
 - 把 HTTP Client、HTTP 信号量和 manifest 初始化改为应用级共享；Token Provider 改为 generation 级凭据会话并支持 single-flight，Store 与 `ensured_directories` 改为任务级，移除透明的跨调用 `directory_cache`。
 - 收紧 `CloudObjectStore` 新鲜度契约，让 list/stat/get/delete 和 CreateOnly 预检查不再使用旧目录结果；在 Store 的每个 HTTP 出口接入账号/generation 请求租约及 compare-and-invalidate，不能只在任务落库时检查。
-- 接入真实百度账号身份读取和 legacy `BAIDU_ACCOUNT_ID/account_identity=NULL` 的首次绑定；业务查询、可靠恢复和任务资源键全部改用验证后的内部 `account_id`，仍只激活一个在线账号。
+- 接入真实百度账号身份读取、分账号 Token 路径、安全安装/启动核对和 legacy `BAIDU_ACCOUNT_ID/account_identity=NULL` 的强证据认领；持久化实际 `remote_repository_id`，业务查询、可靠恢复和任务资源键全部改用验证后的内部 `account_id`，仍只激活一个在线账号。
+- 把 manifest 初始化实现为按账号/generation 隔离的可重试 single-flight；成功可缓存，失败清空本轮状态，generation 变化丢弃旧结果。
 - 用 10,000 条 tombstone 先验证平铺路径的单对象点查成本；若不满足 19.3，在发布任何 tombstone 前切换到 16 桶哈希前缀布局并重跑协议、刷新和点查测试。
 - 暂时保留现有命令外观，不改产品语义。
 
@@ -1021,6 +1101,12 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 
 - SQLite 新 CHECK 接受 `conflict` 并拒绝删除状态；旧删除值正确迁移到 `snapshots.delete_requested_at` 和专用 tombstone 表。
 - `cloud_accounts.identity_state` 迁移把空身份标为 `legacy_unbound`、非空身份标为 `verified`，约束拒绝两类非法组合；清除 `active_cloud_account_id` 不删除旧账号义务。
+- `cloud_accounts` 使用新表映射复制迁移并保留 `UNIQUE(provider, account_identity)`；覆盖空/非空旧身份、重复身份、行数校验、约束失败和中途故障整笔回滚。
+- 本机随机候选 repository ID 不参与 legacy 认领；设备 A 创建远端仓库、设备 B 使用不同本机候选 ID 时，B 仍能通过匹配 `.ok` 或已知 `remote_repository_id` 正确认领同一账号。证据不足时只暂停旧本机义务，B 仍能以 verified 新命名空间正常刷新和接收当前账号的远端对象。
+- legacy 后续认领已存在的 verified 账号时，子记录、快照 owner 和可靠义务在单事务中无损合并；主键或内容冲突时整笔回滚，不留下双 verified 身份或半迁移记录。
+- manifest 实际读取/创建成功后持久化远端 ID；瞬时失败唤醒本轮所有等待者并恢复 `Idle`，下一任务可以成功重试；成功缓存不跨账号或 credential generation。
+- `snapshots.cloud_owner_account_id` 从零/单个 distinct 云账号正确回填，多账号异常整笔回滚；上传到第二账号、从第二账号覆盖接收都被拒绝。
+- 没有合法 tombstone 且 owner 未激活时，本地备注/锁定只为 owner 保留 pending；已有 tombstone 时只改本地并终止待办。显式删除进入 owner 的 WaitingAuth，自动保留策略跳过且不创建当前账号云任务；切回 owner 后才收尾。
 - 旧 `ignored` 保持隐藏、云端保留且不产生自动任务。
 - tombstone 表允许“只有删除事实、没有 `.ok`/`cloud_snapshot_sync`”的记录；约束拒绝未发布却进入远端清理状态的数据，两个检索索引均存在。
 - `failed, published=0` 从发布步骤恢复，`failed, published=1` 从残留清理步骤恢复。
@@ -1050,7 +1136,10 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 - OAuth 回调迟到、用户连续发起两轮授权时，只有当前 generation/state 对应的回调可以安装凭据。
 - 同一账号重新授权后只恢复该 `account_id` 的可靠义务；切换到另一个测试账号后，旧账号的上传、metadata 和删除义务保持暂停，新账号任务列表中不得出现。切回原账号后可以继续恢复。
 - 旧版固定 `BAIDU_ACCOUNT_ID + account_identity=NULL` 只在首次取得真实身份后绑定一次；身份读取失败不得建立可写 Runtime，已绑定身份不得被另一账号静默覆盖。
-- legacy 账号已有可靠义务时，只有远端 manifest repository ID 匹配才能自动绑定当前身份；空仓库或不匹配账号进入新命名空间，legacy 义务保持暂停且不产生 Store 写请求。
+- legacy 账号已有可靠义务时，只有已持久化 `remote_repository_id` 匹配，或至少一条已知 `.ok` 的 ID、内容哈希、文件统计和归档 SHA-256 强匹配，才能自动绑定当前身份；证据不足进入新命名空间，legacy 义务保持暂停且不产生 Store 写请求，但当前 verified 账号仍可正常刷新和接收。后续强证据认领覆盖向已有 verified 账号的无损合并与冲突回滚。
+- 在账号专属 Token 原子替换前后、账号 upsert 前后、`active_cloud_account_id` 提交前后和 Runtime 发布前后分别注入崩溃并重启；启动身份核对必须得到“旧账号仍安全激活”“新账号完整激活”或“无账号激活”之一，绝不能出现账号 A active ID 搭配账号 B Token 的可写 Runtime。
+- 清除授权在清空 active 设置后、删除 Token 前崩溃时，重启不得因残留 Token 自动恢复可写 Runtime；孤儿 pending/账号 Token 可清理但不能误删其他账号凭据。
+- 旧版单一 Token 迁移在身份读取、新路径原子写、SQLite active 提交和旧文件删除各阶段崩溃后均可重试；不得丢失唯一有效 Token，也不得因旧、新文件同时存在随机选择账号。
 
 ### 19.3 tombstone 规模测试
 
@@ -1074,6 +1163,7 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 - 远端快照已被另一设备删除后，本机副本改名和锁定仍正常，但不显示待同步、不产生 metadata 云任务。
 - 授权失效显示等待授权，不显示内容冲突。
 - 清除或重新授权期间的旧任务不得让界面显示错误账号的成功结果；重新连接后的刷新必须访问新账号远端。
+- 当前账号不是快照 owner 时上传按钮不可执行并显示明确归属提示；未激活 owner 的自动淘汰不显示为错误，显式删除显示等待原账号连接。
 
 ### 19.5 真实百度验收
 
@@ -1095,6 +1185,8 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 14. 设备 A 的上传完成 ZIP 后暂停，在浏览器清除授权并连接设备 B 使用的另一个测试账号，再恢复旧任务；确认旧任务不再发出 metadata、`.ok` 或删除请求，新账号目录保持不变，旧账号结果不落入新账号 SQLite 状态。
 15. 制造旧账号请求迟到的 401，再完成新账号授权；确认迟到错误不会清除新 Token，新账号刷新仍成功。确认旧账号可靠任务没有在新账号执行，切回旧账号后才恢复；记录账号切换等待时间和所有跨 generation 请求日志。
 16. 在真实百度可承受的数据规模下测量单条上传三次 tombstone 检查的请求数与耗时；结合 10,000 条合成 HTTP 契约结果确认满足 19.3。不得为了测试向用户正式目录批量写入 10,000 个垃圾对象。
+17. 使用两个隔离本机数据目录连接同一百度账号，确认两边随机生成的本机 repository 候选 ID 不同仍属正常；设备 B 有强证据时通过已知 `.ok` 或已持久化的 `remote_repository_id` 正确认领 legacy 状态。没有强证据时只暂停旧义务，新 verified 命名空间仍能刷新和接收远端对象；随后补足证据可事务合并 legacy 记录。
+18. 快照在账号 A 首次上传后切换账号 B：B 不能再次上传该本机快照，十分钟保留策略跳过它；显式删除只进入账号 A 的等待状态且 B 远端无删除请求。切回 A 后完成 tombstone、远端清理和本机删除。
 
 全过程记录百度远端对象、SQLite 状态、任务事件、重试次数和最终文件哈希。任何真实存档目录都不得用于删除或恢复故障注入。
 
@@ -1110,6 +1202,9 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 - 下载、metadata 和上传中断恢复的跨设备 tombstone 竞态测试全部通过。
 - v0.5.0 无 tombstone 目录兼容、本地 metadata-only、可空修改时间缓存和并发删除审计字段测试全部通过。
 - 同进程跨设备新鲜度、Store 各读取/删除入口、真实账号身份和重新授权 generation 测试全部通过，不存在跨任务目录缓存陈旧；旧任务不能读取新 Token、向新账号发请求、由迟到错误清除新凭据，旧账号可靠义务也不能在新账号恢复。
+- 分账号 Token 安装/清除的逐步崩溃测试全部通过；启动时不存在 active ID 与 Token 身份错配的可写 Runtime，legacy 设备 B 不因本机随机 repository 候选不同被误判。
+- 单快照单账号归属、第二账号上传拒绝、未激活 owner 保留策略跳过和切回 owner 后删除收尾测试全部通过。
+- manifest single-flight 瞬时失败可由下一任务重试，成功与失败结果均不跨账号/generation 泄漏。
 - 1,000/10,000 条 tombstone 的全量刷新和单对象点查测试及真实百度暖刷新满足 19.3、19.5 的性能门槛；两端修改时间都存在且相等时不重复下载 JSON，任一为空时不错误命中缓存；最终平铺或 16 桶布局在第一批正式对象写入前冻结。
 - metadata 同步期间再次编辑不会丢失用户新值。
 - 后台远端变化有持久化小红点，自身操作不误报。
