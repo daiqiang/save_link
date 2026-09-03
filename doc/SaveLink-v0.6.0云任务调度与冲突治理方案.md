@@ -5,7 +5,7 @@
 | 版本 | 修改人 | 时间 | 备注 |
 | --- | --- | --- | --- |
 | 1.0 | Codex | 2026-09-02 | 第一版：确定云任务类型、资源键、优先级、并发规则、状态机、删除语义、未读提醒和实施顺序 |
-| 1.1 | Codex | 2026-09-03 | 根据两轮评审修订：完善任务取代、SQLite 迁移、上传恢复、tombstone 强删除及规模验收；补齐下载、metadata 和恢复检查的删除竞态 |
+| 1.1 | Codex | 2026-09-03 | 根据三轮评审修订：完善任务取代、SQLite 迁移、tombstone 全入口竞态及规模验收；补齐旧仓库兼容、本地 metadata 终止、可空修改时间和并发删除契约 |
 
 > 本文是 v0.6.0 云同步改造的权威设计。文中标为“目标状态”的内容尚未实现；当前 v0.5.0 的真实行为仍以代码、`SaveLink技术架构.md` 和 `SaveLink云端快照协议V1.md` 为准。
 
@@ -21,12 +21,14 @@ v0.6.0 在继续增加云功能前，先正式引入统一的云任务协调器�
 6. 当前每次任务重新创建的百度 Token Provider 和请求客户端改为应用级共享，Token 刷新采用 single-flight，避免并发刷新互相覆盖。
 7. 用户删除已上云快照时，立即写入独立的删除意图并从正常界面隐藏；同一快照的 `Queued/WaitingRetry/WaitingAuth` 上传由删除取代，`Running` 上传结束后再执行删除。
 8. 内容同步状态、元数据同步状态和删除状态必须拆开：删除意图在 `snapshots`，跨设备删除生命周期在专用 `cloud_snapshot_tombstones`，不能继续让 `sync_status` 同时表达上传和删除。
-9. 本地备注或锁定状态先立即落库，再异步同步；使用本地元数据 revision 防止旧任务覆盖用户的新修改。
+9. 没有合法 tombstone 时，本地备注或锁定状态先立即落库，再异步同步；使用本地元数据 revision 防止旧任务覆盖用户的新修改。已有合法 tombstone 的本机副本仍可编辑，但只改本地，不再产生 metadata 云任务。
 10. 云端删除先发布不可变 tombstone，再删除 metadata、`.ok` 和 ZIP；v0.6+ 客户端上传前后都检查 tombstone，防止离线任务重新发布同一 snapshot ID。
 11. 后台发现远端新增、有效元数据变化或 tombstone 时增加持久化 generation；云端入口显示小红点，窗口成功展示对应 generation 后才标记已读。
 12. 后台发现只读取目录、tombstone、`.ok` 和发生变化时必要的 metadata，不自动下载 ZIP；ZIP 仍只在用户明确点击下载时传输。
 13. 操作排队、内容冲突和网络失败是三类不同问题，界面和状态不能再统一显示成“云冲突”。
 14. tombstone 不只约束上传：接收、metadata 写入和上传中断恢复都必须在关键提交前复查；发现删除事实后不得发布或落地新的同 ID 对象。
+15. `snapshot-tombstones/` 是 v0.6.0 可选扩展目录；旧仓库中该目录不存在等价于空集合，不能导致刷新失败。
+16. tombstone 缓存只有在本地和远端修改时间都存在且相等时才能命中；并发创建只比较协议身份字段，审计字段采用远端先创建成功的版本。
 
 本轮适合直接引入队列。继续在现有全局互斥上叠加例外，会让上传、刷新、元数据和删除之间的关系越来越难以证明正确。
 
@@ -95,10 +97,10 @@ v0.5.0 使用 `baidu_sync_in_progress: AtomicU8` 表示空闲、后台任务或�
 
 | 类型 | 触发来源 | 主要动作 | 是否可靠恢复 |
 | --- | --- | --- | --- |
-| `CatalogRefresh` | 用户打开/刷新云端窗口；十分钟后台发现 | 增量枚举远端目录，先读取并验证 tombstone，再处理新增 `.ok` 和变化的 metadata，更新本机云缓存 | 后台刷新无需恢复；下个周期会重做 |
+| `CatalogRefresh` | 用户打开/刷新云端窗口；十分钟后台发现 | 增量枚举远端目录；可选 tombstone 目录不存在按空集合处理，存在则先完整读取并验证，再处理新增 `.ok` 和变化的 metadata | 后台刷新无需恢复；下个周期会重做 |
 | `SnapshotUpload` | 用户手动上传；新自动快照；自动上传失败重试 | 检查 tombstone，打包并校验 ZIP，上传 ZIP、metadata、`.ok`，再次检查 tombstone 并更新内容同步状态 | 自动快照上传需要恢复；普通手动上传由用户重试 |
 | `SnapshotReceive` | 用户点击下载 | 下载前和本机提交前检查 tombstone，下载 ZIP，校验归档和内容，写入本机快照仓库 | 第一版不自动跨重启续传；用户重新点击 |
-| `SnapshotMetadataSync` | 本地修改备注/锁定；失败重试 | 远端写入前后检查 tombstone，读取 metadata、字段级合并、覆盖并校验；若删除并发发生则清理孤儿 metadata | `pending/error` 必须恢复 |
+| `SnapshotMetadataSync` | 无合法 tombstone 时本地修改备注/锁定；失败重试 | 远端写入前后检查 tombstone，读取 metadata、字段级合并、覆盖并校验；若删除并发发生则清理孤儿 metadata | 仅无合法 tombstone 的 `pending/error` 必须恢复 |
 | `SnapshotDelete` | 用户删除已上云快照；保留策略；tombstone 清理；失败重试 | 创建或确认 tombstone，删除 metadata、`.ok`、ZIP；仅本机存在删除意图时继续删除本机仓库和 SQLite 记录 | 本机删除意图和远端清理都必须恢复 |
 | `SnapshotUploadReconcile` | 启动发现遗留 `uploading` | 开始和成功落库前检查 tombstone，只读检查 `.ok` 和 ZIP；补记成功或标记中断失败，不直接重新上传 | 每次启动和重新授权后恢复 |
 | `MaintenanceSweep` | 启动；每十分钟；重新授权成功 | 读取业务状态并提交上述任务，执行本地布局整理 | 自身无需恢复 |
@@ -339,15 +341,19 @@ synced
   -> error -> syncing
 ```
 
-`syncing` 可以只存在于内存，SQLite 继续保存 `pending/error/synced`，避免应用在网络中途退出后误认为已经完成。
+`syncing` 可以只存在于内存，SQLite 继续保存 `pending/error/synced`，避免应用在网络中途退出后误认为已经完成。这些状态只适用于云端仍存在且没有合法 tombstone 的快照。
 
 每条本机快照新增单调递增的 `metadata_local_revision`：
 
-1. 用户修改备注或锁定时，在同一 SQLite 事务中更新字段、时间戳并递增 revision，再把云 metadata 标为 `pending`。
-2. 同步任务开始时读取 revision 和当前值。
-3. 网络合并完成后，只有数据库 revision 仍等于开始值，才允许把合并结果写回本机并标记 `synced`。
-4. revision 已变化，说明用户在同步期间又编辑过；旧任务不得覆盖新值，也不得标记完成，只设置 `rerun_requested` 或保留 `pending`。
-5. 下一条 metadata 任务重新读取最新值并同步。
+1. 用户修改备注或锁定时，在同一 SQLite 事务中更新字段、时间戳并递增 revision，同时查询该账号和快照的合法已发布 tombstone。
+2. 不存在 tombstone 且仍有云快照记录时，把 metadata 标为 `pending`，事务提交后提交同步任务。
+3. 已存在合法 tombstone 时，本次修改只落本地；不写 `pending`，不提交云任务，并清理可能残留的 `cloud_snapshot_sync`。
+4. 同步任务开始时读取 revision、当前值和 tombstone 缓存。
+5. 网络合并完成后，只有数据库 revision 仍等于开始值且仍无合法 tombstone，才允许把合并结果写回本机并标记 `synced`。
+6. revision 已变化，说明用户在同步期间又编辑过；旧任务不得覆盖新值，也不得标记完成，只设置 `rerun_requested` 或保留 `pending`。
+7. 下一条 metadata 任务重新读取最新值并同步。
+
+合法远端 tombstone 被发现并持久化时，必须在同一 SQLite 事务中删除对应的陈旧 `cloud_snapshot_sync`，从而终止已有 `pending/error` 跨重启义务；事务提交后取消同快照尚未运行或正在等待的 metadata 任务。已经运行的任务依靠写入前后检查安全结束，发现 tombstone 的结果属于“远端已删除”，不是同步失败，不能再次写回 `error`。
 
 仅靠“同一快照云任务串行”不能解决这个问题，因为本地编辑命令必须立即响应，不能为了等待网络而长期持锁。
 
@@ -375,9 +381,11 @@ remote_clean + 本机有删除意图
   -> snapshots.status=deleting
   -> 删除本机文件、snapshots 和 cloud_snapshot_sync
 
-remote_clean + 本机无删除意图
-  -> 删除已过期的 cloud_snapshot_sync 缓存
+合法远端 tombstone 已缓存 + 本机无删除意图
+  -> 立即删除已过期的 cloud_snapshot_sync 缓存
+  -> 终止 pending/error metadata 义务及等待任务
   -> 保留本机快照和 tombstone 缓存
+  -> 远端残留清理继续由 tombstone 状态独立收尾
 ```
 
 关键规则：
@@ -404,7 +412,7 @@ unknown / present / missing_confirmed
 
 只有一次完整目录读取成功，并且对已知但缺失的 `.ok` 再做一次目标文件确认后，才能写 `missing_confirmed`。它表示旧客户端或人工操作造成的“已确认缺失”，没有跨设备强删除保证。网络失败、分页未完成或刷新被中断时不得据此判定远端删除。
 
-读取并验证合法 tombstone 后写入专用 `cloud_snapshot_tombstones` 表，它表示 v0.6 强删除。`missing_confirmed` 和已缓存 tombstone 都保留本机已有快照，并在当前设备禁止自动上传和 metadata 同步；区别是只有远端 tombstone 能被所有 v0.6+ 设备在上传前主动识别。
+读取并验证合法 tombstone 后写入专用 `cloud_snapshot_tombstones` 表，它表示 v0.6 强删除。`missing_confirmed` 和已缓存 tombstone 都保留本机已有快照，并在当前设备禁止自动上传和 metadata 同步；区别是只有远端 tombstone 能被所有 v0.6+ 设备在上传前主动识别。用户之后仍可修改本机名称和锁定状态，这些修改不再产生云端义务。
 
 未来若提供“重新上传”，不能删除 tombstone 或复用原 snapshot ID，而应把本机内容复制成一个新的快照 ID。第一版只显示“云端副本已删除”。
 
@@ -435,9 +443,17 @@ savelink/v1/games/{cloud_game_id}/snapshot-tombstones/{snapshot_id}.json
 
 - `repository_id` 必须取自已经读取并验证的远端 manifest，不能直接使用当前设备新生成但尚未与远端确认的值。
 - 不存在：创建后重新读取并验证。
-- 已存在且身份字段一致：视为幂等成功，以第一份 tombstone 为准。
-- 已存在但 repository、游戏或 snapshot 身份不一致：报告协议冲突，不能继续删除。
+- 幂等身份字段明确限定为 `schema_version/object_type/repository_id/cloud_game_id/snapshot_id`，只有这五项参与一致性比较。
+- 已存在且五项身份字段一致：视为幂等成功，以远端第一份 tombstone 为准。
+- `deleted_at/deleted_by_device_id/reason` 是审计字段，不参与并发删除的一致性比较；本机后创建失败时必须使用重新读取到的远端先创建版本覆盖本机未发布候选值。
+- 已存在但五项身份字段任一不一致：报告协议冲突，不能继续删除。不得通过比较整个 JSON 把正常并发删除误判为冲突。
 - v0.6.0 不自动清理或压缩 tombstone；它很小且必须长期存在。数量和目录读取性能在真实百度验收中记录，未来再考虑只增不减的分片索引。
+
+`CatalogRefresh` 读取每个游戏的 tombstone 目录时遵守以下兼容规则：
+
+- 只有目标 `snapshot-tombstones/` 目录自身返回 `CloudStoreError::NotFound` 时，才等价于“当前没有 tombstone”，继续按 v0.5.0 仓库处理；第一次发布 tombstone 时由 Store 创建该目录。
+- 目录存在但任一分页请求失败、响应不完整、路径非法或对象内容/身份校验失败时，本轮刷新失败并保留上一次完整缓存，不写 `missing_confirmed`，也不在未验证删除视图下继续接受对应 `.ok`。
+- 其他目录的 `NotFound` 不得套用该兼容规则；它只适用于这个新增的可选扩展目录。
 
 所有 v0.6+ 上传执行以下检查：
 
@@ -461,8 +477,8 @@ savelink/v1/games/{cloud_game_id}/snapshot-tombstones/{snapshot_id}.json
 
 永久 tombstone 的发现必须利用本机缓存控制对象读取成本：
 
-- 目录分页仍需枚举 tombstone 条目，但合法缓存中已存在相同 `account_id/cloud_game_id/snapshot_id` 且 `remote_modified_at` 未变化时，不再下载 JSON 内容。
-- 只有首次见到、缓存不完整或远端修改时间异常变化的 tombstone 才下载并验证。由于对象按协议不可变，修改时间变化属于需要重新校验并记录的协议异常，不能静默覆盖缓存身份。
+- 目录分页仍需枚举 tombstone 条目。只有本机缓存的 `remote_modified_at=Some(x)`、远端 `CloudEntry.modified_at=Some(x)` 且身份键相同时，才允许命中缓存并跳过 JSON 下载。
+- 本地或远端修改时间任一为空、两者不相等、首次见到或缓存不完整时，都必须下载并验证 JSON。由于对象按协议不可变，修改时间变化属于需要重新校验并记录的协议异常，不能静默覆盖缓存身份；时间缺失则选择正确性优先，不能把两个 `None` 当成相等。
 - 暖刷新必须记录分页请求数、实际下载 JSON 数、缓存命中数和总耗时，便于判断何时需要按游戏建立远端索引或分片；v0.6.0 暂不引入该扩展。
 
 非法或身份不匹配的 tombstone 不能取得删除优先级：目录发现报告协议错误并停止处理该 ID，既不清理 `.ok`，也不删除本机数据。
@@ -516,7 +532,9 @@ savelink/v1/games/{cloud_game_id}/snapshot-tombstones/{snapshot_id}.json
 
 ### 11.3 备注和锁定同步
 
-本地命令只完成短事务：修改本地字段、递增 revision、标记 `pending`、提交 P1 `SnapshotMetadataSync`，随后立即返回。已有同键任务则合并。
+本地命令只完成短事务：修改本地字段并递增 revision；若没有合法 tombstone 且存在云记录，同时标记 `pending`，事务提交后提交 P1 `SnapshotMetadataSync`。已有同键任务则合并。
+
+若已有合法 tombstone，本机副本仍允许改名和锁定，但命令只提交本地字段，不标记 `pending`、不创建云任务。发现 tombstone 时已有的 `pending/error` 必须通过删除陈旧 `cloud_snapshot_sync` 终止；维护扫描和任务执行器也必须排除 tombstone 对应 ID，防止旧内存任务或重启扫描将其重新入队。
 
 任务执行时按现有字段时间规则与远端合并；`device_id` 不参与决胜。同一时间戳下名称保留云端值，锁定取 `true`。revision 校验保护同步期间的新编辑。
 
@@ -557,6 +575,8 @@ savelink/v1/games/{cloud_game_id}/snapshot-tombstones/{snapshot_id}.json
 所有已上云快照在创建 tombstone 前最后读取一次远端 metadata；如果已经被其他设备锁定，则撤销本机删除意图、重新显示快照并提示用户先解锁。百度网盘没有跨对象 CAS，检查后若另一设备恰好并发锁定，tombstone 一旦创建则删除获胜；另一设备仍保留其本机快照，可以未来用新 snapshot ID 明确重新上传。保留策略和显式用户删除都遵守该规则。
 
 ### 11.6 云端目录刷新和未读提醒
+
+刷新每个游戏时先读取 `snapshot-tombstones/`。旧 v0.5.0 仓库没有该目录时按空集合继续；目录存在但分页、响应或对象校验失败时，本轮不算成功，不处理依赖该删除视图的 `.ok`，也不推进 generation 或远端缺失状态。
 
 `CatalogRefresh` 返回目录结果与本轮 generation。刷新只在以下语义变化发生时增加 `remote_change_generation`，每个成功批次最多增加一次：
 
@@ -606,7 +626,7 @@ last_viewed_remote_change_generation
 | 硬冲突 | 同 snapshot ID 不同不可变内容 | 不自动重试、不覆盖 | 明确显示内容冲突并等待用户决策 |
 | 远端损坏 | `.ok` 有效但 ZIP 缺失或校验失败 | 不自动覆盖 | 云端快照不完整/已损坏 |
 
-内存退避只改善当前会话体验，不是可靠性来源。应用重启后，`MaintenanceSweep` 只从自动快照的上传错误、metadata `pending/error`、`snapshots.delete_requested_at` 以及 tombstone 的 `publish_pending/cleaning_remote/failed` 重建任务；手动快照上传错误不自动重试。遗留 `uploading` 先走恢复检查，不能直接重新上传。
+内存退避只改善当前会话体验，不是可靠性来源。应用重启后，`MaintenanceSweep` 只从自动快照的上传错误、没有合法 tombstone 的 metadata `pending/error`、`snapshots.delete_requested_at` 以及 tombstone 的 `publish_pending/cleaning_remote/failed` 重建任务；手动快照上传错误不自动重试。遗留 `uploading` 先走恢复检查，不能直接重新上传。
 
 ## 十三、SQLite 调整
 
@@ -703,6 +723,7 @@ CREATE INDEX idx_cloud_snapshot_tombstones_maintenance
 - `failed, published=0` 重试发布 tombstone；`failed, published=1` 重试清理远端残留，不能混成同一恢复入口。
 - `remote_clean` 记录不删除，作为本机长期抑制缓存；远端 tombstone 仍是跨设备权威事实。
 - 若已存在同 ID tombstone，本机数据库中的不可变身份字段必须一致，不能用后来的对象覆盖。
+- 合法远端 tombstone 首次缓存或确认时，同一事务删除对应 `cloud_snapshot_sync`；其 `pending/error` metadata 状态随记录一起终止，远端残留清理只依赖 tombstone 表继续执行。
 - `account_game` 索引用于按游戏发现和清理，`maintenance` 索引用于启动及十分钟维护恢复未完成义务；索引随表迁移在同一事务中创建。
 
 旧状态映射：
@@ -732,7 +753,7 @@ generation 按账号持久化，避免应用重启或窗口关闭后丢失未读
 通用任务表会引入任务参数版本、已运行请求恢复、重复消费、租约和崩溃接管等额外问题。当前真正需要跨重启的是业务义务，现有业务表能更准确表达：
 
 - 自动快照的内容上传失败或未发布。
-- metadata `pending/error`。
+- 没有合法 tombstone 的 metadata `pending/error`。
 - `snapshots.delete_requested_at` 表示的本机删除意图。
 - `cloud_snapshot_tombstones` 中未完成的发布和远端残留清理。
 
@@ -845,7 +866,7 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 ### 阶段 1：调度器骨架和共享运行时
 
 - 一次性增加 metadata revision、本机删除意图、专用 tombstone 表、远端存在状态和 `conflict` CHECK；完成旧删除状态及 `ignored` 迁移测试。
-- 增加 tombstone 协议对象、路径、序列化、校验和 Fake 云存储竞态测试，但暂不切换用户删除入口。
+- 增加 tombstone 协议对象、路径、序列化、校验、可选目录兼容、可空修改时间和并发创建契约测试，但暂不切换用户删除入口。
 - 新增纯调度状态机、任务键、资源锁、优先级、aging、合并和 Fake 执行器测试。
 - 在 `AppState` 中接入单例协调器。
 - 把 Token Provider、百度 Store、HTTP 信号量和 manifest 初始化改为应用级共享。
@@ -863,6 +884,7 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 
 - 接通 SQLite revision 和 compare-and-set 仓储方法。
 - 覆盖同步中再次编辑、任务合并、失败重试和跨重启测试。
+- 接通 tombstone 后本机 metadata-only 分支；合法删除事实必须终止旧 `pending/error`，后续本地编辑不得提交云任务。
 - 缩短 `snapshot_operation_lock`，不在网络期间持有全局本地锁。
 
 ### 阶段 4：用户删除云端闭环
@@ -916,7 +938,10 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 - 删除 metadata、`.ok`、ZIP 任一步失败都保留本机快照并可重试。
 - 远端删除成功、本机删除失败或进程中断后可以收尾。
 - 完整目录读取失败时不写 `missing_confirmed`。
+- 从未创建 `snapshot-tombstones/` 的 v0.5.0 仓库返回 `NotFound` 时按空集合正常刷新；目录存在后的分页、响应或对象校验失败仍使刷新失败。
 - tombstone JSON 和路径拒绝错误 repository、游戏及 snapshot 身份。
+- 两台设备并发删除同一快照时，只比较五项身份字段；不同审计字段不产生冲突，本机最终缓存远端先创建成功的审计值。
+- 发现合法 tombstone 后删除陈旧 `cloud_snapshot_sync`，原有 `pending/error` 不再被维护扫描恢复；随后修改本机备注或锁定不产生 Store 请求。
 - 上传在 ZIP 前、`.ok` 前和 `.ok` 后三类删除竞态中都不会留下可发布快照。
 - 模拟设备 B 分别在设备 A 下载前、下载完成但本机提交前发布 tombstone：A 不产生本机快照；若 B 在最终检查后才发布，则 A 保留已提交副本并禁止原 ID 自动重传。
 - 模拟设备 B 分别在设备 A metadata 写入前、写入后发布 tombstone：写入前不产生对象，写入后提交孤儿清理且不标记 `synced`。
@@ -927,7 +952,7 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 ### 19.3 tombstone 规模测试
 
 - 构造每个游戏 1,000 和 10,000 条 tombstone，分别验证冷刷新与暖刷新；结果必须完整、无重复、分页结束条件正确。
-- 暖刷新命中合法缓存时，tombstone JSON 内容下载请求必须为 0；只有新增或远端修改时间变化的条目允许下载。
+- 暖刷新只有在本地与远端 `modified_at` 都为 `Some` 且值相等时命中缓存，此时 tombstone JSON 内容下载请求必须为 0；任一时间为空、值变化或新增条目都必须下载验证。
 - 在发布目标机器上，排除 Fake Store 人工延迟后，10,000 条暖刷新本地处理时间不得超过 5 秒，额外峰值内存不得超过 64 MiB；超过任一门槛则 v0.6.0 发布前必须增加远端索引/分片或进一步缩减处理集。
 - 性能测试记录条目数、页数、Store 调用数、JSON 下载数、缓存命中数、总耗时和峰值内存，不能只断言功能结果。
 
@@ -940,6 +965,7 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 - 关闭并重开云端窗口共享刷新任务和结果。
 - generation N 已读不能清除同时产生的 N+1。
 - 自己上传不亮红点，另一设备新增/改名/删除会亮红点。
+- 远端快照已被另一设备删除后，本机副本改名和锁定仍正常，但不显示待同步、不产生 metadata 云任务。
 - 授权失效显示等待授权，不显示内容冲突。
 
 ### 19.5 真实百度验收
@@ -956,7 +982,8 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 8. 设备 B 删除远端快照，设备 A 保留本机副本并缓存 tombstone；模拟设备 A 的旧自动上传义务，确认同 ID 发布被拒绝。
 9. 人工制造同 ID 不同内容，确认双方保留且界面只报告硬冲突。
 10. 用 v0.5.0 兼容性测试证明旧客户端会忽略 tombstone，并把“同仓库设备必须全部升级”写入发布说明，不伪造跨旧版本强保证。
-11. 暖刷新已缓存 tombstone，记录百度分页次数、tombstone JSON 下载次数和连续三轮刷新时间；缓存未变化时 JSON 下载必须为 0，三轮中的最大值不得超过 15 秒，否则阻止发布并先优化发现协议。后续长期样本再单独统计 P95。
+11. 暖刷新已缓存 tombstone，记录百度分页次数、远端 `modified_at` 是否存在、tombstone JSON 下载次数和连续三轮刷新时间。本地与远端修改时间都存在且相等时 JSON 下载必须为 0；任一为空时必须重新下载验证。三轮中的最大值不得超过 15 秒，否则阻止发布并先优化发现协议。后续长期样本再单独统计 P95。
+12. 使用从未创建 tombstone 目录的真实 v0.5.0 测试仓库刷新，确认目录 `NotFound` 不影响原有 `.ok`、metadata 和云端列表。
 
 全过程记录百度远端对象、SQLite 状态、任务事件、重试次数和最终文件哈希。任何真实存档目录都不得用于删除或恢复故障注入。
 
@@ -970,7 +997,8 @@ v0.6.0 第一阶段先做到可靠识别、停止覆盖和准确展示。后续�
 - v0.6+ 上传不能复活合法 tombstone 对应的 snapshot ID；旧版本边界和全设备升级要求已进入发布说明。
 - `conflict` CHECK、旧删除状态、遗留 `uploading` 和 `ignored` 的迁移/恢复测试全部通过。
 - 下载、metadata 和上传中断恢复的跨设备 tombstone 竞态测试全部通过。
-- 1,000/10,000 条 tombstone 合成测试及真实百度暖刷新满足 19.3、19.5 的性能门槛，缓存命中不重复下载 JSON。
+- v0.5.0 无 tombstone 目录兼容、本地 metadata-only、可空修改时间缓存和并发删除审计字段测试全部通过。
+- 1,000/10,000 条 tombstone 合成测试及真实百度暖刷新满足 19.3、19.5 的性能门槛；两端修改时间都存在且相等时不重复下载 JSON，任一为空时不错误命中缓存。
 - metadata 同步期间再次编辑不会丢失用户新值。
 - 后台远端变化有持久化小红点，自身操作不误报。
 - 排队、授权、网络、限流、远端损坏和硬冲突在界面上能够区分。
