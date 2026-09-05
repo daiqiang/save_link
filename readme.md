@@ -19,7 +19,7 @@ SaveLink是一款基于windows的游戏存档工具，同时满足存储空间�
 
 ## 下载
 
-前往 [GitHub Releases](https://github.com/daiqiang/save_link/releases) 下载最新版本。当前版本为 [v0.5.0](https://github.com/daiqiang/save_link/releases/tag/v0.5.0)。
+前往 [GitHub Releases](https://github.com/daiqiang/save_link/releases) 下载最新版本。当前版本为 [v0.5.1](https://github.com/daiqiang/save_link/releases/tag/v0.5.1)。
 
 ## 快速开始
 
@@ -39,7 +39,7 @@ SaveLink是一款基于windows的游戏存档工具，同时满足存储空间�
 
 ![SaveLink Steam 自动发现](img/添加游戏.png)
 
-## v0.5.0 更新
+## v0.5.1 更新
 
 - 支持由 SaveLink 启动并监测未识别游戏，退出后从活动中推荐真实存档目录，确认后自动接入备份。
 - 支持快照分区、锁定保护、默认10个且可配置1到100个的自动保留数量，以及快照详情中的本地一致性检查。
