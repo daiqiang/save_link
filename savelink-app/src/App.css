@@ -347,8 +347,10 @@ button {
   border-bottom: 1px solid var(--color-border); }
 .cloud-game-head .game-cover { width: 34px; height: 34px; font-size: 13px; }
 .cloud-game-head div { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cloud-game-head .cloud-game-title { flex: 1; }
 .cloud-game-head strong { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cloud-game-head span { color: var(--color-text-3); font-size: 11.5px; }
+.cloud-game-head .cloud-associate { flex: none; white-space: nowrap; }
 .cloud-snapshot-list { display: flex; flex-direction: column; }
 .cloud-snapshot-row { display: grid; grid-template-columns: minmax(0, 1fr) 112px; gap: 16px;
   min-height: 62px; align-items: center; padding: 10px 4px; border-bottom: 1px solid var(--color-border); }
@@ -392,6 +394,14 @@ button {
 .path-stack span { overflow-wrap: anywhere; font-size: 12px; }
 .modal.bind-path-modal { max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
 .bind-path-body { overflow-y: auto; }
+.association-overlay { z-index: 60; }
+.modal.associate-cloud-modal { width: 680px; max-height: calc(100vh - 48px); display: flex; flex-direction: column; }
+.associate-cloud-modal .save-path-edit-row { grid-template-columns: minmax(0, 1fr) 30px 30px; }
+.path-error-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.path-error-row .hint { min-width: 0; flex: 1; overflow-wrap: anywhere; }
+.path-error-row .btn { flex: none; margin-top: 6px; }
+.association-actions { align-items: center; flex-wrap: wrap; }
+.association-action-spacer { flex: 1; }
 .steam-discovery-body { min-height: 420px; display: flex; flex-direction: column; overflow: hidden; }
 .steam-discovery-state { min-height: 420px; padding: 32px; display: flex; flex-direction: column;
   align-items: center; justify-content: center; gap: 10px; color: var(--color-text-3); text-align: center; }

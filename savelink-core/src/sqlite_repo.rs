@@ -6,8 +6,8 @@
 //! 一个 `savelink.db` 文件即整个元数据库，无服务器、零安装，贴合"单机自包含"。
 
 use crate::cloud_model::{
-    CloudAccount, CloudGameBinding, CloudMetadataSyncStatus, CloudSnapshotMetadataState,
-    CloudSnapshotRecord, CloudSyncStatus,
+    CloudAccount, CloudGameAssociationOutcome, CloudGameBinding, CloudMetadataSyncStatus,
+    CloudSnapshotMetadataState, CloudSnapshotRecord, CloudSyncStatus,
 };
 use crate::cloud_repo::CloudStateRepository;
 use crate::error::{Result, SaveLinkError};
@@ -17,7 +17,7 @@ use crate::model::{
 };
 use crate::repo::Repository;
 use crate::timestamp::normalize_timestamp;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -148,8 +148,7 @@ impl SqliteRepo {
                 remote_revision INTEGER NOT NULL DEFAULT 0,
                 sync_enabled INTEGER NOT NULL DEFAULT 1,
                 last_scanned_at TEXT,
-                PRIMARY KEY (account_id, cloud_game_id),
-                UNIQUE(account_id, local_game_id)
+                PRIMARY KEY (account_id, cloud_game_id)
              );
              CREATE TABLE IF NOT EXISTS cloud_snapshot_sync (
                 account_id TEXT NOT NULL,
@@ -190,12 +189,57 @@ impl SqliteRepo {
                 ON cloud_snapshot_sync(account_id, cloud_game_id, created_at DESC);",
         )
         .map_err(map_err)?;
+        Self::migrate_cloud_game_bindings(conn)?;
         Self::migrate_cloud_snapshot_sync_status(conn)?;
         Self::migrate_source_count_columns(conn)?;
         Self::migrate_game_source_columns(conn)?;
         Self::migrate_snapshot_display_zone(conn)?;
         Self::migrate_snapshot_timestamps(conn)?;
         Self::migrate_snapshot_metadata_columns(conn)
+    }
+
+    /// 一个本机游戏可以保留多个历史云分组，但同一账号下只能有一个分组负责后续写入。
+    fn migrate_cloud_game_bindings(conn: &Connection) -> Result<()> {
+        let table_sql: String = conn
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'cloud_game_bindings'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(map_err)?;
+        let compact_sql = table_sql
+            .split_whitespace()
+            .collect::<String>()
+            .to_ascii_lowercase();
+        if compact_sql.contains("unique(account_id,local_game_id)") {
+            conn.execute_batch(
+                "BEGIN IMMEDIATE;
+                 ALTER TABLE cloud_game_bindings RENAME TO cloud_game_bindings_legacy;
+                 CREATE TABLE cloud_game_bindings (
+                    account_id TEXT NOT NULL,
+                    cloud_game_id TEXT NOT NULL,
+                    local_game_id TEXT NOT NULL,
+                    remote_revision INTEGER NOT NULL DEFAULT 0,
+                    sync_enabled INTEGER NOT NULL DEFAULT 1,
+                    last_scanned_at TEXT,
+                    PRIMARY KEY (account_id, cloud_game_id)
+                 );
+                 INSERT INTO cloud_game_bindings
+                    (account_id, cloud_game_id, local_game_id, remote_revision, sync_enabled, last_scanned_at)
+                 SELECT account_id, cloud_game_id, local_game_id, remote_revision, sync_enabled, last_scanned_at
+                 FROM cloud_game_bindings_legacy;
+                 DROP TABLE cloud_game_bindings_legacy;
+                 COMMIT;",
+            )
+            .map_err(map_err)?;
+        }
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_cloud_game_primary
+             ON cloud_game_bindings(account_id, local_game_id) WHERE sync_enabled != 0",
+            [],
+        )
+        .map_err(map_err)?;
+        Ok(())
     }
 
     fn migrate_snapshot_metadata_columns(conn: &Connection) -> Result<()> {
@@ -769,6 +813,11 @@ impl Repository for SqliteRepo {
         let tx = conn.unchecked_transaction().map_err(map_err)?;
         tx.execute("DELETE FROM snapshots WHERE game_id = ?1", params![game_id])
             .map_err(map_err)?;
+        tx.execute(
+            "DELETE FROM cloud_game_bindings WHERE local_game_id = ?1",
+            params![game_id],
+        )
+        .map_err(map_err)?;
         tx.execute("DELETE FROM games WHERE id = ?1", params![game_id])
             .map_err(map_err)?;
         tx.commit().map_err(map_err)?;
@@ -1056,6 +1105,32 @@ impl CloudStateRepository for SqliteRepo {
         }
     }
 
+    fn get_cloud_game_binding_by_local_game(
+        &self,
+        account_id: &str,
+        local_game_id: &str,
+    ) -> Result<Option<CloudGameBinding>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT account_id, cloud_game_id, local_game_id, remote_revision, sync_enabled, last_scanned_at
+             FROM cloud_game_bindings
+             WHERE account_id = ?1 AND local_game_id = ?2 AND sync_enabled != 0",
+            params![account_id, local_game_id],
+            |row| {
+                Ok(CloudGameBinding {
+                    account_id: row.get(0)?,
+                    cloud_game_id: row.get(1)?,
+                    local_game_id: row.get(2)?,
+                    remote_revision: row.get::<_, i64>(3)? as u64,
+                    sync_enabled: row.get::<_, i64>(4)? != 0,
+                    last_scanned_at: row.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(map_err)
+    }
+
     fn list_cloud_game_bindings(&self, account_id: &str) -> Result<Vec<CloudGameBinding>> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = conn
@@ -1077,6 +1152,194 @@ impl CloudStateRepository for SqliteRepo {
             })
             .map_err(map_err)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(map_err)
+    }
+
+    fn delete_cloud_game_binding(&self, account_id: &str, cloud_game_id: &str) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "DELETE FROM cloud_game_bindings WHERE account_id = ?1 AND cloud_game_id = ?2",
+            params![account_id, cloud_game_id],
+        )
+        .map_err(map_err)?;
+        Ok(())
+    }
+
+    fn associate_cloud_game(
+        &self,
+        binding: CloudGameBinding,
+        save_paths: Vec<PathBuf>,
+        updated_at: &str,
+    ) -> Result<CloudGameAssociationOutcome> {
+        crate::scan::validate_save_paths(&save_paths)?;
+        if save_paths.is_empty() {
+            return Err(SaveLinkError::SaveSourcesNotConfigured);
+        }
+
+        let conn = self.conn.lock().unwrap();
+        let tx = conn.unchecked_transaction().map_err(map_err)?;
+        let sql = format!("SELECT {GAME_COLS} FROM games WHERE id = ?1");
+        let target = tx
+            .query_row(&sql, params![&binding.local_game_id], row_to_game)
+            .optional()
+            .map_err(map_err)?
+            .ok_or_else(|| SaveLinkError::Io("要关联的本机游戏不存在".into()))?;
+        if target.emulator_identity.is_some()
+            || target.emulator_binding.is_some()
+            || !target.save_sources.is_empty()
+        {
+            return Err(SaveLinkError::Io(
+                "模拟器游戏暂不支持通过云端存档窗口更改关联".into(),
+            ));
+        }
+
+        let bound_local_game_id = tx
+            .query_row(
+                "SELECT local_game_id FROM cloud_game_bindings
+                 WHERE account_id = ?1 AND cloud_game_id = ?2",
+                params![&binding.account_id, &binding.cloud_game_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(map_err)?;
+        let placeholder_id = bound_local_game_id
+            .filter(|local_game_id| local_game_id != &binding.local_game_id)
+            .or_else(|| {
+                (binding.cloud_game_id != binding.local_game_id)
+                    .then(|| binding.cloud_game_id.clone())
+            });
+        let placeholder = placeholder_id
+            .as_deref()
+            .map(|game_id| {
+                tx.query_row(&sql, params![game_id], row_to_game)
+                    .optional()
+                    .map_err(map_err)
+            })
+            .transpose()?
+            .flatten();
+        if let Some(source) = placeholder.as_ref() {
+            let safe_placeholder = source.id == binding.cloud_game_id
+                && source.save_paths.is_empty()
+                && source.save_sources.is_empty()
+                && source.emulator_binding.is_none()
+                && source.launch_binding.is_none();
+            if !safe_placeholder {
+                return Err(SaveLinkError::Io(format!(
+                    "云端分组已关联到本机游戏“{}”，不能自动合并",
+                    source.name
+                )));
+            }
+        }
+
+        let mut statement = tx
+            .prepare(&format!("SELECT {GAME_COLS} FROM games"))
+            .map_err(map_err)?;
+        let existing_games = statement
+            .query_map([], row_to_game)
+            .map_err(map_err)?
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .map_err(map_err)?;
+        drop(statement);
+        for game in existing_games {
+            if game.id == binding.local_game_id
+                || placeholder_id.as_deref() == Some(game.id.as_str())
+            {
+                continue;
+            }
+            if let Some((saved, candidate)) = game.save_paths.iter().find_map(|saved| {
+                save_paths
+                    .iter()
+                    .find(|candidate| crate::scan::save_paths_overlap(saved, candidate))
+                    .map(|candidate| (saved, candidate))
+            }) {
+                return Err(SaveLinkError::Io(format!(
+                    "存档目录与游戏“{}”冲突：{} 与 {}",
+                    game.name,
+                    saved.display(),
+                    candidate.display()
+                )));
+            }
+        }
+
+        let moved_snapshot_count = if let Some(source) = placeholder.as_ref() {
+            tx.execute(
+                "UPDATE snapshots SET game_id = ?1 WHERE game_id = ?2",
+                params![&binding.local_game_id, &source.id],
+            )
+            .map_err(map_err)?
+        } else {
+            0
+        };
+        tx.execute(
+            "UPDATE cloud_game_bindings SET sync_enabled = 0
+             WHERE account_id = ?1 AND local_game_id = ?2 AND cloud_game_id != ?3",
+            params![
+                &binding.account_id,
+                &binding.local_game_id,
+                &binding.cloud_game_id
+            ],
+        )
+        .map_err(map_err)?;
+        tx.execute(
+            "UPDATE games SET save_paths = ?2, updated_at = ?3 WHERE id = ?1",
+            params![
+                &binding.local_game_id,
+                paths_to_str(&save_paths),
+                updated_at
+            ],
+        )
+        .map_err(map_err)?;
+        tx.execute(
+            "INSERT INTO cloud_game_bindings
+                (account_id, cloud_game_id, local_game_id, remote_revision, sync_enabled, last_scanned_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(account_id, cloud_game_id) DO UPDATE SET
+                local_game_id=excluded.local_game_id,
+                remote_revision=excluded.remote_revision,
+                sync_enabled=excluded.sync_enabled,
+                last_scanned_at=excluded.last_scanned_at",
+            params![
+                &binding.account_id,
+                &binding.cloud_game_id,
+                &binding.local_game_id,
+                binding.remote_revision as i64,
+                binding.sync_enabled as i64,
+                &binding.last_scanned_at,
+            ],
+        )
+        .map_err(map_err)?;
+
+        let removed_placeholder_game_id = if let Some(source) = placeholder {
+            let remaining_snapshots: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM snapshots WHERE game_id = ?1",
+                    params![&source.id],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)?;
+            let remaining_bindings: i64 = tx
+                .query_row(
+                    "SELECT COUNT(*) FROM cloud_game_bindings WHERE local_game_id = ?1",
+                    params![&source.id],
+                    |row| row.get(0),
+                )
+                .map_err(map_err)?;
+            if remaining_snapshots == 0 && remaining_bindings == 0 {
+                tx.execute("DELETE FROM games WHERE id = ?1", params![&source.id])
+                    .map_err(map_err)?;
+                Some(source.id)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        tx.commit().map_err(map_err)?;
+        Ok(CloudGameAssociationOutcome {
+            local_game_id: binding.local_game_id,
+            moved_snapshot_count,
+            removed_placeholder_game_id,
+        })
     }
 
     fn upsert_cloud_snapshot(&self, snapshot: CloudSnapshotRecord) -> Result<()> {

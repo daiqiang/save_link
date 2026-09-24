@@ -38,6 +38,13 @@ pub enum CloudSyncStatus {
     RemoteDeleted,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudGameAssociationOutcome {
+    pub local_game_id: String,
+    pub moved_snapshot_count: usize,
+    pub removed_placeholder_game_id: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CloudMetadataSyncStatus {
     Synced,

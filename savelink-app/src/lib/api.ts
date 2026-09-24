@@ -9,6 +9,7 @@ import type {
   AppInfo,
   AutoBackupSettings,
   BaiduConnection,
+  CloudGameAssociationResult,
   CloudUploadResult,
   CloudReceiveResult,
   CloudSnapshot,
@@ -92,6 +93,18 @@ export async function receiveBaiduSnapshot(snapshotId: string): Promise<CloudRec
   return invoke<CloudReceiveResult>("receive_baidu_snapshot", { snapshotId });
 }
 
+export async function associateBaiduCloudGame(
+  cloudGameId: string,
+  localGameId: string,
+  savePaths: string[],
+): Promise<CloudGameAssociationResult> {
+  return invoke<CloudGameAssociationResult>("associate_baidu_cloud_game", {
+    cloudGameId,
+    localGameId,
+    savePaths,
+  });
+}
+
 export async function listSnapshots(gameId: string): Promise<Snapshot[]> {
   return invoke<Snapshot[]>("list_snapshots", { gameId });
 }
@@ -147,6 +160,10 @@ export async function addGame(
   installDir: string,
 ): Promise<Game> {
   return invoke<Game>("add_game", { name, savePaths, executablePath, installDir });
+}
+
+export async function createSaveDirectory(path: string): Promise<void> {
+  return invoke("create_save_directory", { path });
 }
 
 export async function getSaveDiscoveryStatus(): Promise<SaveDiscoveryStatus> {
@@ -232,7 +249,8 @@ export async function deleteSnapshot(snapshotId: string): Promise<void> {
 }
 
 export async function deleteGame(gameId: string): Promise<void> {
-  return invoke("delete_game", { gameId });
+  await invoke("delete_game", { gameId });
+  cloudDiscoveryCache = null;
 }
 
 export async function restoreSnapshot(gameId: string, snapshotId: string): Promise<RestoreResult> {

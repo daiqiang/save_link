@@ -511,7 +511,7 @@ function SaveLink() {
         onCreated={(g) => { setAddMode(null); setSelectedId(g.id); loadGames(); }} />}
 
 
-      {showCloud && <CloudSnapshotsDialog onClose={() => setShowCloud(false)}
+      {showCloud && <CloudSnapshotsDialog games={games} onClose={() => setShowCloud(false)}
         onReceived={async (gameId) => {
           await loadGames();
           setSelectedId(gameId);

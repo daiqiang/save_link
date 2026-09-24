@@ -20,6 +20,7 @@ use savelink_core::baidu_store::BaiduNetdiskStore;
 use savelink_core::cloud_archive::ZipCloudArchiveCodec;
 use savelink_core::cloud_model::{
     CloudAccount, CloudMetadataSyncStatus, CloudSnapshotMetadataState, CloudSnapshotRecord,
+    CloudSyncStatus,
 };
 use savelink_core::cloud_repo::CloudStateRepository;
 use savelink_core::cloud_service::{
@@ -285,6 +286,8 @@ pub struct CloudUploadDto {
 pub struct CloudSnapshotDto {
     pub cloud_game_id: String,
     pub game_name: String,
+    pub local_game_id: Option<String>,
+    pub is_primary: bool,
     pub snapshot_id: String,
     pub created_at: String,
     pub note: Option<String>,
@@ -302,6 +305,13 @@ pub struct CloudReceiveDto {
     pub snapshot_id: String,
     pub game_id: String,
     pub outcome: String,
+}
+
+#[derive(Serialize)]
+pub struct CloudGameAssociationDto {
+    pub game: GameDto,
+    pub moved_snapshot_count: usize,
+    pub removed_placeholder_game_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -406,6 +416,8 @@ fn cloud_snapshot_to_dto(discovery: CloudSnapshotDiscovery) -> CloudSnapshotDto 
     CloudSnapshotDto {
         cloud_game_id: discovery.cloud_game_id,
         game_name: discovery.game_name,
+        local_game_id: discovery.local_game_id,
+        is_primary: discovery.is_primary,
         snapshot_id: record.snapshot_id,
         created_at: record.created_at,
         note: record.note,
@@ -1190,22 +1202,27 @@ pub async fn receive_baidu_snapshot(
         let _operation = snapshot_operation_lock
             .lock()
             .map_err(|_| "快照操作锁已损坏".to_string())?;
-        let cloud_game_id = repo
-            .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot_id)
+        repo.get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot_id)
             .map_err(|error| error.to_string())?
-            .ok_or_else(|| "尚未发现这条云端快照，请先刷新云端存档列表".to_string())?
-            .cloud_game_id;
+            .ok_or_else(|| "尚未发现这条云端快照，请先刷新云端存档列表".to_string())?;
         let service = runtime.build()?;
         match service.receive_remote_snapshot(&snapshot_id) {
-            Ok(outcome) => Ok(CloudReceiveDto {
-                snapshot_id,
-                game_id: cloud_game_id,
-                outcome: match outcome {
-                    ReceiveOutcome::Downloaded => "downloaded",
-                    ReceiveOutcome::AlreadyPresent => "already_present",
-                }
-                .into(),
-            }),
+            Ok(outcome) => {
+                let game_id = repo
+                    .get_snapshot(&snapshot_id)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "云端快照下载后未找到本机记录".to_string())?
+                    .game_id;
+                Ok(CloudReceiveDto {
+                    snapshot_id,
+                    game_id,
+                    outcome: match outcome {
+                        ReceiveOutcome::Downloaded => "downloaded",
+                        ReceiveOutcome::AlreadyPresent => "already_present",
+                    }
+                    .into(),
+                })
+            }
             Err(error) => {
                 if error.code() == "auth_required" {
                     let _ = token_store_on_error.clear();
@@ -1216,6 +1233,59 @@ pub async fn receive_baidu_snapshot(
     })
     .await
     .map_err(|error| format!("云端快照下载任务异常结束: {error}"))?
+}
+
+#[tauri::command]
+pub async fn associate_baidu_cloud_game(
+    state: State<'_, AppState>,
+    cloud_game_id: String,
+    local_game_id: String,
+    save_paths: Vec<String>,
+) -> Result<CloudGameAssociationDto, String> {
+    let _busy_guard = acquire_cloud_sync_guard(&state, CloudSyncTaskKind::User)?;
+    let runtime = BaiduCloudRuntime::from_state(&state);
+    let repo = runtime.sqlite_repo.clone();
+    let token_store_on_error = state.baidu_token_store.clone();
+    let snapshot_operation_lock = state.snapshot_operation_lock.clone();
+    let save_paths = save_paths
+        .into_iter()
+        .map(|path| path.trim().to_string())
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let _operation = snapshot_operation_lock
+            .lock()
+            .map_err(|_| "快照操作锁已损坏".to_string())?;
+        for path in &save_paths {
+            savelink_core::scan::fingerprint_dir(path)
+                .map_err(|error| format!("无法读取存档目录 {}：{error}", path.display()))?;
+        }
+        let service = runtime.build()?;
+        let outcome = match service.associate_cloud_game(&cloud_game_id, &local_game_id, save_paths)
+        {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                if error.code() == "auth_required" {
+                    let _ = token_store_on_error.clear();
+                }
+                return Err(cloud_association_error_message(&error));
+            }
+        };
+        let game = repo
+            .get_game(&outcome.local_game_id)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "关联完成后未找到本机游戏".to_string())?;
+        let dto_repo: Arc<dyn Repository> = repo;
+        Ok(CloudGameAssociationDto {
+            game: game_to_dto(&dto_repo, &game),
+            moved_snapshot_count: outcome.moved_snapshot_count,
+            removed_placeholder_game_id: outcome.removed_placeholder_game_id,
+        })
+    })
+    .await
+    .map_err(|error| format!("云端游戏关联任务异常结束: {error}"))?
 }
 
 fn cloud_upload_error_message(error: &CloudSyncError) -> String {
@@ -1256,6 +1326,15 @@ fn cloud_receive_error_message(error: &CloudSyncError) -> String {
         "snapshot_id_conflict" => "本机存在同编号但内容不同的快照，已停止下载".into(),
         "remote_zip_missing" => "云端快照文件不完整，无法下载".into(),
         _ => format!("下载云端存档失败：{error}"),
+    }
+}
+
+fn cloud_association_error_message(error: &CloudSyncError) -> String {
+    match error.code() {
+        "auth_required" => "百度网盘授权已失效，请重新授权后关联".into(),
+        "network_unavailable" => "无法连接百度网盘，请检查网络后重试".into(),
+        "rate_limited" => "百度网盘请求过于频繁，请稍后重试".into(),
+        _ => format!("关联云端游戏失败：{error}"),
     }
 }
 
@@ -1326,6 +1405,27 @@ pub fn scan_path(path: String) -> Result<SnapshotDto, String> {
         cloud_status: None,
         cloud_error_code: None,
     })
+}
+
+#[tauri::command]
+pub fn create_save_directory(state: State<'_, AppState>, path: String) -> Result<(), String> {
+    let path = PathBuf::from(path.trim());
+    if path.as_os_str().is_empty() {
+        return Err("存档目录不能为空".into());
+    }
+    if !path.is_absolute() {
+        return Err("存档目录必须使用绝对路径".into());
+    }
+    let _operation = acquire_snapshot_operation_guard(&state)?;
+    if path.exists() {
+        return if path.is_dir() {
+            Ok(())
+        } else {
+            Err("该路径已存在，但不是目录".into())
+        };
+    }
+    std::fs::create_dir_all(&path)
+        .map_err(|error| format!("无法创建存档目录 {}：{error}", path.display()))
 }
 
 #[tauri::command]
@@ -2221,10 +2321,42 @@ pub fn delete_snapshot(state: State<'_, AppState>, snapshot_id: String) -> Resul
 pub fn delete_game(state: State<'_, AppState>, game_id: String) -> Result<(), String> {
     state.save_discovery.ensure_game_mutable(&game_id)?;
     let _operation = acquire_snapshot_operation_guard(&state)?;
+    let snapshot_ids = state
+        .repo
+        .list_snapshots(&game_id)
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .map(|snapshot| snapshot.id)
+        .collect::<Vec<_>>();
     state
         .snapshots()
         .delete_game(&game_id)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    // 删除游戏不删除云端文件。先把仍然成功的本地云状态降为 remote_only，
+    // 让下一次打开云端列表即可重新下载；删除状态不在这里覆盖。
+    for snapshot_id in snapshot_ids {
+        if let Ok(Some(record)) = state
+            .cloud_repo
+            .get_cloud_snapshot(BAIDU_ACCOUNT_ID, &snapshot_id)
+        {
+            if matches!(
+                record.sync_status,
+                CloudSyncStatus::Uploaded | CloudSyncStatus::Downloaded
+            ) {
+                // 这是本地缓存修正，不应让它阻塞已经完成的本地删除；云端刷新
+                // 仍会在下次发现时再次自愈。
+                let _ = state.cloud_repo.update_cloud_snapshot_status(
+                    BAIDU_ACCOUNT_ID,
+                    &snapshot_id,
+                    CloudSyncStatus::RemoteOnly,
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Serialize)]

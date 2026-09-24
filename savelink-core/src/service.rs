@@ -632,19 +632,13 @@ impl RestoreService {
 
 fn snapshot_save_sources(configured: &[SaveSource], source_count: u32) -> Result<Vec<SaveSource>> {
     let expected = source_count.max(1) as usize;
-    if expected == 1 {
-        return configured
-            .first()
-            .cloned()
-            .map(|source| vec![source])
-            .ok_or_else(|| SaveLinkError::Io("game has no save path".into()));
-    }
-    if configured.len() != expected {
+    if configured.len() < expected {
         return Err(SaveLinkError::Io(format!(
             "该快照包含 {expected} 个存档目录，请先为这台电脑绑定全部目录"
         )));
     }
-    Ok(configured.to_vec())
+    // 新增存档来源后，旧快照仍按原有顺序恢复到前 N 个来源；新增来源保持不变。
+    Ok(configured[..expected].to_vec())
 }
 
 #[derive(Debug)]

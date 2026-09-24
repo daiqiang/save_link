@@ -213,6 +213,42 @@ fn o5_overlapping_sources_are_rejected_before_scanning() {
 }
 
 #[test]
+fn o3b_old_one_source_snapshot_only_restores_the_first_newly_expanded_source() {
+    let h = Harness::new(&[("save.dat", b"OLD-TARGET")]);
+    let target = match h
+        .snapshots()
+        .create_snapshot(&h.game_id, Some("单目录旧快照".into()), Reason::Manual)
+        .unwrap()
+    {
+        CreateOutcome::Created(snapshot) => snapshot,
+        other => panic!("expected created snapshot, got {other:?}"),
+    };
+    assert_eq!(target.source_count, 1);
+
+    let second = h.tmp.child("later-added-source");
+    write_files(&second, &[("options.json", b"KEEP-THIS")]);
+    let mut game = h.repo.get_game(&h.game_id).unwrap().unwrap();
+    game.save_paths.push(second.clone());
+    h.repo.update_game(game).unwrap();
+    h.set_save_dir(&[("save.dat", b"CURRENT")]);
+
+    let outcome = h
+        .restore()
+        .restore_snapshot(&h.game_id, &target.id, &no_progress())
+        .unwrap();
+    assert!(outcome.restored);
+    assert_eq!(
+        fs::read(h.save_dir.join("save.dat")).unwrap(),
+        b"OLD-TARGET"
+    );
+    assert_eq!(
+        fs::read(second.join("options.json")).unwrap(),
+        b"KEEP-THIS",
+        "旧快照不应覆盖后来新增的第二个来源"
+    );
+}
+
+#[test]
 fn o6_path_overlap_treats_windows_verbatim_prefix_as_the_same_path() {
     let regular = PathBuf::from(r"C:\Games\Arcane Trigger\Processes");
     let verbatim = PathBuf::from(r"\\?\C:\Games\Arcane Trigger\Processes");

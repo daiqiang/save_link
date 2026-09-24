@@ -461,6 +461,8 @@ last_scanned_at     TEXT
 PRIMARY KEY (account_id, cloud_game_id)
 ```
 
+同一账号下允许多个 `cloud_game_id` 关联到同一个 `local_game_id`，用于保留跨设备形成的历史云分组。每个本机游戏最多只有一条 `sync_enabled = 1` 的主绑定；新快照只上传到主绑定，其他绑定保持可浏览、可下载但不承担后续自动写入。
+
 上传现有本机游戏时，v1 默认令 `cloud_game_id = games.id`。新设备首次拉取云端游戏时，也优先使用 `cloud_game_id` 创建同 ID 的本机游戏记录。
 
 如果本机已经存在同 ID 游戏：

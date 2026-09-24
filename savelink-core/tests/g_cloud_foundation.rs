@@ -461,3 +461,48 @@ fn g8_v010_cloud_status_table_is_migrated_without_losing_records() {
         CloudSyncStatus::DeletePending
     );
 }
+
+#[test]
+fn g9_legacy_binding_table_allows_one_primary_and_multiple_historical_groups_after_migration() {
+    let tmp = TempDir::new();
+    let db_path = tmp.path().join("legacy-cloud-game-bindings.db");
+    {
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE cloud_game_bindings (
+                account_id TEXT NOT NULL,
+                cloud_game_id TEXT NOT NULL,
+                local_game_id TEXT NOT NULL,
+                remote_revision INTEGER NOT NULL DEFAULT 0,
+                sync_enabled INTEGER NOT NULL DEFAULT 1,
+                last_scanned_at TEXT,
+                PRIMARY KEY (account_id, cloud_game_id),
+                UNIQUE(account_id, local_game_id)
+             );
+             INSERT INTO cloud_game_bindings VALUES
+                ('account_baidu_1', 'primary_cloud', 'local_game', 1, 1, NULL);",
+        )
+        .unwrap();
+    }
+
+    let repo = SqliteRepo::open(&db_path).expect("旧云游戏绑定表应完成迁移");
+    repo.upsert_cloud_game_binding(CloudGameBinding {
+        account_id: "account_baidu_1".into(),
+        cloud_game_id: "historical_cloud".into(),
+        local_game_id: "local_game".into(),
+        remote_revision: 1,
+        sync_enabled: false,
+        last_scanned_at: None,
+    })
+    .expect("迁移后应允许同一本机游戏保留历史云分组");
+
+    let bindings = repo.list_cloud_game_bindings("account_baidu_1").unwrap();
+    assert_eq!(bindings.len(), 2);
+    assert_eq!(
+        repo.get_cloud_game_binding_by_local_game("account_baidu_1", "local_game")
+            .unwrap()
+            .unwrap()
+            .cloud_game_id,
+        "primary_cloud"
+    );
+}

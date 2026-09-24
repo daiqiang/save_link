@@ -4,7 +4,8 @@ use savelink_core::cloud_archive::{
     CloudArchiveCodec, CloudArchiveError, SnapshotContentExpectation, ZipCloudArchiveCodec,
 };
 use savelink_core::cloud_model::{
-    CloudAccount, CloudMetadataSyncStatus, CloudSnapshotMetadataState, CloudSyncStatus,
+    CloudAccount, CloudGameBinding, CloudMetadataSyncStatus, CloudSnapshotMetadataState,
+    CloudSyncStatus,
 };
 use savelink_core::cloud_protocol::{
     game_path, snapshot_metadata_path, snapshot_ok_path, snapshot_zip_path, CloudGameDocument,
@@ -23,9 +24,10 @@ use savelink_core::model::{
     EmulatorGameIdentity, Game, GameLaunchBinding, Reason, RomIdentity, ScanResult, Snapshot,
     SnapshotStatus,
 };
-use savelink_core::repo::{Clock, Repository};
+use savelink_core::repo::{Clock, Repository, SeqIdGen};
 use savelink_core::scan;
 use savelink_core::sqlite_repo::SqliteRepo;
+use savelink_core::service::SnapshotService;
 use savelink_core::store::{FsStore, SnapshotStore};
 use savelink_core::testkit::TempDir;
 use std::fs;
@@ -1348,6 +1350,474 @@ fn h24_incremental_discovery_still_rejects_a_missing_zip() {
         service.discover_remote_catalog(),
         Err(CloudSyncError::RemoteZipMissing(id)) if id == "snap_1"
     ));
+}
+
+#[test]
+fn h25_cloud_group_can_replace_a_placeholder_and_become_an_existing_games_upload_target() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    seed_multi_source_device_a(&device_a);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    let home_save = device_b.root.join("home-save");
+    let home_options = device_b.root.join("home-options");
+    write_files(&home_save, &[("profile/save.dat", b"HOME")]);
+    write_files(&home_options, &[("persist.options.json", b"{}")]);
+    let launch_binding = GameLaunchBinding::executable(
+        device_b.root.join("Darkest.exe"),
+        device_b.root.join("Darkest Dungeon"),
+    );
+    device_b
+        .repo
+        .insert_game(Game {
+            id: "home_game".into(),
+            name: "Darkest Dungeon".into(),
+            icon: Some("kept-icon".into()),
+            repo_path: PathBuf::new(),
+            save_paths: vec![home_save.clone()],
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
+            launch_binding: Some(launch_binding.clone()),
+            created_at: "2026-07-14T17:00:00Z".into(),
+            updated_at: "2026-07-14T17:00:00Z".into(),
+        })
+        .unwrap();
+    let home_scan = scan::fingerprint_dir(&home_save).unwrap();
+    let home_stored = device_b
+        .store
+        .create("home_snap", std::slice::from_ref(&home_save), &home_scan)
+        .unwrap();
+    device_b
+        .repo
+        .insert_snapshot(Snapshot {
+            id: "home_snap".into(),
+            game_id: "home_game".into(),
+            created_at: "2026-07-14T17:10:00Z".into(),
+            note: Some("家里的旧快照".into()),
+            note_updated_at: "2026-07-14T17:10:00Z".into(),
+            reason: Reason::Manual,
+            locked: false,
+            locked_updated_at: "2026-07-14T17:10:00Z".into(),
+            display_zone: savelink_core::model::SnapshotDisplayZone::Normal,
+            file_count: home_scan.file_count,
+            total_size: home_scan.total_size,
+            source_count: 1,
+            content_hash: home_scan.content_hash,
+            storage_key: home_stored.storage_key,
+            status: SnapshotStatus::Complete,
+        })
+        .unwrap();
+    device_b
+        .repo
+        .upsert_cloud_game_binding(CloudGameBinding {
+            account_id: "account_1".into(),
+            cloud_game_id: "home_cloud".into(),
+            local_game_id: "home_game".into(),
+            remote_revision: 1,
+            sync_enabled: true,
+            last_scanned_at: None,
+        })
+        .unwrap();
+    device_b
+        .service
+        .upload_snapshot("home_game", "home_snap")
+        .unwrap();
+
+    device_b.service.discover_remote_catalog().unwrap();
+    device_b.service.receive_remote_snapshot("snap_1").unwrap();
+    assert!(device_b.repo.get_game("game_1").unwrap().is_some());
+
+    let outcome = device_b
+        .service
+        .associate_cloud_game(
+            "game_1",
+            "home_game",
+            vec![home_save.clone(), home_options.clone()],
+        )
+        .unwrap();
+    assert_eq!(outcome.local_game_id, "home_game");
+    assert_eq!(outcome.moved_snapshot_count, 1);
+    assert_eq!(
+        outcome.removed_placeholder_game_id.as_deref(),
+        Some("game_1")
+    );
+    assert!(device_b.repo.get_game("game_1").unwrap().is_none());
+
+    let merged = device_b.repo.get_game("home_game").unwrap().unwrap();
+    assert_eq!(merged.name, "Darkest Dungeon");
+    assert_eq!(merged.icon.as_deref(), Some("kept-icon"));
+    assert_eq!(merged.launch_binding, Some(launch_binding));
+    assert_eq!(
+        merged.save_paths,
+        vec![home_save.clone(), home_options.clone()]
+    );
+    assert_eq!(
+        device_b
+            .repo
+            .get_snapshot("home_snap")
+            .unwrap()
+            .unwrap()
+            .game_id,
+        "home_game"
+    );
+    assert_eq!(
+        device_b
+            .repo
+            .get_snapshot("snap_1")
+            .unwrap()
+            .unwrap()
+            .game_id,
+        "home_game"
+    );
+    let historical_binding = device_b
+        .repo
+        .get_cloud_game_binding("account_1", "home_cloud")
+        .unwrap()
+        .unwrap();
+    assert_eq!(historical_binding.local_game_id, "home_game");
+    assert!(!historical_binding.sync_enabled);
+    let primary_binding = device_b
+        .repo
+        .get_cloud_game_binding("account_1", "game_1")
+        .unwrap()
+        .unwrap();
+    assert_eq!(primary_binding.local_game_id, "home_game");
+    assert!(primary_binding.sync_enabled);
+    assert_eq!(
+        device_b
+            .repo
+            .get_cloud_game_binding_by_local_game("account_1", "home_game")
+            .unwrap()
+            .unwrap()
+            .cloud_game_id,
+        "game_1"
+    );
+
+    let refreshed = device_b.service.discover_remote_catalog().unwrap();
+    let old_group = refreshed
+        .iter()
+        .find(|entry| entry.snapshot.snapshot_id == "home_snap")
+        .unwrap();
+    assert_eq!(old_group.local_game_id.as_deref(), Some("home_game"));
+    assert!(!old_group.is_primary);
+    let primary_group = refreshed
+        .iter()
+        .find(|entry| entry.snapshot.snapshot_id == "snap_1")
+        .unwrap();
+    assert_eq!(primary_group.local_game_id.as_deref(), Some("home_game"));
+    assert!(primary_group.is_primary);
+    assert_eq!(
+        device_b
+            .repo
+            .list_games()
+            .unwrap()
+            .into_iter()
+            .filter(|game| game.name == "Darkest Dungeon")
+            .count(),
+        1,
+        "历史云分组刷新后不应重新生成重复游戏"
+    );
+
+    write_files(&home_save, &[("profile/save.dat", b"FUTURE")]);
+    write_files(
+        &home_options,
+        &[("persist.options.json", b"{\"volume\":1}")],
+    );
+    let future_sources = vec![home_save, home_options];
+    let future_scan = scan::scan(&future_sources).unwrap();
+    let future_stored = device_b
+        .store
+        .create("future_snap", &future_sources, &future_scan)
+        .unwrap();
+    device_b
+        .repo
+        .insert_snapshot(Snapshot {
+            id: "future_snap".into(),
+            game_id: "home_game".into(),
+            created_at: "2026-07-14T19:00:00Z".into(),
+            note: None,
+            note_updated_at: "2026-07-14T19:00:00Z".into(),
+            reason: Reason::Manual,
+            locked: false,
+            locked_updated_at: "2026-07-14T19:00:00Z".into(),
+            display_zone: savelink_core::model::SnapshotDisplayZone::Normal,
+            file_count: future_scan.file_count,
+            total_size: future_scan.total_size,
+            source_count: 2,
+            content_hash: future_scan.content_hash,
+            storage_key: future_stored.storage_key,
+            status: SnapshotStatus::Complete,
+        })
+        .unwrap();
+    device_b
+        .service
+        .upload_snapshot("home_game", "future_snap")
+        .unwrap();
+    assert!(cloud
+        .stat_file(&snapshot_ok_path("game_1", "future_snap").unwrap())
+        .unwrap()
+        .is_some());
+    assert!(cloud
+        .stat_file(&snapshot_ok_path("home_cloud", "future_snap").unwrap())
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn h26_association_rejects_paths_owned_by_an_unrelated_game_without_partial_changes() {
+    let (_tmp, _cloud, _codec, device_a, device_b) = setup();
+    seed_multi_source_device_a(&device_a);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+    device_b.service.discover_remote_catalog().unwrap();
+    device_b.service.receive_remote_snapshot("snap_1").unwrap();
+
+    let target_save = device_b.root.join("target-save");
+    let occupied = device_b.root.join("occupied-save");
+    write_files(&target_save, &[("save.dat", b"TARGET")]);
+    write_files(&occupied, &[("other.dat", b"OTHER")]);
+    for (id, name, save_path) in [
+        ("target_game", "Target", target_save.clone()),
+        ("other_game", "Other", occupied.clone()),
+    ] {
+        device_b
+            .repo
+            .insert_game(Game {
+                id: id.into(),
+                name: name.into(),
+                icon: None,
+                repo_path: PathBuf::new(),
+                save_paths: vec![save_path],
+                save_sources: Vec::new(),
+                emulator_identity: None,
+                emulator_binding: None,
+                launch_binding: None,
+                created_at: "2026-07-14T17:00:00Z".into(),
+                updated_at: "2026-07-14T17:00:00Z".into(),
+            })
+            .unwrap();
+    }
+
+    let error = device_b
+        .service
+        .associate_cloud_game("game_1", "target_game", vec![target_save, occupied])
+        .unwrap_err();
+    assert_eq!(error.code(), "cloud_state_invalid");
+    assert_eq!(
+        device_b
+            .repo
+            .get_cloud_game_binding("account_1", "game_1")
+            .unwrap()
+            .unwrap()
+            .local_game_id,
+        "game_1"
+    );
+    assert_eq!(
+        device_b
+            .repo
+            .get_snapshot("snap_1")
+            .unwrap()
+            .unwrap()
+            .game_id,
+        "game_1"
+    );
+    assert_eq!(
+        device_b
+            .repo
+            .get_game("target_game")
+            .unwrap()
+            .unwrap()
+            .save_paths
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn h27_association_uses_current_local_paths_not_historical_snapshot_source_count() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    seed_multi_source_device_a(&device_a);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    device_b.service.discover_remote_catalog().unwrap();
+    device_b.service.receive_remote_snapshot("snap_1").unwrap();
+
+    let target_save = device_b.root.join("current-single-save");
+    write_files(&target_save, &[("profile/save.dat", b"HOME-SINGLE")]);
+    device_b
+        .repo
+        .insert_game(Game {
+            id: "target_game".into(),
+            name: "Darkest Dungeon".into(),
+            icon: None,
+            repo_path: PathBuf::new(),
+            save_paths: vec![target_save.clone()],
+            save_sources: Vec::new(),
+            emulator_identity: None,
+            emulator_binding: None,
+            launch_binding: None,
+            created_at: "2026-07-14T17:00:00Z".into(),
+            updated_at: "2026-07-14T17:00:00Z".into(),
+        })
+        .unwrap();
+
+    device_b
+        .service
+        .associate_cloud_game("game_1", "target_game", vec![target_save.clone()])
+        .unwrap();
+
+    let old_snapshot = device_b.repo.get_snapshot("snap_1").unwrap().unwrap();
+    assert_eq!(old_snapshot.game_id, "target_game");
+    assert_eq!(old_snapshot.source_count, 2);
+    assert_eq!(
+        device_b
+            .repo
+            .get_game("target_game")
+            .unwrap()
+            .unwrap()
+            .save_paths,
+        vec![target_save.clone()]
+    );
+
+    write_files(&target_save, &[("profile/save.dat", b"NEW-SINGLE-SAVE")]);
+    let new_scan = scan::fingerprint_dir(&target_save).unwrap();
+    let new_stored = device_b
+        .store
+        .create(
+            "single_source_snap",
+            std::slice::from_ref(&target_save),
+            &new_scan,
+        )
+        .unwrap();
+    device_b
+        .repo
+        .insert_snapshot(Snapshot {
+            id: "single_source_snap".into(),
+            game_id: "target_game".into(),
+            created_at: "2026-07-14T20:00:00Z".into(),
+            note: None,
+            note_updated_at: "2026-07-14T20:00:00Z".into(),
+            reason: Reason::Manual,
+            locked: false,
+            locked_updated_at: "2026-07-14T20:00:00Z".into(),
+            display_zone: savelink_core::model::SnapshotDisplayZone::Normal,
+            file_count: new_scan.file_count,
+            total_size: new_scan.total_size,
+            source_count: 1,
+            content_hash: new_scan.content_hash,
+            storage_key: new_stored.storage_key,
+            status: SnapshotStatus::Complete,
+        })
+        .unwrap();
+    device_b
+        .service
+        .upload_snapshot("target_game", "single_source_snap")
+        .unwrap();
+
+    assert!(cloud
+        .stat_file(&snapshot_ok_path("game_1", "single_source_snap").unwrap())
+        .unwrap()
+        .is_some());
+    assert!(cloud
+        .stat_file(&snapshot_ok_path("target_game", "single_source_snap").unwrap())
+        .unwrap()
+        .is_none());
+}
+
+#[test]
+fn h28_deleted_local_game_reconciles_cached_download_and_can_download_again() {
+    let (_tmp, cloud, _codec, device_a, device_b) = setup();
+    seed_device_a(&device_a, &[("save.dat", b"DARKEST-DUNGEON")]);
+    device_a
+        .service
+        .upload_snapshot("game_1", "snap_1")
+        .unwrap();
+
+    device_b.service.discover_remote_catalog().unwrap();
+    assert_eq!(
+        device_b.service.receive_remote_snapshot("snap_1").unwrap(),
+        ReceiveOutcome::Downloaded
+    );
+    assert_eq!(
+        device_b
+            .repo
+            .get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap()
+            .sync_status,
+        CloudSyncStatus::Downloaded
+    );
+
+    let remote_zip = snapshot_zip_path("game_1", "snap_1").unwrap();
+    let remote_ok = snapshot_ok_path("game_1", "snap_1").unwrap();
+    assert!(cloud.stat_file(&remote_zip).unwrap().is_some());
+    assert!(cloud.stat_file(&remote_ok).unwrap().is_some());
+
+    // 删除本机游戏只清理本地仓库，不能删除百度网盘（这里是 Fake 云端）文件。
+    SnapshotService::new(
+        device_b.repo.clone(),
+        device_b.store.clone(),
+        Arc::new(FixedClock("2026-07-14T18:30:00+08:00")),
+        Arc::new(SeqIdGen::new()),
+    )
+    .delete_game("game_1")
+    .unwrap();
+    assert!(device_b.repo.get_game("game_1").unwrap().is_none());
+    assert!(device_b.repo.get_snapshot("snap_1").unwrap().is_none());
+    assert_eq!(
+        device_b
+            .repo
+            .get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap()
+            .sync_status,
+        CloudSyncStatus::Downloaded,
+        "核心删除服务保留云缓存，刷新时应负责自愈"
+    );
+
+    let refreshed = device_b.service.discover_remote_catalog().unwrap();
+    let discovered = refreshed
+        .iter()
+        .find(|entry| entry.snapshot.snapshot_id == "snap_1")
+        .unwrap();
+    assert_eq!(discovered.snapshot.sync_status, CloudSyncStatus::RemoteOnly);
+    assert_eq!(
+        device_b
+            .repo
+            .get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap()
+            .sync_status,
+        CloudSyncStatus::RemoteOnly
+    );
+    assert!(cloud.stat_file(&remote_zip).unwrap().is_some());
+    assert!(cloud.stat_file(&remote_ok).unwrap().is_some());
+
+    assert_eq!(
+        device_b.service.receive_remote_snapshot("snap_1").unwrap(),
+        ReceiveOutcome::Downloaded
+    );
+    assert!(device_b.repo.get_game("game_1").unwrap().is_some());
+    assert!(device_b.repo.get_snapshot("snap_1").unwrap().is_some());
+    assert_eq!(
+        device_b
+            .repo
+            .get_cloud_snapshot("account_1", "snap_1")
+            .unwrap()
+            .unwrap()
+            .sync_status,
+        CloudSyncStatus::Downloaded
+    );
+    assert!(cloud.stat_file(&remote_zip).unwrap().is_some());
+    assert!(cloud.stat_file(&remote_ok).unwrap().is_some());
 }
 
 fn write_files(root: &Path, files: &[(&str, &[u8])]) {

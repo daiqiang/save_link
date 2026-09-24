@@ -16,14 +16,24 @@ interface Props {
 type ScanState =
   | { status: "idle" | "loading"; path: string }
   | { status: "done"; path: string; result: ScanResult }
-  | { status: "error"; path: string };
+  | { status: "error"; path: string; message: string; missing: boolean };
+
+function readableError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function isMissingDirectory(message: string): boolean {
+  return /目录不存在|找不到|not found|cannot find/i.test(message);
+}
 
 export function BindSavePathDialog({ game, sourceCount, onClose, onBound }: Props) {
   const toast = useToast();
   const requiredCount = Math.max(1, sourceCount);
-  const [paths, setPaths] = useState(() => Array.from({ length: requiredCount }, () => ""));
+  const pathCount = Math.max(requiredCount, game.save_paths.length);
+  const [paths, setPaths] = useState(() =>
+    Array.from({ length: pathCount }, (_, index) => game.save_paths[index] ?? ""));
   const [scans, setScans] = useState<ScanState[]>(() =>
-    Array.from({ length: requiredCount }, () => ({ status: "idle", path: "" })),
+    Array.from({ length: pathCount }, () => ({ status: "idle", path: "" })),
   );
   const [saving, setSaving] = useState(false);
 
@@ -44,7 +54,7 @@ export function BindSavePathDialog({ game, sourceCount, onClose, onBound }: Prop
     const value = candidate.trim();
     if (!value) {
       setScans((current) => current.map((scan, currentIndex) => currentIndex === index
-        ? { status: "error", path: value }
+        ? { status: "error", path: value, message: "存档目录不能为空", missing: false }
         : scan));
       return;
     }
@@ -56,10 +66,23 @@ export function BindSavePathDialog({ game, sourceCount, onClose, onBound }: Prop
       setScans((current) => current.map((scan, currentIndex) => currentIndex === index
         ? { status: "done", path: value, result }
         : scan));
-    } catch {
+    } catch (error) {
+      const message = readableError(error);
       setScans((current) => current.map((scan, currentIndex) => currentIndex === index
-        ? { status: "error", path: value }
+        ? { status: "error", path: value, message, missing: isMissingDirectory(message) }
         : scan));
+    }
+  }
+
+  async function createDir(index: number) {
+    const path = normalizedPaths[index];
+    if (!path) return;
+    try {
+      await api.createSaveDirectory(path);
+      await inspectPath(index, path);
+      toast("存档目录已创建", "ok");
+    } catch (error) {
+      toast(readableError(error), "err");
     }
   }
 
@@ -111,7 +134,8 @@ export function BindSavePathDialog({ game, sourceCount, onClose, onBound }: Prop
                     <div className="save-path-edit-row">
                       <input className="input path-mono" value={path} autoFocus={index === 0}
                         placeholder="选择或输入这台电脑上的存档目录"
-                        onChange={(event) => updatePath(index, event.target.value)} />
+                        onChange={(event) => updatePath(index, event.target.value)}
+                        onBlur={() => scan.status === "idle" && normalizedPaths[index] && void inspectPath(index)} />
                       <button className="iconbtn" title="选择目录" onClick={() => pickDir(index)}
                         disabled={saving || scan.status === "loading"}><Icon.Folder /></button>
                       <button className="iconbtn" title="测试读取" onClick={() => inspectPath(index)}
@@ -120,7 +144,10 @@ export function BindSavePathDialog({ game, sourceCount, onClose, onBound }: Prop
                       </button>
                     </div>
                     {scan.status === "error" && (
-                      <div className="hint err"><Icon.Alert /><span>无法读取该目录，请重新选择。</span></div>
+                      <div className="path-error-row">
+                        <div className="hint err"><Icon.Alert /><span>{scan.message}</span></div>
+                        {scan.missing && <button className="btn sm" onClick={() => createDir(index)} disabled={saving}>创建目录</button>}
+                      </div>
                     )}
                     {scan.status === "done" && (
                       <div className="hint ok"><Icon.CheckCircle /><span>{scan.result.file_count === 0

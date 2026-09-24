@@ -2,8 +2,8 @@
 
 use crate::cloud_archive::{CloudArchiveCodec, CloudArchiveError, SnapshotContentExpectation};
 use crate::cloud_model::{
-    CloudGameBinding, CloudMetadataSyncStatus, CloudSnapshotMetadataState, CloudSnapshotRecord,
-    CloudSyncStatus,
+    CloudGameAssociationOutcome, CloudGameBinding, CloudMetadataSyncStatus,
+    CloudSnapshotMetadataState, CloudSnapshotRecord, CloudSyncStatus,
 };
 use crate::cloud_protocol::{
     archive_layout_version, content_hash_algorithm, game_path, games_path, manifest_path,
@@ -130,6 +130,8 @@ pub enum MetadataSyncOutcome {
 pub struct CloudSnapshotDiscovery {
     pub cloud_game_id: String,
     pub game_name: String,
+    pub local_game_id: Option<String>,
+    pub is_primary: bool,
     pub snapshot: CloudSnapshotRecord,
 }
 
@@ -375,8 +377,26 @@ where
         &self,
         cloud_game_id: &str,
     ) -> CloudSyncResult<Vec<CloudSnapshotDiscovery>> {
-        let game_name = match self.repo.get_game(cloud_game_id)? {
-            Some(game) => game.name,
+        let binding = self
+            .repo
+            .get_cloud_game_binding(&self.account_id, cloud_game_id)?;
+        let (local_game_id, local_game_name, is_primary) = match binding {
+            Some(binding) => match self.repo.get_game(&binding.local_game_id)? {
+                Some(game) => (
+                    Some(binding.local_game_id),
+                    Some(game.name),
+                    binding.sync_enabled,
+                ),
+                None => {
+                    self.repo
+                        .delete_cloud_game_binding(&self.account_id, cloud_game_id)?;
+                    (None, None, false)
+                }
+            },
+            None => (None, None, false),
+        };
+        let game_name = match local_game_name {
+            Some(name) => name,
             None => self.read_game_document(cloud_game_id)?.name,
         };
         let snapshot_entries = match self
@@ -432,7 +452,7 @@ where
                 let metadata_changed = remote_metadata_changed(&record, metadata_modified_at);
                 let should_record_observed_time =
                     record.remote_metadata_modified_at != metadata_modified_at;
-                let local_exists = self.repo.get_snapshot(&snapshot_id)?.is_some();
+                let local_exists = self.reconcile_cached_local_status(&mut record)?;
                 if local_exists
                     && (record.metadata_sync_status != CloudMetadataSyncStatus::Synced
                         || metadata_changed)
@@ -469,6 +489,8 @@ where
                 discovered.push(CloudSnapshotDiscovery {
                     cloud_game_id: cloud_game_id.into(),
                     game_name: game_name.clone(),
+                    local_game_id: local_game_id.clone(),
+                    is_primary,
                     snapshot: record,
                 });
                 continue;
@@ -507,6 +529,8 @@ where
             discovered.push(CloudSnapshotDiscovery {
                 cloud_game_id: cloud_game_id.into(),
                 game_name: game_name.clone(),
+                local_game_id: local_game_id.clone(),
+                is_primary,
                 snapshot: record,
             });
         }
@@ -520,6 +544,87 @@ where
             self.cleanup_operation_dir("download", snapshot_id);
         }
         result
+    }
+
+    /// 将一个云端游戏分组设为现有本机游戏的主云分组。
+    ///
+    /// 该操作只调整本机元数据；不会删除或合并任何云端目录，也不会恢复存档。
+    pub fn associate_cloud_game(
+        &self,
+        cloud_game_id: &str,
+        local_game_id: &str,
+        save_paths: Vec<PathBuf>,
+    ) -> CloudSyncResult<CloudGameAssociationOutcome> {
+        crate::cloud_protocol::validate_id(cloud_game_id, "cloud_game_id")?;
+        crate::cloud_protocol::validate_id(local_game_id, "local_game_id")?;
+        let document = self.read_game_document(cloud_game_id)?;
+        let target = self
+            .repo
+            .get_game(local_game_id)?
+            .ok_or_else(|| CloudSyncError::InvalidState("要关联的本机游戏不存在".into()))?;
+        if target.emulator_identity.is_some()
+            || target.emulator_binding.is_some()
+            || document.emulator_identity.is_some()
+        {
+            return Err(CloudSyncError::InvalidState(
+                "模拟器游戏请通过模拟器扫描完成跨设备绑定".into(),
+            ));
+        }
+        if save_paths.is_empty() {
+            return Err(SaveLinkError::SaveSourcesNotConfigured.into());
+        }
+        scan::validate_save_paths(&save_paths)?;
+        // 历史 source_count 描述快照格式，不代表当前设备必须绑定的目录数。
+        if self
+            .repo
+            .list_cloud_snapshots(&self.account_id, cloud_game_id)?
+            .is_empty()
+        {
+            return Err(CloudSyncError::InvalidState(
+                "该云端游戏尚无可关联的快照，请先刷新".into(),
+            ));
+        }
+
+        let existing_binding = self
+            .repo
+            .get_cloud_game_binding(&self.account_id, cloud_game_id)?;
+        let placeholder_id = existing_binding
+            .as_ref()
+            .map(|binding| binding.local_game_id.as_str())
+            .filter(|id| *id != local_game_id)
+            .or((cloud_game_id != local_game_id).then_some(cloud_game_id));
+        for game in self.repo.list_games()? {
+            if game.id == local_game_id || placeholder_id == Some(game.id.as_str()) {
+                continue;
+            }
+            if let Some((saved, candidate)) = game.save_paths.iter().find_map(|saved| {
+                save_paths
+                    .iter()
+                    .find(|candidate| scan::save_paths_overlap(saved, candidate))
+                    .map(|candidate| (saved, candidate))
+            }) {
+                return Err(CloudSyncError::InvalidState(format!(
+                    "存档目录与游戏“{}”冲突：{} 与 {}",
+                    game.name,
+                    saved.display(),
+                    candidate.display()
+                )));
+            }
+        }
+
+        let now = self.now_timestamp()?;
+        Ok(self.repo.associate_cloud_game(
+            CloudGameBinding {
+                account_id: self.account_id.clone(),
+                cloud_game_id: cloud_game_id.into(),
+                local_game_id: local_game_id.into(),
+                remote_revision: document.revision,
+                sync_enabled: true,
+                last_scanned_at: Some(now.clone()),
+            },
+            save_paths,
+            &now,
+        )?)
     }
 
     /// 删除保留策略淘汰的未锁定快照。先撤销云端发布，再删除本机数据。
@@ -628,12 +733,17 @@ where
             return Err(SaveLinkError::SnapshotCorrupt.into());
         }
 
-        self.ensure_game_document(&game)?;
+        let cloud_game_id = self
+            .repo
+            .get_cloud_game_binding_by_local_game(&self.account_id, &game.id)?
+            .map(|binding| binding.cloud_game_id)
+            .unwrap_or_else(|| game.id.clone());
+        self.ensure_game_document(&game, &cloud_game_id)?;
         let normalized_created_at = normalize_timestamp(&snapshot.created_at)?;
-        let remote_ok = snapshot_ok_path(game_id, snapshot_id)?;
+        let remote_ok = snapshot_ok_path(&cloud_game_id, snapshot_id)?;
         if self.cloud_store.stat_file(&remote_ok)?.is_some() {
-            let existing = self.read_snapshot_commit(game_id, snapshot_id)?;
-            if !commit_matches_local(&existing, &snapshot, &normalized_created_at) {
+            let existing = self.read_snapshot_commit(&cloud_game_id, snapshot_id)?;
+            if !commit_matches_local(&existing, &snapshot, &normalized_created_at, &cloud_game_id) {
                 return Err(CloudSyncError::SnapshotIdConflict(snapshot_id.into()));
             }
             self.ensure_remote_zip_exists(&existing)?;
@@ -666,7 +776,7 @@ where
             schema_version: 1,
             object_type: "snapshot_commit".into(),
             snapshot_id: snapshot.id.clone(),
-            cloud_game_id: game.id.clone(),
+            cloud_game_id: cloud_game_id.clone(),
             created_at: normalized_created_at,
             reason: reason_to_protocol(snapshot.reason).into(),
             note: snapshot.note.clone(),
@@ -688,7 +798,7 @@ where
             published_at: self.now_timestamp()?,
             created_by_device_id: self.device_id.clone(),
         };
-        commit.validate(game_id, snapshot_id)?;
+        commit.validate(&cloud_game_id, snapshot_id)?;
         let local_metadata = metadata_from_snapshot(&snapshot)?;
         self.repo.upsert_cloud_snapshot(record_from_commit(
             &self.account_id,
@@ -701,7 +811,7 @@ where
             None,
         ))?;
 
-        let remote_zip = snapshot_zip_path(game_id, snapshot_id)?;
+        let remote_zip = snapshot_zip_path(&cloud_game_id, snapshot_id)?;
         self.cloud_store
             .put_file(&remote_zip, &archive_path, PutMode::Overwrite)?;
         let remote_zip_info = self
@@ -720,14 +830,14 @@ where
         {
             Ok(_) => {}
             Err(CloudStoreError::AlreadyExists(_)) => {
-                let existing = self.read_snapshot_commit(game_id, snapshot_id)?;
+                let existing = self.read_snapshot_commit(&cloud_game_id, snapshot_id)?;
                 if !existing.same_logical_snapshot(&commit) {
                     return Err(CloudSyncError::SnapshotIdConflict(snapshot_id.into()));
                 }
             }
             Err(error) => return Err(error.into()),
         }
-        let published = self.read_snapshot_commit(game_id, snapshot_id)?;
+        let published = self.read_snapshot_commit(&cloud_game_id, snapshot_id)?;
         if published != commit {
             return Err(CloudSyncError::SnapshotIdConflict(snapshot_id.into()));
         }
@@ -760,7 +870,7 @@ where
         self.ensure_remote_zip_exists(&commit)?;
 
         if let Some(local) = self.repo.get_snapshot(snapshot_id)? {
-            if !snapshot_matches_commit(&local, &commit)? {
+            if !self.snapshot_matches_bound_commit(&local, &commit)? {
                 return Err(CloudSyncError::SnapshotIdConflict(snapshot_id.into()));
             }
             if !self.snapshot_store.verify(&local.storage_key)? {
@@ -874,10 +984,14 @@ where
         Ok(CloudManifest::from_json(&bytes)?)
     }
 
-    fn ensure_game_document(&self, game: &Game) -> CloudSyncResult<CloudGameDocument> {
-        let remote_path = game_path(&game.id)?;
+    fn ensure_game_document(
+        &self,
+        game: &Game,
+        cloud_game_id: &str,
+    ) -> CloudSyncResult<CloudGameDocument> {
+        let remote_path = game_path(cloud_game_id)?;
         if self.cloud_store.stat_file(&remote_path)?.is_some() {
-            let existing = self.read_game_document(&game.id)?;
+            let existing = self.read_game_document(cloud_game_id)?;
             if existing.emulator_identity.is_none() && game.emulator_identity.is_some() {
                 let mut upgraded = existing.clone();
                 upgraded.emulator_identity = game.emulator_identity.clone();
@@ -886,27 +1000,27 @@ where
                 })?;
                 upgraded.updated_at = self.now_timestamp()?;
                 upgraded.updated_by_device_id = self.device_id.clone();
-                let local_path = self.metadata_temp_path(&format!("game-{}.json", game.id))?;
+                let local_path = self.metadata_temp_path(&format!("game-{cloud_game_id}.json"))?;
                 write_bytes(&local_path, &upgraded.to_json()?)?;
                 self.cloud_store
                     .put_file(&remote_path, &local_path, PutMode::Overwrite)?;
-                let published = self.read_game_document(&game.id)?;
+                let published = self.read_game_document(cloud_game_id)?;
                 if published != upgraded {
                     return Err(CloudSyncError::InvalidState(
                         "云端游戏元数据更新后校验失败".into(),
                     ));
                 }
-                self.upsert_binding(&published)?;
+                self.upsert_binding(&published, &game.id, true)?;
                 return Ok(published);
             }
-            self.upsert_binding(&existing)?;
+            self.upsert_binding(&existing, &game.id, true)?;
             return Ok(existing);
         }
         let created_at = normalize_timestamp(&game.created_at)?;
         let document = CloudGameDocument {
             schema_version: 1,
             object_type: "game".into(),
-            cloud_game_id: game.id.clone(),
+            cloud_game_id: cloud_game_id.into(),
             name: game.name.clone(),
             emulator_identity: game.emulator_identity.clone(),
             created_at,
@@ -914,7 +1028,7 @@ where
             updated_at: normalize_timestamp(&game.updated_at)?,
             updated_by_device_id: self.device_id.clone(),
         };
-        let local_path = self.metadata_temp_path(&format!("game-{}.json", game.id))?;
+        let local_path = self.metadata_temp_path(&format!("game-{cloud_game_id}.json"))?;
         write_bytes(&local_path, &document.to_json()?)?;
         match self
             .cloud_store
@@ -922,13 +1036,13 @@ where
         {
             Ok(_) => {}
             Err(CloudStoreError::AlreadyExists(_)) => {
-                let existing = self.read_game_document(&game.id)?;
-                self.upsert_binding(&existing)?;
+                let existing = self.read_game_document(cloud_game_id)?;
+                self.upsert_binding(&existing, &game.id, true)?;
                 return Ok(existing);
             }
             Err(error) => return Err(error.into()),
         }
-        self.upsert_binding(&document)?;
+        self.upsert_binding(&document, &game.id, true)?;
         Ok(document)
     }
 
@@ -1009,7 +1123,9 @@ where
             .get_snapshot(snapshot_id)?
             .ok_or_else(|| CloudSyncError::InvalidState("本机快照不存在".into()))?;
         let commit = self.read_snapshot_commit(&record.cloud_game_id, snapshot_id)?;
-        if !record_matches_commit(&record, &commit) || !snapshot_matches_commit(&local, &commit)? {
+        if !record_matches_commit(&record, &commit)
+            || !self.snapshot_matches_bound_commit(&local, &commit)?
+        {
             return Err(CloudSyncError::SnapshotIdConflict(snapshot_id.into()));
         }
 
@@ -1079,7 +1195,7 @@ where
         &self,
         commit: &SnapshotCommitDocument,
     ) -> CloudSyncResult<CloudSyncStatus> {
-        if let Some(existing) = self
+        if let Some(mut existing) = self
             .repo
             .get_cloud_snapshot(&self.account_id, &commit.snapshot_id)?
         {
@@ -1088,6 +1204,7 @@ where
                     commit.snapshot_id.clone(),
                 ));
             }
+            self.reconcile_cached_local_status(&mut existing)?;
             if matches!(
                 existing.sync_status,
                 CloudSyncStatus::Uploaded | CloudSyncStatus::Downloaded | CloudSyncStatus::Ignored
@@ -1096,7 +1213,7 @@ where
             }
         }
         if let Some(local) = self.repo.get_snapshot(&commit.snapshot_id)? {
-            if !snapshot_matches_commit(&local, commit)? {
+            if !self.snapshot_matches_bound_commit(&local, commit)? {
                 return Err(CloudSyncError::SnapshotIdConflict(
                     commit.snapshot_id.clone(),
                 ));
@@ -1106,19 +1223,66 @@ where
         Ok(CloudSyncStatus::RemoteOnly)
     }
 
+    /// 云缓存记录可能比本机快照生命周期更长：删除游戏会清掉本地快照，
+    /// 但故意保留远端文件和云端记录供之后重新下载。成功同步状态不能在
+    /// 本地快照已经不存在时继续冒充“已在本机”。删除中的状态由删除流程
+    /// 负责推进，这里不能覆盖它们。
+    fn reconcile_cached_local_status(
+        &self,
+        record: &mut CloudSnapshotRecord,
+    ) -> CloudSyncResult<bool> {
+        let local_exists = self.repo.get_snapshot(&record.snapshot_id)?.is_some();
+        if !local_exists
+            && matches!(
+                record.sync_status,
+                CloudSyncStatus::Uploaded | CloudSyncStatus::Downloaded
+            )
+        {
+            self.repo.update_cloud_snapshot_status(
+                &self.account_id,
+                &record.snapshot_id,
+                CloudSyncStatus::RemoteOnly,
+                None,
+                None,
+            )?;
+            record.sync_status = CloudSyncStatus::RemoteOnly;
+            record.last_synced_at = None;
+            record.last_error_code = None;
+        }
+        Ok(local_exists)
+    }
+
     fn materialize_cloud_game(&self, document: &CloudGameDocument) -> CloudSyncResult<()> {
         let created_at = normalize_timestamp(&document.created_at)?;
         let updated_at = normalize_timestamp(&document.updated_at)?;
-        let binding = self
+        let mut binding = self
             .repo
             .get_cloud_game_binding(&self.account_id, &document.cloud_game_id)?;
-        match self.repo.get_game(&document.cloud_game_id)? {
+        if let Some(existing) = binding.as_ref() {
+            if self.repo.get_game(&existing.local_game_id)?.is_none() {
+                self.repo
+                    .delete_cloud_game_binding(&self.account_id, &document.cloud_game_id)?;
+                binding = None;
+            }
+        }
+        let local_game_id = binding
+            .as_ref()
+            .map(|value| value.local_game_id.clone())
+            .unwrap_or_else(|| document.cloud_game_id.clone());
+        match self.repo.get_game(&local_game_id)? {
             Some(mut game) => {
                 if binding
                     .as_ref()
                     .is_none_or(|value| document.revision > value.remote_revision)
                 {
-                    game.name = document.name.clone();
+                    let is_cloud_placeholder = game.id == document.cloud_game_id
+                        && game.save_paths.is_empty()
+                        && game.save_sources.is_empty()
+                        && game.emulator_binding.is_none()
+                        && game.launch_binding.is_none();
+                    if is_cloud_placeholder {
+                        game.name = document.name.clone();
+                    }
                     if document.emulator_identity.is_some() {
                         game.emulator_identity = document.emulator_identity.clone();
                     }
@@ -1128,7 +1292,7 @@ where
             }
             None => {
                 self.repo.insert_game(Game {
-                    id: document.cloud_game_id.clone(),
+                    id: local_game_id.clone(),
                     name: document.name.clone(),
                     icon: None,
                     repo_path: PathBuf::new(),
@@ -1142,30 +1306,80 @@ where
                 })?;
             }
         }
-        self.upsert_binding(document)
+        let sync_enabled = match binding.as_ref() {
+            Some(binding) => binding.sync_enabled,
+            None => self
+                .repo
+                .get_cloud_game_binding_by_local_game(&self.account_id, &local_game_id)?
+                .is_none(),
+        };
+        self.upsert_binding(document, &local_game_id, sync_enabled)
     }
 
     fn ensure_local_game_from_cloud(&self, cloud_game_id: &str) -> CloudSyncResult<Game> {
+        if let Some(binding) = self
+            .repo
+            .get_cloud_game_binding(&self.account_id, cloud_game_id)?
+        {
+            if let Some(game) = self.repo.get_game(&binding.local_game_id)? {
+                return Ok(game);
+            }
+            self.repo
+                .delete_cloud_game_binding(&self.account_id, cloud_game_id)?;
+        }
         if let Some(game) = self.repo.get_game(cloud_game_id)? {
+            let document = self.read_game_document(cloud_game_id)?;
+            let sync_enabled = self
+                .repo
+                .get_cloud_game_binding_by_local_game(&self.account_id, &game.id)?
+                .is_none();
+            self.upsert_binding(&document, &game.id, sync_enabled)?;
             return Ok(game);
         }
         let document = self.read_game_document(cloud_game_id)?;
         self.materialize_cloud_game(&document)?;
+        let local_game_id = self
+            .repo
+            .get_cloud_game_binding(&self.account_id, cloud_game_id)?
+            .map(|binding| binding.local_game_id)
+            .unwrap_or_else(|| cloud_game_id.into());
         self.repo
-            .get_game(cloud_game_id)?
+            .get_game(&local_game_id)?
             .ok_or_else(|| CloudSyncError::InvalidState("云端游戏落地失败".into()))
     }
 
-    fn upsert_binding(&self, document: &CloudGameDocument) -> CloudSyncResult<()> {
+    fn upsert_binding(
+        &self,
+        document: &CloudGameDocument,
+        local_game_id: &str,
+        sync_enabled: bool,
+    ) -> CloudSyncResult<()> {
         self.repo.upsert_cloud_game_binding(CloudGameBinding {
             account_id: self.account_id.clone(),
             cloud_game_id: document.cloud_game_id.clone(),
-            local_game_id: document.cloud_game_id.clone(),
+            local_game_id: local_game_id.into(),
             remote_revision: document.revision,
-            sync_enabled: true,
+            sync_enabled,
             last_scanned_at: Some(self.now_timestamp()?),
         })?;
         Ok(())
+    }
+
+    fn snapshot_matches_bound_commit(
+        &self,
+        snapshot: &Snapshot,
+        commit: &SnapshotCommitDocument,
+    ) -> CloudSyncResult<bool> {
+        let expected_local_game_id = self
+            .repo
+            .get_cloud_game_binding(&self.account_id, &commit.cloud_game_id)?
+            .map(|binding| binding.local_game_id)
+            .unwrap_or_else(|| commit.cloud_game_id.clone());
+        Ok(snapshot_matches_commit(
+            snapshot,
+            commit,
+            &expected_local_game_id,
+        ))
     }
 
     fn read_remote_bytes(&self, remote_path: &str, local_name: &str) -> CloudSyncResult<Vec<u8>> {
@@ -1398,9 +1612,10 @@ fn commit_matches_local(
     commit: &SnapshotCommitDocument,
     snapshot: &Snapshot,
     normalized_created_at: &str,
+    cloud_game_id: &str,
 ) -> bool {
     commit.snapshot_id == snapshot.id
-        && commit.cloud_game_id == snapshot.game_id
+        && commit.cloud_game_id == cloud_game_id
         && crate::timestamp::same_instant(&commit.created_at, normalized_created_at)
         && commit.reason == reason_to_protocol(snapshot.reason)
         && commit.file_count == snapshot.file_count
@@ -1412,15 +1627,16 @@ fn commit_matches_local(
 fn snapshot_matches_commit(
     snapshot: &Snapshot,
     commit: &SnapshotCommitDocument,
-) -> CloudSyncResult<bool> {
-    Ok(snapshot.id == commit.snapshot_id
-        && snapshot.game_id == commit.cloud_game_id
+    expected_local_game_id: &str,
+) -> bool {
+    snapshot.id == commit.snapshot_id
+        && snapshot.game_id == expected_local_game_id
         && crate::timestamp::same_instant(&snapshot.created_at, &commit.created_at)
         && reason_to_protocol(snapshot.reason) == commit.reason
         && snapshot.file_count == commit.file_count
         && snapshot.total_size == commit.total_size
         && snapshot.source_count == commit.source_count
-        && snapshot.content_hash == commit.content_hash.value)
+        && snapshot.content_hash == commit.content_hash.value
 }
 
 fn record_matches_commit(record: &CloudSnapshotRecord, commit: &SnapshotCommitDocument) -> bool {

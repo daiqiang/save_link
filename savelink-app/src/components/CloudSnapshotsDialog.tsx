@@ -2,15 +2,31 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Icon } from "../lib/icons";
 import { formatSize, formatTimestamp, REASON_LABEL } from "../lib/format";
 import * as api from "../lib/api";
-import type { CloudSnapshot } from "../lib/types";
+import type { CloudSnapshot, Game } from "../lib/types";
+import { AssociateCloudGameDialog } from "./AssociateCloudGameDialog";
 import { useToast } from "./Toast";
 
 interface Props {
+  games: Game[];
   onClose: () => void;
   onReceived: (gameId: string) => Promise<void>;
 }
 
-export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
+interface CloudGameGroup {
+  id: string;
+  name: string;
+  localGameId: string | null;
+  isPrimary: boolean;
+  historicalSourceCount: number;
+  snapshots: CloudSnapshot[];
+}
+
+interface AssociationRequest {
+  game: CloudGameGroup;
+  pendingSnapshot: CloudSnapshot | null;
+}
+
+export function CloudSnapshotsDialog({ games: localGames, onClose, onReceived }: Props) {
   const toast = useToast();
   const [connected, setConnected] = useState<boolean | null>(null);
   const [snapshots, setSnapshots] = useState<CloudSnapshot[]>(() => api.getCachedBaiduSnapshots());
@@ -18,6 +34,7 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [connecting, setConnecting] = useState(false);
   const [receivingId, setReceivingId] = useState<string | null>(null);
+  const [association, setAssociation] = useState<AssociationRequest | null>(null);
   const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -52,13 +69,23 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
   }, [refresh]);
 
   const games = useMemo(() => {
-    const grouped = new Map<string, { name: string; snapshots: CloudSnapshot[] }>();
+    const grouped = new Map<string, CloudGameGroup>();
     for (const snapshot of snapshots) {
-      const game = grouped.get(snapshot.cloud_game_id) ?? { name: snapshot.game_name, snapshots: [] };
+      const game = grouped.get(snapshot.cloud_game_id) ?? {
+        id: snapshot.cloud_game_id,
+        name: snapshot.game_name,
+        localGameId: snapshot.local_game_id,
+        isPrimary: snapshot.is_primary,
+        historicalSourceCount: Math.max(1, snapshot.source_count),
+        snapshots: [],
+      };
+      if (snapshot.local_game_id) game.localGameId = snapshot.local_game_id;
+      if (snapshot.is_primary) game.isPrimary = true;
+      game.historicalSourceCount = Math.max(game.historicalSourceCount, snapshot.source_count);
       game.snapshots.push(snapshot);
       grouped.set(snapshot.cloud_game_id, game);
     }
-    return Array.from(grouped, ([id, value]) => ({ id, ...value }));
+    return Array.from(grouped.values());
   }, [snapshots]);
 
   async function connect() {
@@ -75,7 +102,7 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
     }
   }
 
-  async function receive(snapshot: CloudSnapshot) {
+  async function receiveDirect(snapshot: CloudSnapshot) {
     if (receivingId) return;
     setReceivingId(snapshot.snapshot_id);
     try {
@@ -90,6 +117,30 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
       await refresh();
     } finally {
       setReceivingId(null);
+    }
+  }
+
+  function receive(snapshot: CloudSnapshot, game: CloudGameGroup) {
+    const sameNameCandidate = localGames.some((localGame) =>
+      localGame.emulator === null
+      && (localGame.save_paths.length > 0 || localGame.launch_kind !== null)
+      && localGame.name.trim().toLocaleLowerCase() === game.name.trim().toLocaleLowerCase()
+    );
+    if (!game.localGameId && sameNameCandidate) {
+      setAssociation({ game, pendingSnapshot: snapshot });
+      return;
+    }
+    void receiveDirect(snapshot);
+  }
+
+  async function associated(gameId: string) {
+    const pending = association?.pendingSnapshot ?? null;
+    setAssociation(null);
+    await refresh();
+    if (pending) {
+      await receiveDirect(pending);
+    } else {
+      await onReceived(gameId);
     }
   }
 
@@ -128,7 +179,23 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
             <section className="cloud-game" key={game.id}>
               <div className="cloud-game-head">
                 <span className="game-cover">{game.name[0] ?? "游"}</span>
-                <div><strong>{game.name}</strong><span>{game.snapshots.length} 个快照</span></div>
+                <div className="cloud-game-title">
+                  <strong>{game.name}</strong>
+                  <span>{game.snapshots.length} 个快照{game.localGameId
+                    ? ` · 已关联至 ${localGames.find((item) => item.id === game.localGameId)?.name ?? "本机游戏"} · ${game.isPrimary ? "主云分组" : "历史云分组"}`
+                    : ""}</span>
+                </div>
+                {localGames.some((localGame) => localGame.emulator === null
+                  && (localGame.save_paths.length > 0 || localGame.launch_kind !== null))
+                  && (!game.localGameId || !game.isPrimary || localGames.some((localGame) =>
+                    localGame.id === game.localGameId
+                    && localGame.save_paths.length === 0
+                    && localGame.launch_kind === null)) && (
+                  <button className="btn sm cloud-associate" onClick={() => setAssociation({ game, pendingSnapshot: null })}
+                    disabled={receivingId !== null || loading}><Icon.Gamepad /> {game.localGameId && !game.isPrimary
+                      ? "设为主云分组"
+                      : "关联到已有游戏"}</button>
+                )}
               </div>
               <div className="cloud-snapshot-list">
                 {game.snapshots.map((snapshot) => {
@@ -144,7 +211,7 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
                       {available ? (
                         <span className="cloud-state ok"><Icon.Check /> 已在本机</span>
                       ) : (
-                        <button className="btn sm" onClick={() => receive(snapshot)} disabled={receivingId !== null}>
+                        <button className="btn sm" onClick={() => receive(snapshot, game)} disabled={receivingId !== null}>
                           {receiving ? <><span className="spin"><Icon.RotateCcw /></span> 下载中</> : <><Icon.Download /> 下载</>}
                         </button>
                       )}
@@ -156,6 +223,23 @@ export function CloudSnapshotsDialog({ onClose, onReceived }: Props) {
           ))}
         </div>
       </div>
+      {association && (
+        <AssociateCloudGameDialog
+          cloudGameId={association.game.id}
+          cloudGameName={association.game.name}
+          historicalSourceCount={association.game.historicalSourceCount}
+          games={localGames}
+          allowDownloadAsNew={association.pendingSnapshot !== null && association.game.localGameId === null}
+          onClose={() => setAssociation(null)}
+          onAssociated={associated}
+          onDownloadAsNew={association.pendingSnapshot ? async () => {
+            const pending = association.pendingSnapshot;
+            if (!pending) return;
+            setAssociation(null);
+            await receiveDirect(pending);
+          } : undefined}
+        />
+      )}
     </div>
   );
 }

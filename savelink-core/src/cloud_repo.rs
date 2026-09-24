@@ -1,10 +1,11 @@
 //! 云同步本机状态持久化抽象。
 
 use crate::cloud_model::{
-    CloudAccount, CloudGameBinding, CloudMetadataSyncStatus, CloudSnapshotMetadataState,
-    CloudSnapshotRecord, CloudSyncStatus,
+    CloudAccount, CloudGameAssociationOutcome, CloudGameBinding, CloudMetadataSyncStatus,
+    CloudSnapshotMetadataState, CloudSnapshotRecord, CloudSyncStatus,
 };
 use crate::error::Result;
+use std::path::PathBuf;
 
 pub trait CloudStateRepository: Send + Sync {
     fn set_setting(&self, key: &str, value: &str) -> Result<()>;
@@ -20,7 +21,19 @@ pub trait CloudStateRepository: Send + Sync {
         account_id: &str,
         cloud_game_id: &str,
     ) -> Result<Option<CloudGameBinding>>;
+    fn get_cloud_game_binding_by_local_game(
+        &self,
+        account_id: &str,
+        local_game_id: &str,
+    ) -> Result<Option<CloudGameBinding>>;
     fn list_cloud_game_bindings(&self, account_id: &str) -> Result<Vec<CloudGameBinding>>;
+    fn delete_cloud_game_binding(&self, account_id: &str, cloud_game_id: &str) -> Result<()>;
+    fn associate_cloud_game(
+        &self,
+        binding: CloudGameBinding,
+        save_paths: Vec<PathBuf>,
+        updated_at: &str,
+    ) -> Result<CloudGameAssociationOutcome>;
 
     fn upsert_cloud_snapshot(&self, snapshot: CloudSnapshotRecord) -> Result<()>;
     fn get_cloud_snapshot(

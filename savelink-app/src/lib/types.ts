@@ -234,6 +234,8 @@ export interface CloudUploadResult {
 export interface CloudSnapshot {
   cloud_game_id: string;
   game_name: string;
+  local_game_id: string | null;
+  is_primary: boolean;
   snapshot_id: string;
   created_at: string;
   note: string | null;
@@ -250,6 +252,12 @@ export interface CloudReceiveResult {
   snapshot_id: string;
   game_id: string;
   outcome: "downloaded" | "already_present";
+}
+
+export interface CloudGameAssociationResult {
+  game: Game;
+  moved_snapshot_count: number;
+  removed_placeholder_game_id: string | null;
 }
 
 // 恢复进度步骤（对应核心 RestoreStep）。
