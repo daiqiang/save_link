@@ -32,6 +32,7 @@ pub struct FileActivityEvent {
 pub struct SaveActivityAnalysisContext {
     pub game_name: String,
     pub executable_stem: Option<String>,
+    pub identity_hints: Vec<String>,
     pub install_dir: Option<PathBuf>,
     pub watched_roots: Vec<PathBuf>,
     pub known_emulator_roots: Vec<PathBuf>,
@@ -252,7 +253,7 @@ fn rank_group(
     let game_identity_match = path_matches_game_identity(&group.directory, context);
     if game_identity_match {
         score += 12;
-        positive_signals.push("路径与游戏名称或程序名称相关".into());
+        positive_signals.push("路径与游戏名称或程序身份相关".into());
     }
     let known_emulator_container = known_emulator_app_container(&group.directory, context)
         .is_some_and(|container| normalized_path(&container) == normalized_path(&group.directory));
@@ -408,12 +409,11 @@ fn is_known_browser_profile_directory(path: &Path) -> bool {
 
 fn path_matches_game_identity(path: &Path, context: &SaveActivityAnalysisContext) -> bool {
     let compact_path = compact_identity(&path.to_string_lossy());
-    let game = compact_identity(&context.game_name);
-    (!game.is_empty() && compact_path.contains(&game))
-        || context.executable_stem.as_ref().is_some_and(|stem| {
-            let stem = compact_identity(stem);
-            !stem.is_empty() && compact_path.contains(&stem)
-        })
+    std::iter::once(context.game_name.as_str())
+        .chain(context.executable_stem.as_deref())
+        .chain(context.identity_hints.iter().map(String::as_str))
+        .map(compact_identity)
+        .any(|identity| !identity.is_empty() && compact_path.contains(&identity))
 }
 
 fn compact_identity(value: &str) -> String {
@@ -548,6 +548,7 @@ mod tests {
         SaveActivityAnalysisContext {
             game_name: "Hole Is Mine".into(),
             executable_stem: Some("HoleIsMine".into()),
+            identity_hints: Vec::new(),
             install_dir: Some(PathBuf::from(r"C:\Games\Hole Is Mine")),
             watched_roots: vec![PathBuf::from(r"C:\Users\Tester\AppData\LocalLow")],
             known_emulator_roots: Vec::new(),
@@ -791,6 +792,50 @@ mod tests {
     }
 
     #[test]
+    fn resolved_loader_identity_promotes_matching_save_directory() {
+        let events = vec![
+            event(
+                r"C:\Users\Tester\AppData\Roaming\kingdom_rush_genesis\cache.lua",
+                FileActivityKind::Modify,
+                1_000,
+            ),
+            event(
+                r"C:\Users\Tester\AppData\Roaming\kingdom_rush_genesis\global.lua",
+                FileActivityKind::Modify,
+                1_100,
+            ),
+            event(
+                r"C:\Users\Tester\AppData\Roaming\kingdom_rush_genesis\settings.lua",
+                FileActivityKind::Modify,
+                1_200,
+            ),
+            event(
+                r"C:\Users\Tester\AppData\Roaming\kingdom_rush_genesis\slot_1.lua",
+                FileActivityKind::Create,
+                1_300,
+            ),
+        ];
+        let mut context = context();
+        context.game_name = "王国保卫战6".into();
+        context.executable_stem = Some("steamclient_loader".into());
+        context.identity_hints = vec!["Kingdom Rush Genesis".into()];
+
+        let candidates = analyze_save_activity(&events, &context);
+
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].confidence, SaveCandidateConfidence::High);
+        assert!(candidates[0].score >= 49);
+        assert!(candidates[0]
+            .positive_signals
+            .iter()
+            .any(|signal| signal.contains("程序身份")));
+        assert!(!candidates[0]
+            .downgrade_reasons
+            .iter()
+            .any(|reason| reason.contains("缺少直接关联")));
+    }
+
+    #[test]
     fn numbered_profile_directory_is_a_save_structure_signal() {
         let events = vec![
             event(
@@ -957,6 +1002,7 @@ mod tests {
         let context = SaveActivityAnalysisContext {
             game_name: "Hole Is Mine".into(),
             executable_stem: Some("HoleIsMine".into()),
+            identity_hints: Vec::new(),
             install_dir: None,
             watched_roots: vec![root.clone()],
             known_emulator_roots: Vec::new(),

@@ -1,3 +1,4 @@
+use savelink_core::loader_identity::resolve_loader_program_identity;
 use savelink_core::model::GameLaunchBinding;
 use savelink_core::save_activity::{
     analyze_save_activity, FileActivityEvent, FileActivityKind, SaveActivityAnalysisContext,
@@ -300,6 +301,14 @@ impl SaveDiscoveryManager {
         update_status(&self.status, &emitter, |status| {
             status.phase = SaveDiscoveryPhase::LaunchingGame;
         });
+        let loader_identity_hints = resolve_loader_program_identity(
+            &request.launch_binding.executable_path,
+            &request.launch_binding.install_dir,
+        )
+        .ok()
+        .flatten()
+        .map(|identity| identity.identity_hints)
+        .unwrap_or_default();
         let child = match launch_game(&request.launch_binding) {
             Ok(child) => child,
             Err(error) => {
@@ -325,6 +334,7 @@ impl SaveDiscoveryManager {
                 .executable_path
                 .file_stem()
                 .map(|value| value.to_string_lossy().into_owned()),
+            identity_hints: loader_identity_hints,
             install_dir: Some(request.launch_binding.install_dir),
             watched_roots: roots,
             known_emulator_roots: emulator_roots,
@@ -1045,6 +1055,7 @@ fn discovery_identity_keys(context: &SaveActivityAnalysisContext) -> BTreeSet<St
     if let Some(stem) = context.executable_stem.as_deref() {
         values.push(stem);
     }
+    values.extend(context.identity_hints.iter().map(String::as_str));
     if let Some(install_name) = context
         .install_dir
         .as_deref()
@@ -1874,6 +1885,7 @@ mod tests {
         let context = SaveActivityAnalysisContext {
             game_name: "Darkest Dungeon".into(),
             executable_stem: Some("Darkest".into()),
+            identity_hints: Vec::new(),
             install_dir: None,
             watched_roots: vec![root.clone()],
             known_emulator_roots: vec![root.clone()],
@@ -1918,6 +1930,7 @@ mod tests {
         let context = SaveActivityAnalysisContext {
             game_name: "我是洞洞王".into(),
             executable_stem: Some("Hole Is Mine".into()),
+            identity_hints: Vec::new(),
             install_dir: Some(PathBuf::from(r"D:\Games\Hole Is Mine")),
             watched_roots: vec![root.clone()],
             known_emulator_roots: Vec::new(),
@@ -1961,6 +1974,7 @@ mod tests {
         let context = SaveActivityAnalysisContext {
             game_name: "测试".into(),
             executable_stem: Some("game".into()),
+            identity_hints: Vec::new(),
             install_dir: Some(PathBuf::from(r"D:\Games\bin")),
             watched_roots: vec![root.clone()],
             known_emulator_roots: Vec::new(),

@@ -17,6 +17,7 @@ pub mod cloud_service;
 pub mod cloud_store;
 pub mod desmume_discovery;
 pub mod error;
+pub mod loader_identity;
 pub mod model;
 pub mod program_discovery;
 pub mod repo;
