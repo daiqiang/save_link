@@ -19,7 +19,7 @@ SaveLink是一款基于windows的游戏存档工具，同时满足存储空间�
 
 ## 下载
 
-前往 [GitHub Releases](https://github.com/daiqiang/save_link/releases) 下载最新版本。当前版本为 [v0.5.1](https://github.com/daiqiang/save_link/releases/tag/v0.5.1)。
+前往 [GitHub Releases](https://github.com/daiqiang/save_link/releases) 下载最新版本。当前版本为 [v0.5.2](https://github.com/daiqiang/save_link/releases/tag/v0.5.2)。
 
 ## 快速开始
 
@@ -39,11 +39,13 @@ SaveLink是一款基于windows的游戏存档工具，同时满足存储空间�
 
 ![SaveLink Steam 自动发现](img/添加游戏.png)
 
-## v0.5.1 更新
+## v0.5.2 更新
 
 - 支持由 SaveLink 启动并监测未识别游戏，退出后从活动中推荐真实存档目录，确认后自动接入备份。
 - 支持快照分区、锁定保护、默认10个且可配置1到100个的自动保留数量，以及快照详情中的本地一致性检查。
 - 支持 DeSmuME 0.9.x 的精确 `.dsv` 存档发现、恢复和跨设备重新绑定；百度云同步区分后台维护和用户操作状态。
+- 优化跨设备云游戏关联：绑定时使用当前电脑的实际存档目录，移除本地游戏后仍可重新下载云端快照。
+- 支持从 `ColdClientLoader.ini` 识别加载器背后的真实游戏程序，提高学习版游戏存档目录推荐的可信度。
 
 ## License
 
