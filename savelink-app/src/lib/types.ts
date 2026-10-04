@@ -122,6 +122,8 @@ export type SaveDiscoveryPhase =
   | "failed"
   | "cancelled";
 
+export type SaveDiscoveryMode = "initial_discovery" | "reference_rescan";
+
 export type FileActivityKind = "create" | "modify" | "delete" | "rename_from" | "rename_to" | "observed";
 export type SaveCandidateConfidence = "high" | "medium" | "low";
 
@@ -147,8 +149,18 @@ export interface SaveDirectoryCandidate {
   downgrade_reasons: string[];
 }
 
+export interface ManagedSaveDirectoryActivity {
+  directory: string;
+  exists: boolean;
+  event_count: number;
+  distinct_file_count: number;
+  last_activity_unix_ms: number | null;
+  files: ActivityFileSummary[];
+}
+
 export interface SaveDiscoveryStatus {
   phase: SaveDiscoveryPhase;
+  mode: SaveDiscoveryMode | null;
   game_id: string | null;
   game_name: string | null;
   pid: number | null;
@@ -158,6 +170,7 @@ export interface SaveDiscoveryStatus {
   event_count: number;
   dropped_event_count: number;
   monitored_roots: string[];
+  managed_directories: ManagedSaveDirectoryActivity[];
   candidates: SaveDirectoryCandidate[];
   errors: string[];
 }

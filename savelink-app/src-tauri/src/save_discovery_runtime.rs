@@ -1,8 +1,8 @@
 use savelink_core::loader_identity::resolve_loader_program_identity;
 use savelink_core::model::GameLaunchBinding;
 use savelink_core::save_activity::{
-    analyze_save_activity, FileActivityEvent, FileActivityKind, SaveActivityAnalysisContext,
-    SaveDirectoryCandidate,
+    analyze_reference_save_activity, analyze_save_activity, FileActivityEvent, FileActivityKind,
+    ManagedSaveDirectoryActivity, SaveActivityAnalysisContext, SaveDirectoryCandidate,
 };
 use savelink_core::scan::{path_is_same_or_descendant, validate_save_paths};
 use serde::Serialize;
@@ -41,6 +41,13 @@ pub enum SaveDiscoveryPhase {
     Cancelled,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SaveDiscoveryMode {
+    InitialDiscovery,
+    ReferenceRescan,
+}
+
 impl SaveDiscoveryPhase {
     pub fn is_active(self) -> bool {
         matches!(
@@ -58,6 +65,7 @@ impl SaveDiscoveryPhase {
 #[derive(Debug, Clone, Serialize)]
 pub struct SaveDiscoveryStatus {
     pub phase: SaveDiscoveryPhase,
+    pub mode: Option<SaveDiscoveryMode>,
     pub game_id: Option<String>,
     pub game_name: Option<String>,
     pub pid: Option<u32>,
@@ -67,6 +75,7 @@ pub struct SaveDiscoveryStatus {
     pub event_count: usize,
     pub dropped_event_count: usize,
     pub monitored_roots: Vec<PathBuf>,
+    pub managed_directories: Vec<ManagedSaveDirectoryActivity>,
     pub candidates: Vec<SaveDirectoryCandidate>,
     pub errors: Vec<String>,
 }
@@ -75,6 +84,7 @@ impl Default for SaveDiscoveryStatus {
     fn default() -> Self {
         Self {
             phase: SaveDiscoveryPhase::Idle,
+            mode: None,
             game_id: None,
             game_name: None,
             pid: None,
@@ -84,6 +94,7 @@ impl Default for SaveDiscoveryStatus {
             event_count: 0,
             dropped_event_count: 0,
             monitored_roots: Vec::new(),
+            managed_directories: Vec::new(),
             candidates: Vec::new(),
             errors: Vec::new(),
         }
@@ -93,6 +104,8 @@ impl Default for SaveDiscoveryStatus {
 pub struct SaveDiscoveryStartRequest {
     pub game_id: String,
     pub game_name: String,
+    pub mode: SaveDiscoveryMode,
+    pub managed_directories: Vec<PathBuf>,
     pub launch_binding: GameLaunchBinding,
     pub data_dir: PathBuf,
     pub app_local_data_dir: PathBuf,
@@ -128,7 +141,13 @@ struct SessionResources {
     control_rx: mpsc::Receiver<SessionControl>,
     status: Arc<Mutex<SaveDiscoveryStatus>>,
     emitter: StatusEmitter,
-    analysis_context: SaveActivityAnalysisContext,
+    analysis: DiscoveryAnalysisPlan,
+}
+
+struct DiscoveryAnalysisPlan {
+    context: SaveActivityAnalysisContext,
+    mode: SaveDiscoveryMode,
+    managed_directories: Vec<PathBuf>,
 }
 
 impl SessionResources {
@@ -153,7 +172,7 @@ impl SessionResources {
             self.health,
             self.status,
             self.emitter,
-            self.analysis_context,
+            self.analysis,
         );
     }
 
@@ -210,7 +229,8 @@ impl SaveDiscoveryManager {
         app: AppHandle,
         request: SaveDiscoveryStartRequest,
     ) -> Result<SaveDiscoveryStatus, String> {
-        let roots = discovery_roots(&request.launch_binding)?;
+        let mut roots = discovery_roots(&request.launch_binding)?;
+        append_uncovered_managed_roots(&mut roots, &request.managed_directories);
         self.start_with_roots(app, request, roots)
     }
 
@@ -263,11 +283,14 @@ impl SaveDiscoveryManager {
             return Err("没有可用的存档活动监测目录".into());
         }
         let emulator_roots = monitored_emulator_roots(&roots);
+        let mode = request.mode;
+        let managed_directories = request.managed_directories.clone();
         replace_status(
             &self.status,
             &emitter,
             SaveDiscoveryStatus {
                 phase: SaveDiscoveryPhase::StartingWatchers,
+                mode: Some(mode),
                 game_id: Some(request.game_id.clone()),
                 game_name: Some(request.game_name.clone()),
                 started_at_unix_ms: Some(now_unix_ms()),
@@ -327,22 +350,26 @@ impl SaveDiscoveryManager {
         let (control_tx, control_rx) = mpsc::channel();
         let status = self.status.clone();
         let timings = self.timings;
-        let analysis_context = SaveActivityAnalysisContext {
-            game_name: request.game_name,
-            executable_stem: request
-                .launch_binding
-                .executable_path
-                .file_stem()
-                .map(|value| value.to_string_lossy().into_owned()),
-            identity_hints: loader_identity_hints,
-            install_dir: Some(request.launch_binding.install_dir),
-            watched_roots: roots,
-            known_emulator_roots: emulator_roots,
-            excluded_roots: vec![
-                request.data_dir,
-                request.app_local_data_dir,
-                request.repository_dir,
-            ],
+        let analysis = DiscoveryAnalysisPlan {
+            context: SaveActivityAnalysisContext {
+                game_name: request.game_name,
+                executable_stem: request
+                    .launch_binding
+                    .executable_path
+                    .file_stem()
+                    .map(|value| value.to_string_lossy().into_owned()),
+                identity_hints: loader_identity_hints,
+                install_dir: Some(request.launch_binding.install_dir),
+                watched_roots: roots,
+                known_emulator_roots: emulator_roots,
+                excluded_roots: vec![
+                    request.data_dir,
+                    request.app_local_data_dir,
+                    request.repository_dir,
+                ],
+            },
+            mode,
+            managed_directories,
         };
         let child_holder = Arc::new(Mutex::new(Some(child)));
         let worker_child = child_holder.clone();
@@ -371,7 +398,7 @@ impl SaveDiscoveryManager {
                         control_rx,
                         status,
                         emitter: worker_emitter,
-                        analysis_context,
+                        analysis,
                     },
                     timings,
                 );
@@ -411,6 +438,9 @@ impl SaveDiscoveryManager {
             .status
             .lock()
             .map_err(|_| "存档发现状态锁已损坏".to_string())?;
+        if status.mode != Some(SaveDiscoveryMode::InitialDiscovery) {
+            return Err("重新查找结果仅供参考，不能直接写入存档目录".into());
+        }
         let selected = validate_confirmation_paths(&status, game_id, requested_paths)?;
         status.phase = SaveDiscoveryPhase::Confirming;
         Ok(selected)
@@ -635,7 +665,7 @@ fn analyze_and_publish(
     health: Arc<WatchHealth>,
     status: Arc<Mutex<SaveDiscoveryStatus>>,
     emitter: StatusEmitter,
-    analysis_context: SaveActivityAnalysisContext,
+    analysis: DiscoveryAnalysisPlan,
 ) {
     update_status(&status, &emitter, |current| {
         current.phase = SaveDiscoveryPhase::Analyzing;
@@ -649,7 +679,7 @@ fn analyze_and_publish(
         .and_then(|current| current.started_at_unix_ms)
         .unwrap_or(0);
     let reconciliation =
-        reconcile_recent_identity_files(&analysis_context, started_at_unix_ms, now_unix_ms());
+        reconcile_recent_identity_files(&analysis.context, started_at_unix_ms, now_unix_ms());
     events.extend(reconciliation.events);
     let dropped = collector.dropped();
     let mut errors = health.errors();
@@ -661,12 +691,26 @@ fn analyze_and_publish(
     if reconciliation.incomplete {
         errors.extend(reconciliation.errors);
     }
-    let candidates = analyze_save_activity(&events, &analysis_context);
+    let (managed_directories, candidates) = match analysis.mode {
+        SaveDiscoveryMode::InitialDiscovery => (
+            Vec::new(),
+            analyze_save_activity(&events, &analysis.context),
+        ),
+        SaveDiscoveryMode::ReferenceRescan => {
+            let result = analyze_reference_save_activity(
+                &events,
+                &analysis.context,
+                &analysis.managed_directories,
+            );
+            (result.managed_directories, result.candidates)
+        }
+    };
     update_status(&status, &emitter, |current| {
         current.phase = SaveDiscoveryPhase::AwaitingConfirmation;
         current.incomplete = health.is_incomplete() || dropped > 0 || reconciliation.incomplete;
         current.event_count = events.len();
         current.dropped_event_count = dropped;
+        current.managed_directories = managed_directories;
         current.candidates = candidates;
         current.errors = errors;
     });
@@ -681,6 +725,7 @@ fn cancel_and_publish(
     update_status(status, emitter, |current| {
         current.phase = SaveDiscoveryPhase::Cancelled;
         current.pid = None;
+        current.managed_directories.clear();
         current.candidates.clear();
     });
 }
@@ -831,6 +876,19 @@ fn discovery_roots(binding: &GameLaunchBinding) -> Result<Vec<PathBuf>, String> 
         return Err("游戏安装目录不可用于活动监测".into());
     }
     Ok(roots)
+}
+
+fn append_uncovered_managed_roots(roots: &mut Vec<PathBuf>, managed_directories: &[PathBuf]) {
+    for directory in managed_directories {
+        if !directory.is_dir()
+            || roots
+                .iter()
+                .any(|root| path_is_same_or_descendant(root, directory))
+        {
+            continue;
+        }
+        roots.push(display_path(directory));
+    }
 }
 
 fn public_steam_emulator_root_candidates(public_documents: &Path) -> Vec<PathBuf> {
@@ -1739,6 +1797,8 @@ mod tests {
         SaveDiscoveryStartRequest {
             game_id: "test-game".into(),
             game_name: "Test Game".into(),
+            mode: SaveDiscoveryMode::InitialDiscovery,
+            managed_directories: Vec::new(),
             launch_binding: binding,
             data_dir: root.join("savelink-data"),
             app_local_data_dir: root.join("savelink-webview-data"),
@@ -1773,6 +1833,7 @@ mod tests {
     ) {
         *manager.status.lock().unwrap() = SaveDiscoveryStatus {
             phase: SaveDiscoveryPhase::AwaitingConfirmation,
+            mode: Some(SaveDiscoveryMode::InitialDiscovery),
             game_id: Some("test-game".into()),
             game_name: Some("Test Game".into()),
             started_at_unix_ms: Some(1),
@@ -1849,6 +1910,27 @@ mod tests {
             retain_monitored_emulator_roots(&monitored, &known),
             vec![known[0].clone()]
         );
+    }
+
+    #[test]
+    fn managed_roots_outside_the_standard_scope_are_added_once() {
+        let root = temp_root("managed-watch-roots");
+        let standard = root.join("standard");
+        let nested = standard.join("already-covered");
+        let custom = root.join("custom-save");
+        let missing = root.join("missing-save");
+        fs::create_dir_all(&nested).unwrap();
+        fs::create_dir_all(&custom).unwrap();
+        let mut roots = vec![standard];
+
+        append_uncovered_managed_roots(
+            &mut roots,
+            &[nested, custom.clone(), custom.clone(), missing],
+        );
+
+        assert_eq!(roots.len(), 2);
+        assert_eq!(roots[1], custom);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -2058,6 +2140,27 @@ mod tests {
     }
 
     #[test]
+    fn confirmation_rejects_reference_rescan_results() {
+        let root = temp_root("confirm-reference-rescan");
+        let path = root.join("save");
+        fs::create_dir_all(&path).unwrap();
+        let manager = test_manager();
+        set_confirmation_status(&manager, vec![candidate(path.clone(), true, None)], false);
+        manager.status.lock().unwrap().mode = Some(SaveDiscoveryMode::ReferenceRescan);
+
+        let error = manager
+            .begin_confirmation("test-game", std::slice::from_ref(&path))
+            .unwrap_err();
+
+        assert!(error.contains("仅供参考"));
+        assert_eq!(
+            manager.status().unwrap().phase,
+            SaveDiscoveryPhase::AwaitingConfirmation
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn confirmation_rejects_unknown_and_unsafe_candidates() {
         let root = temp_root("confirm-membership");
         let safe = root.join("safe");
@@ -2236,6 +2339,40 @@ mod tests {
             .candidates
             .iter()
             .any(|candidate| candidate.directory == root.join("Save")));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reference_rescan_reports_managed_activity_and_unmanaged_candidates() {
+        let root = temp_root("reference-rescan");
+        let managed = root.join("ManagedSave");
+        let extra = root.join("ExtraSave");
+        fs::create_dir_all(&managed).unwrap();
+        fs::create_dir_all(&extra).unwrap();
+        let script = format!(
+            "Set-Content -LiteralPath '{}' -Value 'managed'; Set-Content -LiteralPath '{}' -Value 'extra'; Start-Sleep -Milliseconds 350",
+            managed.join("slot.dat").display(),
+            extra.join("profile.dat").display(),
+        );
+        let binding = powershell_binding(&root, script);
+        let manager = test_manager();
+        let mut start = request(&root, binding);
+        start.mode = SaveDiscoveryMode::ReferenceRescan;
+        start.managed_directories = vec![managed.clone()];
+
+        manager
+            .start_with_roots_and_emitter(start, vec![root.clone()], Arc::new(|_| {}))
+            .unwrap();
+        let status = wait_for_phase(&manager, SaveDiscoveryPhase::AwaitingConfirmation);
+
+        assert_eq!(status.mode, Some(SaveDiscoveryMode::ReferenceRescan));
+        assert_eq!(status.managed_directories.len(), 1);
+        assert_eq!(status.managed_directories[0].directory, managed);
+        assert!(status.managed_directories[0].event_count > 0);
+        assert!(status
+            .candidates
+            .iter()
+            .any(|candidate| candidate.directory == extra));
         let _ = fs::remove_dir_all(root);
     }
 

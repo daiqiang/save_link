@@ -71,6 +71,22 @@ pub struct SaveDirectoryCandidate {
     pub downgrade_reasons: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManagedSaveDirectoryActivity {
+    pub directory: PathBuf,
+    pub exists: bool,
+    pub event_count: usize,
+    pub distinct_file_count: usize,
+    pub last_activity_unix_ms: Option<u64>,
+    pub files: Vec<ActivityFileSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SaveActivityReferenceAnalysis {
+    pub managed_directories: Vec<ManagedSaveDirectoryActivity>,
+    pub candidates: Vec<SaveDirectoryCandidate>,
+}
+
 #[derive(Debug)]
 struct AggregatedFile {
     path: PathBuf,
@@ -93,6 +109,72 @@ pub fn analyze_save_activity(
     events: &[FileActivityEvent],
     context: &SaveActivityAnalysisContext,
 ) -> Vec<SaveDirectoryCandidate> {
+    rank_activity_files(aggregate_activity_files(events, context), context)
+}
+
+/// Split one discovery session into activity under configured save roots and
+/// candidates outside those roots. Results are diagnostic only: callers must
+/// not treat the remaining candidates as automatically approved save paths.
+pub fn analyze_reference_save_activity(
+    events: &[FileActivityEvent],
+    context: &SaveActivityAnalysisContext,
+    managed_directories: &[PathBuf],
+) -> SaveActivityReferenceAnalysis {
+    let mut seen = BTreeSet::new();
+    let mut managed_groups = managed_directories
+        .iter()
+        .filter_map(|directory| {
+            let key = normalized_path(directory);
+            seen.insert(key).then(|| CandidateGroup {
+                directory: directory.clone(),
+                files: Vec::new(),
+            })
+        })
+        .collect::<Vec<_>>();
+    let mut unmanaged_files = Vec::new();
+
+    for file in aggregate_activity_files(events, context) {
+        let owner = managed_groups
+            .iter()
+            .enumerate()
+            .filter(|(_, group)| path_is_same_or_descendant(&group.directory, &file.path))
+            .max_by_key(|(_, group)| normalized_path(&group.directory).len())
+            .map(|(index, _)| index);
+        if let Some(index) = owner {
+            managed_groups[index].files.push(file);
+        } else {
+            unmanaged_files.push(file);
+        }
+    }
+
+    let managed_roots = managed_groups
+        .iter()
+        .map(|group| group.directory.clone())
+        .collect::<Vec<_>>();
+    let candidates = rank_activity_files(unmanaged_files, context)
+        .into_iter()
+        .filter(|candidate| {
+            !managed_roots.iter().any(|managed| {
+                path_is_same_or_descendant(managed, &candidate.directory)
+                    || path_is_same_or_descendant(&candidate.directory, managed)
+            })
+        })
+        .collect();
+    let managed_directories = managed_groups
+        .into_iter()
+        .map(managed_directory_activity)
+        .collect();
+
+    SaveActivityReferenceAnalysis {
+        managed_directories,
+        candidates,
+    }
+}
+
+fn aggregate_activity_files(
+    events: &[FileActivityEvent],
+    context: &SaveActivityAnalysisContext,
+) -> Vec<AggregatedFile> {
     let mut sorted = events
         .iter()
         .filter(|event| !is_excluded(&event.path, &context.excluded_roots))
@@ -128,8 +210,15 @@ pub fn analyze_save_activity(
         file.last_activity_unix_ms = file.last_activity_unix_ms.max(event.observed_at_unix_ms);
     }
 
+    files.into_values().collect()
+}
+
+fn rank_activity_files(
+    files: Vec<AggregatedFile>,
+    context: &SaveActivityAnalysisContext,
+) -> Vec<SaveDirectoryCandidate> {
     let mut groups = BTreeMap::<String, CandidateGroup>::new();
-    for file in files.into_values() {
+    for file in files {
         let Some(parent) = file
             .path
             .parent()
@@ -164,6 +253,47 @@ pub fn analyze_save_activity(
     });
     candidates.truncate(MAX_CANDIDATES);
     candidates
+}
+
+fn managed_directory_activity(mut group: CandidateGroup) -> ManagedSaveDirectoryActivity {
+    group.files.sort_by(|left, right| {
+        right
+            .last_activity_unix_ms
+            .cmp(&left.last_activity_unix_ms)
+            .then_with(|| normalized_path(&left.path).cmp(&normalized_path(&right.path)))
+    });
+    let event_count = group.files.iter().map(|file| file.event_count).sum();
+    let distinct_file_count = group.files.len();
+    let last_activity_unix_ms = group
+        .files
+        .iter()
+        .map(|file| file.last_activity_unix_ms)
+        .max();
+    let files = group
+        .files
+        .into_iter()
+        .take(MAX_FILES_PER_CANDIDATE)
+        .map(activity_file_summary)
+        .collect();
+
+    ManagedSaveDirectoryActivity {
+        exists: group.directory.is_dir(),
+        directory: group.directory,
+        event_count,
+        distinct_file_count,
+        last_activity_unix_ms,
+        files,
+    }
+}
+
+fn activity_file_summary(file: AggregatedFile) -> ActivityFileSummary {
+    ActivityFileSummary {
+        exists_after_monitoring: file.path.exists(),
+        path: file.path,
+        kinds: file.kinds.into_iter().collect(),
+        event_count: file.event_count,
+        last_activity_unix_ms: file.last_activity_unix_ms,
+    }
 }
 
 fn expand_directory_event(event: &FileActivityEvent) -> Vec<FileActivityEvent> {
@@ -314,13 +444,7 @@ fn rank_group(
         .files
         .into_iter()
         .take(MAX_FILES_PER_CANDIDATE)
-        .map(|file| ActivityFileSummary {
-            exists_after_monitoring: file.path.exists(),
-            path: file.path,
-            kinds: file.kinds.into_iter().collect(),
-            event_count: file.event_count,
-            last_activity_unix_ms: file.last_activity_unix_ms,
-        })
+        .map(activity_file_summary)
         .collect();
     SaveDirectoryCandidate {
         directory: group.directory,
@@ -1081,5 +1205,86 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert_eq!(candidates[0].event_count, 2);
         assert_eq!(candidates[0].files[0].event_count, 2);
+    }
+
+    #[test]
+    fn reference_analysis_separates_managed_activity_and_new_candidates() {
+        let first = PathBuf::from(r"C:\Users\Tester\AppData\Roaming\Hole Is Mine\SaveA");
+        let second = PathBuf::from(r"C:\Users\Tester\AppData\Roaming\Hole Is Mine\SaveB");
+        let events = vec![
+            event(
+                r"C:\Users\Tester\AppData\Roaming\Hole Is Mine\SaveA\slot.dat",
+                FileActivityKind::Modify,
+                1_000,
+            ),
+            event(
+                r"C:\Users\Tester\AppData\Roaming\Hole Is Mine\ExtraSave\profile.dat",
+                FileActivityKind::Create,
+                1_500,
+            ),
+        ];
+
+        let analysis =
+            analyze_reference_save_activity(&events, &context(), &[first.clone(), second.clone()]);
+
+        assert_eq!(analysis.managed_directories.len(), 2);
+        assert_eq!(analysis.managed_directories[0].directory, first);
+        assert_eq!(analysis.managed_directories[0].event_count, 1);
+        assert_eq!(analysis.managed_directories[0].distinct_file_count, 1);
+        assert_eq!(analysis.managed_directories[1].directory, second);
+        assert_eq!(analysis.managed_directories[1].event_count, 0);
+        assert!(analysis.managed_directories[1].files.is_empty());
+        assert_eq!(analysis.candidates.len(), 1);
+        assert!(analysis.candidates[0].directory.ends_with("ExtraSave"));
+    }
+
+    #[test]
+    fn reference_analysis_does_not_repeat_managed_descendants_as_candidates() {
+        let managed = PathBuf::from(r"C:\Users\Tester\AppData\Roaming\Hole Is Mine\Save");
+        let events = vec![event(
+            r"c:\users\tester\appdata\roaming\hole is mine\save\Profile\slot.dat",
+            FileActivityKind::Modify,
+            1_000,
+        )];
+
+        let analysis =
+            analyze_reference_save_activity(&events, &context(), std::slice::from_ref(&managed));
+
+        assert_eq!(analysis.managed_directories.len(), 1);
+        assert_eq!(analysis.managed_directories[0].event_count, 1);
+        assert!(analysis.candidates.is_empty());
+    }
+
+    #[test]
+    fn reference_analysis_filters_candidate_ancestors_of_managed_roots() {
+        let managed = PathBuf::from(r"C:\Users\Tester\AppData\Roaming\Hole Is Mine\Save");
+        let events = vec![event(
+            r"C:\Users\Tester\AppData\Roaming\Hole Is Mine\settings.dat",
+            FileActivityKind::Modify,
+            1_000,
+        )];
+
+        let analysis =
+            analyze_reference_save_activity(&events, &context(), std::slice::from_ref(&managed));
+
+        assert_eq!(analysis.managed_directories[0].event_count, 0);
+        assert!(analysis.candidates.is_empty());
+    }
+
+    #[test]
+    fn reference_analysis_keeps_empty_managed_roots_and_deduplicates_them() {
+        let managed = PathBuf::from(r"C:\Saves\Missing");
+
+        let analysis = analyze_reference_save_activity(
+            &[],
+            &context(),
+            &[managed.clone(), PathBuf::from(r"c:\saves\missing\")],
+        );
+
+        assert_eq!(analysis.managed_directories.len(), 1);
+        assert_eq!(analysis.managed_directories[0].directory, managed);
+        assert!(!analysis.managed_directories[0].exists);
+        assert_eq!(analysis.managed_directories[0].last_activity_unix_ms, None);
+        assert!(analysis.candidates.is_empty());
     }
 }

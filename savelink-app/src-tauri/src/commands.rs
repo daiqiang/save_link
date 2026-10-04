@@ -9,7 +9,7 @@ use crate::{
     auto_backup,
     oauth_config::baidu_oauth_config,
     save_discovery_runtime::{
-        SaveDiscoveryManager, SaveDiscoveryStartRequest, SaveDiscoveryStatus,
+        SaveDiscoveryManager, SaveDiscoveryMode, SaveDiscoveryStartRequest, SaveDiscoveryStatus,
     },
 };
 use savelink_core::baidu_oauth::{
@@ -826,12 +826,24 @@ pub fn start_save_discovery(
         .get_game(&game_id)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "游戏不存在".to_string())?;
-    if game.configuration_state() != GameConfigurationState::PendingDiscovery {
-        return Err("只有尚未设置存档目录的普通 PC 游戏可以启动动态发现".into());
-    }
     if game.emulator_identity.is_some() {
         return Err("模拟器游戏不使用普通 PC 游戏的存档动态发现".into());
     }
+    let mode = match game.configuration_state() {
+        GameConfigurationState::PendingDiscovery => SaveDiscoveryMode::InitialDiscovery,
+        GameConfigurationState::Configured => SaveDiscoveryMode::ReferenceRescan,
+        GameConfigurationState::PendingBinding => {
+            return Err("该游戏尚未绑定本机存档目录和启动程序".into())
+        }
+    };
+    let managed_directories = if mode == SaveDiscoveryMode::ReferenceRescan {
+        game.effective_save_sources()
+            .into_iter()
+            .map(|source| source.root().to_path_buf())
+            .collect()
+    } else {
+        Vec::new()
+    };
     let launch_binding = game
         .launch_binding
         .clone()
@@ -841,6 +853,8 @@ pub fn start_save_discovery(
         SaveDiscoveryStartRequest {
             game_id: game.id,
             game_name: game.name,
+            mode,
+            managed_directories,
             launch_binding,
             data_dir: state.data_dir.clone(),
             app_local_data_dir,

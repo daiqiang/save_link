@@ -349,21 +349,19 @@ function SaveLink() {
             </div>
 
             <div className="toolbar">
-              {selected.configuration_state === "pending_discovery" ? <>
-                {selectedDiscoveryActive ? <>
-                  <button className="btn primary" onClick={stopDiscovery} disabled={discoveryAction}>
-                    <Icon.Search /> 停止并分析
-                  </button>
-                  <button className="btn" onClick={cancelDiscovery} disabled={discoveryAction}>
-                    <Icon.Close /> 取消监测
-                  </button>
-                </> : (
+              {selectedDiscoveryActive ? <>
+                <button className="btn primary" onClick={stopDiscovery} disabled={discoveryAction}>
+                  <Icon.Search /> 停止并分析
+                </button>
+                <button className="btn" onClick={cancelDiscovery} disabled={discoveryAction}>
+                  <Icon.Close /> 取消监测
+                </button>
+              </> : selected.configuration_state === "pending_discovery" ? <>
                   <button className="btn primary" onClick={startDiscovery}
                     disabled={discoveryAction || discoveryActive}
                     title={discoveryActive ? `${discovery?.game_name ?? "另一款游戏"} 正在查找存档` : "启动游戏并查找存档"}>
                     <Icon.Search /> {selectedDiscovery?.phase === "awaiting_confirmation" ? "重新监测" : "启动游戏并查找存档"}
                   </button>
-                )}
                 <button className="btn" onClick={() => setBindingGame(selected)}>
                   <Icon.Folder /> 手动设置存档目录
                 </button>
@@ -386,6 +384,13 @@ function SaveLink() {
                         : <><Icon.Gamepad /> 启动游戏</>}
                     </button>
                   )}
+                  {(selected.launch_kind === "executable" || selected.launch_kind === "steam") && (
+                    <button className="btn monitor-game" onClick={startDiscovery}
+                      disabled={discoveryAction || discoveryActive}
+                      title={discoveryActive ? `${discovery?.game_name ?? "另一款游戏"} 正在查找存档` : "启动游戏并监听文件"}>
+                      <Icon.Search /> 启动游戏并监听文件
+                    </button>
+                  )}
                   <button className="btn primary" onClick={createSnapshot} disabled={creating}>
                     {creating ? <><span className="spin"><Icon.RotateCcw /></span> 正在扫描…</> : <><Icon.Camera /> 创建快照</>}
                   </button>
@@ -397,11 +402,12 @@ function SaveLink() {
               </button>
             </div>
 
-            {selected.configuration_state === "pending_discovery" && selectedDiscovery && selectedDiscovery.phase !== "idle" && (
+            {selectedDiscovery && selectedDiscovery.phase !== "idle" && (
               <SaveDiscoveryPanel
                 status={selectedDiscovery}
                 busy={discoveryAction}
                 onConfirm={confirmDiscovery}
+                onOpenEditor={() => setEditingGame(selected)}
               />
             )}
 
