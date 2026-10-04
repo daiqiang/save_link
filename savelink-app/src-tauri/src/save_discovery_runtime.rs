@@ -466,6 +466,31 @@ impl SaveDiscoveryManager {
         }
     }
 
+    pub fn clear_reference_results(&self, game_id: &str) -> Result<SaveDiscoveryStatus, String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| "存档发现会话锁已损坏".to_string())?;
+        reap_finished_worker(&mut inner);
+        let mut status = self
+            .status
+            .lock()
+            .map_err(|_| "存档发现状态锁已损坏".to_string())?;
+        if status.game_id.as_deref() != Some(game_id) {
+            return Err("监听结果不属于当前游戏".into());
+        }
+        if status.phase.is_active() {
+            return Err("监听仍在进行，不能清除当前结果".into());
+        }
+        if status.mode != Some(SaveDiscoveryMode::ReferenceRescan)
+            || status.phase != SaveDiscoveryPhase::AwaitingConfirmation
+        {
+            return Err("当前没有可清除的重新监听结果".into());
+        }
+        *status = SaveDiscoveryStatus::default();
+        Ok(status.clone())
+    }
+
     fn send_control(&self, control: SessionControl) -> Result<(), String> {
         let inner = self
             .inner
@@ -2158,6 +2183,52 @@ mod tests {
             SaveDiscoveryPhase::AwaitingConfirmation
         );
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reference_rescan_results_can_be_cleared_without_touching_game_data() {
+        let manager = test_manager();
+        *manager.status.lock().unwrap() = SaveDiscoveryStatus {
+            phase: SaveDiscoveryPhase::AwaitingConfirmation,
+            mode: Some(SaveDiscoveryMode::ReferenceRescan),
+            game_id: Some("test-game".into()),
+            game_name: Some("Test Game".into()),
+            event_count: 3,
+            candidates: vec![candidate(PathBuf::from(r"C:\Saves\Extra"), true, None)],
+            ..SaveDiscoveryStatus::default()
+        };
+
+        let cleared = manager.clear_reference_results("test-game").unwrap();
+
+        assert_eq!(cleared.phase, SaveDiscoveryPhase::Idle);
+        assert_eq!(cleared.game_id, None);
+        assert!(cleared.candidates.is_empty());
+        assert_eq!(manager.status().unwrap().phase, SaveDiscoveryPhase::Idle);
+    }
+
+    #[test]
+    fn clear_reference_results_rejects_initial_or_active_sessions() {
+        let manager = test_manager();
+        *manager.status.lock().unwrap() = SaveDiscoveryStatus {
+            phase: SaveDiscoveryPhase::AwaitingConfirmation,
+            mode: Some(SaveDiscoveryMode::InitialDiscovery),
+            game_id: Some("test-game".into()),
+            ..SaveDiscoveryStatus::default()
+        };
+        assert!(manager
+            .clear_reference_results("test-game")
+            .unwrap_err()
+            .contains("没有可清除"));
+
+        {
+            let mut status = manager.status.lock().unwrap();
+            status.mode = Some(SaveDiscoveryMode::ReferenceRescan);
+            status.phase = SaveDiscoveryPhase::Monitoring;
+        }
+        assert!(manager
+            .clear_reference_results("test-game")
+            .unwrap_err()
+            .contains("仍在进行"));
     }
 
     #[test]

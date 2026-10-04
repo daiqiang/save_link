@@ -174,6 +174,19 @@ function SaveLink() {
     }
   }
 
+  async function clearDiscoveryResults() {
+    if (!selected || discoveryAction) return;
+    setDiscoveryAction(true);
+    try {
+      setDiscovery(await api.clearSaveDiscoveryResults(selected.id));
+      toast("本次监听结果已清除", "ok");
+    } catch (error) {
+      toast(String(error), "err");
+    } finally {
+      setDiscoveryAction(false);
+    }
+  }
+
   async function confirmDiscovery(savePaths: string[]) {
     if (!selected || discoveryAction || savePaths.length === 0) return;
     setDiscoveryAction(true);
@@ -407,7 +420,7 @@ function SaveLink() {
                 status={selectedDiscovery}
                 busy={discoveryAction}
                 onConfirm={confirmDiscovery}
-                onOpenEditor={() => setEditingGame(selected)}
+                onClearResults={clearDiscoveryResults}
               />
             )}
 

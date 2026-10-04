@@ -903,6 +903,14 @@ pub fn cancel_save_discovery(state: State<'_, AppState>) -> Result<SaveDiscovery
 }
 
 #[tauri::command]
+pub fn clear_save_discovery_results(
+    state: State<'_, AppState>,
+    game_id: String,
+) -> Result<SaveDiscoveryStatus, String> {
+    state.save_discovery.clear_reference_results(&game_id)
+}
+
+#[tauri::command]
 pub fn confirm_save_discovery_paths(
     app: AppHandle,
     state: State<'_, AppState>,

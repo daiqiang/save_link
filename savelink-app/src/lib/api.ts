@@ -186,6 +186,10 @@ export async function cancelSaveDiscovery(): Promise<SaveDiscoveryStatus> {
   return invoke<SaveDiscoveryStatus>("cancel_save_discovery");
 }
 
+export async function clearSaveDiscoveryResults(gameId: string): Promise<SaveDiscoveryStatus> {
+  return invoke<SaveDiscoveryStatus>("clear_save_discovery_results", { gameId });
+}
+
 export async function confirmSaveDiscoveryPaths(
   gameId: string,
   savePaths: string[],

@@ -40,14 +40,14 @@ interface SaveDiscoveryPanelProps {
   status: SaveDiscoveryStatus;
   busy: boolean;
   onConfirm: (savePaths: string[]) => void;
-  onOpenEditor: () => void;
+  onClearResults: () => void;
 }
 
 export function SaveDiscoveryPanel({
   status,
   busy,
   onConfirm,
-  onOpenEditor,
+  onClearResults,
 }: SaveDiscoveryPanelProps) {
   const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const referenceRescan = status.mode === "reference_rescan";
@@ -249,8 +249,8 @@ export function SaveDiscoveryPanel({
               <div className="discovery-empty-result">本轮没有发现管理范围外的候选目录。</div>
             )}
             <div className="discovery-reference-actions">
-              <button className="btn" onClick={onOpenEditor} disabled={busy}>
-                <Icon.Edit /> 编辑游戏
+              <button className="btn" onClick={onClearResults} disabled={busy}>
+                <Icon.Close /> 清除本次监听结果
               </button>
             </div>
           </section>

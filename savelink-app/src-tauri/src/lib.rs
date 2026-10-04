@@ -45,6 +45,7 @@ pub fn run() {
             commands::launch_game,
             commands::stop_save_discovery,
             commands::cancel_save_discovery,
+            commands::clear_save_discovery_results,
             commands::confirm_save_discovery_paths,
             commands::get_repository_path,
             commands::get_app_info,
